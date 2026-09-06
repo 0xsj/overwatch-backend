@@ -47,3 +47,25 @@ sql:
         sql_package: pgx/v5
         emit_empty_slices: true
         emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/org/infra/postgres/migrations
+    queries: internal/org/infra/postgres/queries
+    gen:
+      go:
+        package: orgdb
+        out: internal/org/infra/postgres/orgdb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/workspace/infra/postgres/migrations
+    queries: internal/workspace/infra/postgres/queries
+    gen:
+      go:
+        package: workspacedb
+        out: internal/workspace/infra/postgres/workspacedb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false

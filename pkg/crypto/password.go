@@ -45,6 +45,14 @@ func (p Params) validate() {
 	}
 }
 
+func (p Params) above(other Params) bool {
+	return other.Memory < p.Memory ||
+		other.Iterations < p.Iterations ||
+		other.Parallelism < p.Parallelism ||
+		other.SaltLength < p.SaltLength ||
+		other.KeyLength < p.KeyLength
+}
+
 type Verification struct {
 	Valid       bool
 	NeedsRehash bool
@@ -97,7 +105,7 @@ func (h *Hasher) Verify(encoded, password string) (Verification, error) {
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		return Verification{}, nil
 	}
-	return Verification{Valid: true, NeedsRehash: params != h.params}, nil
+	return Verification{Valid: true, NeedsRehash: h.params.above(params)}, nil
 }
 
 var b64 = base64.RawStdEncoding

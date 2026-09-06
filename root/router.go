@@ -1,4 +1,4 @@
-package main
+package root
 
 import (
 	"net/http"
@@ -22,6 +22,7 @@ func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", a.live)
 	mux.HandleFunc("GET /readyz", a.ready)
+	a.identity.Routes(mux)
 
 	return httpx.Chain(mux,
 		httpx.WithRecovery(a.log),

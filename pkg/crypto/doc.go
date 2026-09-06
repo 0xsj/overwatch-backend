@@ -21,6 +21,11 @@
 // for the other. Plain SHA-256 is *correct* for a high-entropy token and
 // catastrophic for a password.
 //
+// [HashToken] returns **lowercase hex**, 64 characters. That is part of the
+// contract rather than an implementation detail: the value is what a repository
+// stores in a text column and what a caller compares against, so changing the
+// encoding invalidates every stored row.
+//
 // # The hash carries its own parameters
 //
 //	$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>
@@ -30,6 +35,29 @@
 // single existing hash** — verification uses the parameters the hash was made
 // with, and [Verification.NeedsRehash] reports when those are below current
 // policy.
+//
+// **Below, dimension by dimension** — true when ANY of memory, iterations,
+// parallelism, salt length or key length is under the hasher's own. Not "differs
+// from": a hash stored under STRONGER parameters must verify without asking to
+// be redone, because rehashing it to policy would quietly weaken a credential,
+// and doing that inside a routine sign-in is the worst possible place for it.
+//
+// The rule is per dimension because [Params] has no total order — a hash with
+// more memory and fewer iterations is neither above nor below policy as a whole.
+// Comparing a derived cost scalar would need a cost model that argon2 does not
+// supply and that would be wrong the day the parameters are retuned. Per
+// dimension is total, needs no model, and lands every rehash at or above policy
+// everywhere.
+//
+// The cost is named rather than hidden: an operator who *lowers* policy — because
+// the parameters were tuned too high and sign-ins were timing out — never gets
+// existing expensive hashes brought down, because none of them is below the new
+// floor. That is a migration, not a per-verify concern, and this is not where it
+// belongs.
+//
+// **This was wrong until 2026-09-06**, when a suite written from this file
+// against no access to the code asserted the documented rule and failed. The
+// code read `params != h.params`. See STATUS.
 //
 // The caller rehashes at that moment, because verifying is the one moment the
 // plaintext is in hand. Without it, whatever was chosen on the first day is

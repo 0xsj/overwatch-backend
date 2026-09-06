@@ -337,3 +337,75 @@ func TestConstructionRefusesWhatCannotWork(t *testing.T) {
 		})
 	}
 }
+
+// The case doc.go had no answer for until 2026-09-06, and that neither suite
+// covered: Params has no total order, so a hash with more memory and fewer
+// iterations is neither above nor below policy as a whole. The rule is per
+// dimension — ANY dimension below policy asks for a rehash.
+func TestRehashIsDecidedPerDimensionBecauseParamsHaveNoTotalOrder(t *testing.T) {
+	policy := crypto.Params{Memory: 128, Iterations: 2, Parallelism: 2, SaltLength: 16, KeyLength: 32}
+	h := crypto.NewHasher(policy, rand.Reader)
+
+	weaker := func(f func(*crypto.Params)) *crypto.Hasher {
+		p := policy
+		f(&p)
+		return crypto.NewHasher(p, rand.Reader)
+	}
+
+	for name, tc := range map[string]struct {
+		stored *crypto.Hasher
+		want   bool
+	}{
+		"less memory":      {weaker(func(p *crypto.Params) { p.Memory = 64 }), true},
+		"fewer iterations": {weaker(func(p *crypto.Params) { p.Iterations = 1 }), true},
+		"less parallelism": {weaker(func(p *crypto.Params) { p.Parallelism = 1 }), true},
+		"a shorter salt":   {weaker(func(p *crypto.Params) { p.SaltLength = 8 }), true},
+		"a shorter key":    {weaker(func(p *crypto.Params) { p.KeyLength = 16 }), true},
+
+		"more memory":     {weaker(func(p *crypto.Params) { p.Memory = 256 }), false},
+		"more iterations": {weaker(func(p *crypto.Params) { p.Iterations = 4 }), false},
+		"a longer salt":   {weaker(func(p *crypto.Params) { p.SaltLength = 32 }), false},
+		"a longer key":    {weaker(func(p *crypto.Params) { p.KeyLength = 64 }), false},
+
+		// Neither above nor below as a whole. One dimension under policy is
+		// enough, because the alternative is a cost model argon2 does not supply.
+		"more memory, fewer iterations": {
+			weaker(func(p *crypto.Params) { p.Memory = 256; p.Iterations = 1 }), true},
+		"more iterations, less memory": {
+			weaker(func(p *crypto.Params) { p.Iterations = 4; p.Memory = 64 }), true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stored, err := tc.stored.Hash("secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, err := h.Verify(stored, "secret")
+			if err != nil {
+				t.Fatalf("a hash at other parameters would not verify: %v", err)
+			}
+			if !v.Valid {
+				t.Fatal("it verified as wrong")
+			}
+			if v.NeedsRehash != tc.want {
+				t.Errorf("NeedsRehash = %v, want %v — rehashing a stronger hash weakens it", v.NeedsRehash, tc.want)
+			}
+		})
+	}
+}
+
+func TestHashTokenIsLowercaseHexAndThatIsPartOfTheContract(t *testing.T) {
+	h := crypto.HashToken("a-token")
+	if len(h) != 64 {
+		t.Errorf("a sha256 in hex is 64 characters, got %d: %q", len(h), h)
+	}
+	for _, c := range h {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			t.Fatalf("%q is not lowercase hex: %q", c, h)
+		}
+	}
+	// A repository stores this in a text column and compares against it, so the
+	// encoding changing invalidates every stored row.
+	if crypto.HashToken("a-token") != h {
+		t.Error("HashToken is not deterministic")
+	}
+}
