@@ -1,0 +1,49 @@
+version: "2"
+
+# One block per domain, because each owns its schema and its migration sequence
+# — decisions/0002 for the first, decisions/0005 for why the boundary is worth
+# enforcing at all. A second domain adds a block here rather than joining
+# identity's, and no block's schema directory is ever read by another.
+sql:
+  - engine: postgresql
+    schema: internal/identity/infra/postgres/migrations
+    queries: internal/identity/infra/postgres/queries
+    gen:
+      go:
+        package: identitydb
+        out: internal/identity/infra/postgres/identitydb
+        sql_package: pgx/v5
+
+        # A :many query that matches nothing returns [] rather than nil, so a
+        # response body encodes as [] and never as null. An empty list and a
+        # missing list are two different claims and the wire must keep them
+        # apart.
+        emit_empty_slices: true
+
+        # A nullable timestamptz stays pgtype.Timestamptz rather than becoming
+        # *time.Time. Mapping NULL to the zero time is a rule the adapter states
+        # out loud; a pointer would let a nil travel as a valid-looking absent
+        # value into code that never checked.
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/audit/infra/postgres/migrations
+    queries: internal/audit/infra/postgres/queries
+    gen:
+      go:
+        package: auditdb
+        out: internal/audit/infra/postgres/auditdb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/journal/infra/postgres/migrations
+    queries: internal/journal/infra/postgres/queries
+    gen:
+      go:
+        package: journaldb
+        out: internal/journal/infra/postgres/journaldb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false

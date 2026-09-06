@@ -31,6 +31,73 @@
 // a closed set needs a migration for every new recordable act — and this is the
 // mitigation that makes the cost bearable.
 //
+// # Every event names its subject, and that is what keeps a subscriber pure
+//
+//	account:0198f3c1-...      the thing the act was performed ON
+//	└─────┘ kind              └──────────────┘ id
+//
+// decisions/0013. The form matches [provenance.Actor.String] — `user:acct_1` —
+// so the envelope has one convention for "which thing" rather than two.
+// [Event.SubjectKind] and [Event.SubjectID] split it, so a subscriber groups by
+// kind without parsing and without a lookup.
+//
+// **It is in the envelope rather than the payload because of who needs it.**
+// An audit ledger records who did what to what, and every other field it wants
+// is already here: the action is [Event.Name], the actor and on_behalf_of and
+// the correlation are in the provenance, the workspace is the tenant, and the
+// payload is stored verbatim as detail. The subject was the one field it had to
+// reach into a payload for — which would mean importing every emitter's type
+// (the import checks forbid it), hand-mirroring every struct (silent drift), or
+// guessing a key out of a map (a convention nothing enforces). All three are the
+// same mistake: making a cross-cutting field the payload's problem.
+//
+// **[New] refuses an event without one**, in the same breath as a bad name and
+// an absent provenance. An optional field is a field every emitter forgets, and
+// the forgetting is invisible until a reader needs it and finds years of blanks.
+//
+// The subject is **the noun a reader would search for**, not the row that
+// happens to have been created. `identity.session.started` has subject
+// `account:<id>`, because "what happened to this account" is the question a
+// trail is asked; the session's own id is payload detail. An act with no
+// narrower target takes `system:<name>`, which keeps the rule total instead of
+// carving an exception.
+//
+// It is **not a foreign key and cannot become one.** It crosses schemas by
+// design and nothing enforces that the id names a live row — which is correct
+// for a ledger: an entry about a workspace must survive the workspace.
+//
+// # A unit of work and a decision are two constructors, not a flag
+//
+//	events.New          a UNIT OF WORK. It has an outcome — it ran, was
+//	                    refused, failed. The journal records it
+//	events.NewDecision  an act a PERSON is accountable for. Audit records it
+//	                    AS WELL, because a decision is usually also work
+//
+// decisions/0014. The discriminator is **can it fail**: a unit of work has an
+// outcome, and a decision does not — sj dismissed a finding, or sj did not.
+// There is no "sj dismissed it, failed."
+//
+// **The two are not exclusive**, which is why [Event.Decision] is a field and
+// not a kind. Generating a report is a unit of work — it takes time, omits
+// sections, can fail — *and* a decision somebody answers for, because a client
+// received a document. One event, two subscribers, two predicates.
+//
+// **The emitter declares it and a subscriber cannot derive it.** Audit sees the
+// actor in the provenance, but "this changed stored state" is knowledge only the
+// command has, and inferring it from the event name is a convention nothing
+// enforces. The rule, applied at the call site in order: did a person cause it;
+// did it change state that outlives the request; if it changed nothing, did it
+// disclose something. A per-viewer preference — a saved filter, a theme — is not
+// stored state.
+//
+// **The obvious shortcut is wrong and is worth naming.** "A person is the actor,
+// therefore audit" fails on `runner.run.started` with actor `user:sj`: a person
+// STARTING something is work. The test is the nature of the act.
+//
+// Two constructors rather than a bool parameter so the choice is legible where
+// it is made, cannot be left to a zero value, and so that grepping NewDecision
+// enumerates everything in the tree claiming to be auditable.
+//
 // # Every event carries the provenance of the work that produced it
 //
 // Not a copy of some fields: the [provenance.Provenance] value itself, which

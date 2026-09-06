@@ -48,6 +48,7 @@
 // for, and it is not always the same as what the code literally says:
 //
 //	23505 · 23P01           Conflict        the row is already there
+//	23001                   Conflict        children still reference this row
 //	23503 · 23502           Invalid         the request named something that is not
 //	23514                   Unprocessable   well-formed, and refused by a rule
 //	22P02 · 22001 · 22003   Invalid         the value will not fit the column
@@ -74,6 +75,20 @@
 // wins because inserts referencing a parent vastly outnumber restricted deletes
 // here, and a repository that performs a restricted delete should check for
 // children explicitly rather than reading a status code out of this table.
+//
+// **23001 is the unambiguous half of that pair, and it was missing.** A column
+// declared ON DELETE RESTRICT does not raise 23503 when a parent is deleted; it
+// raises **23001, restrict_violation**, which has exactly one meaning — children
+// still reference this row — and is therefore a Conflict with none of 23503's
+// ambiguity. The paragraph above reasoned carefully about the ambiguous code
+// and never noticed the unambiguous one, so a restricted delete came back
+// Internal: a 500, with the message hidden, for the one refusal a caller can
+// actually act on.
+//
+// Found on 2026-09-06 by internal/identity, the first domain with a foreign
+// key. Nothing before it had a parent to delete, which is why a package with a
+// spec suite over its whole SQLSTATE table still had the hole — **a mapping can
+// only be tested against codes something in the tree provokes.**
 //
 // **42501 is carved out of the 42 class, and the carve-out is not settled.**
 // This file used to claim the whole 42 class was Internal. It is not: the code
@@ -155,6 +170,42 @@
 // migration in its own transaction. A migration that fails leaves everything
 // before it applied and everything after it not — which is recoverable, unlike a
 // half-applied one.
+//
+// # The ledger belongs to whoever owns the set
+//
+// [Migrate] takes a SET, per decisions/0002, and every domain owns one:
+// `internal/<domain>/infra/postgres/migrations`, applied into a PostgreSQL
+// schema of that domain's name, with no foreign key crossing between two of
+// them. That layout is the decomposition property — extracting a domain into
+// its own service is a dump of one schema, not an untangling.
+//
+// The ledger has to follow the set or the property is only half true. With one
+// shared `schema_migrations` in the search path, every domain's history is
+// interleaved in a table that belongs to nobody, and the extracted service
+// leaves its own record behind. [InSchema] puts the ledger where the tables
+// are:
+//
+//	postgres.Migrate(ctx, pool, identitypg.Migrations, postgres.InSchema("identity"))
+//	-> identity.schema_migrations
+//
+// **The schema is created by [Migrate], not by the first migration**, and it has
+// to be: the ledger is written before any migration runs, so on an empty
+// database the CREATE TABLE would fail against a schema that does not exist yet.
+// A migration file may still open with `create schema if not exists`, and
+// that is then a no-op restating where its tables go — which is worth the line,
+// because the file is read on its own far more often than this one is.
+//
+// The schema name is **validated, not quoted**. It is an identifier
+// interpolated into DDL, which cannot be a bind parameter, so it is checked
+// against `[a-z_][a-z0-9_]{0,62}` and refused otherwise. Quoting would accept
+// `"weird-name"` and make it work; refusing keeps the set of legal schema names
+// small enough that nobody has to think about quoting at the call sites. Every
+// caller is a compile-time constant in this repository today, so the rule costs
+// nothing and the check is there for the day one of them is not.
+//
+// Omitting [InSchema] keeps the bare `schema_migrations`, which is what
+// pkg/outbox uses: its tables are shared infrastructure rather than a domain's,
+// so its ledger has no schema to belong to.
 //
 // # Deliberately absent
 //

@@ -52,7 +52,7 @@ func specMustEvent(t *testing.T, m *id.Sequence, name string, payload any) event
 		t.Fatalf(`provenance.ParseOrigin("request") failed — the spec lists "request" as a valid origin name`)
 	}
 	prov := provenance.New(origin, m)
-	ev, err := events.New(m, specEventClock(), name, prov, payload)
+	ev, err := events.New(m, specEventClock(), name, "account:a1", prov, payload)
 	if err != nil {
 		t.Fatalf("events.New(%q): %v — this fixture must be valid for the outbox tests to mean anything", name, err)
 	}

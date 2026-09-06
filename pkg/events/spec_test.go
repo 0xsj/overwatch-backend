@@ -128,7 +128,7 @@ func TestSpecEventIsZeroForTheZeroValueAndNotForAMintedEvent(t *testing.T) {
 	c := specFakeClock{at: time.Unix(1_700_001_001, 0)}
 	p := specNewProvenance(m)
 
-	ev, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "a"})
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "a"})
 	if err != nil {
 		t.Fatalf("setup: New with a valid name, provenance and payload must succeed; got error %v", err)
 	}
@@ -136,7 +136,7 @@ func TestSpecEventIsZeroForTheZeroValueAndNotForAMintedEvent(t *testing.T) {
 		t.Fatalf("a successfully minted Event must not report IsZero() true")
 	}
 
-	refused, err := events.New(m, c, "not-a-name", p, specPayload{Foo: "a"})
+	refused, err := events.New(m, c, "not-a-name", "account:a1", p, specPayload{Foo: "a"})
 	if err == nil {
 		t.Fatalf("setup: New with an invalid name must fail")
 	}
@@ -152,7 +152,7 @@ func TestSpecNewRefusesAnUnnamedOrMisnamedEvent(t *testing.T) {
 	c := specFakeClock{at: time.Unix(1_700_000_701, 0)}
 	p := specNewProvenance(m)
 
-	ev, err := events.New(m, c, "not-a-namespaced-name", p, specPayload{Foo: "a"})
+	ev, err := events.New(m, c, "not-a-namespaced-name", "account:a1", p, specPayload{Foo: "a"})
 
 	t.Run("returns a non-nil error", func(t *testing.T) {
 		if err == nil {
@@ -171,7 +171,7 @@ func TestSpecNewRefusesAProvenanceThatSaysNothingCausedThis(t *testing.T) {
 	c := specFakeClock{at: time.Unix(1_700_000_801, 0)}
 	var zeroProv provenance.Provenance
 
-	ev, err := events.New(m, c, "identity.account.created", zeroProv, specPayload{Foo: "a"})
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", zeroProv, specPayload{Foo: "a"})
 
 	t.Run("returns a non-nil error", func(t *testing.T) {
 		if err == nil {
@@ -190,7 +190,7 @@ func TestSpecNewRefusesAPayloadThatWillNotEncode(t *testing.T) {
 	c := specFakeClock{at: time.Unix(1_700_000_901, 0)}
 	p := specNewProvenance(m)
 
-	ev, err := events.New(m, c, "identity.account.created", p, make(chan int))
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, make(chan int))
 
 	t.Run("returns a non-nil error", func(t *testing.T) {
 		if err == nil {
@@ -213,7 +213,7 @@ func TestSpecNewAcceptsANilPayload(t *testing.T) {
 	c := specFakeClock{at: time.Unix(1_700_001_101, 0)}
 	p := specNewProvenance(m)
 
-	ev, err := events.New(m, c, "identity.account.created", p, nil)
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, nil)
 	if err != nil {
 		t.Fatalf("New with a nil payload is expected (inferred) to succeed because nil encodes to JSON null without error; got error %v", err)
 	}
@@ -230,7 +230,7 @@ func TestSpecNewStampsOccurredAtFromTheClock(t *testing.T) {
 	c := specFakeClock{at: fixed}
 	p := specNewProvenance(m)
 
-	ev, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "a"})
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "a"})
 	if err != nil {
 		t.Fatalf("setup: New must succeed; got error %v", err)
 	}
@@ -244,7 +244,7 @@ func TestSpecNewMintsANonZeroDeduplicationKey(t *testing.T) {
 	c := specFakeClock{at: time.Unix(1_700_000_501, 0)}
 	p := specNewProvenance(m)
 
-	ev, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "a"})
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "a"})
 	if err != nil {
 		t.Fatalf("setup: New must succeed; got error %v", err)
 	}
@@ -258,11 +258,11 @@ func TestSpecTwoMintedEventsHaveDistinctDeduplicationKeys(t *testing.T) {
 	c := specFakeClock{at: time.Unix(1_700_000_401, 0)}
 	p := specNewProvenance(m)
 
-	e1, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "a"})
+	e1, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "a"})
 	if err != nil {
 		t.Fatalf("setup: first New must succeed; got error %v", err)
 	}
-	e2, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "a"})
+	e2, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "a"})
 	if err != nil {
 		t.Fatalf("setup: second New must succeed; got error %v", err)
 	}
@@ -284,7 +284,7 @@ func TestSpecEventCarriesTheProvenanceValueItselfNotACopyOfFields(t *testing.T) 
 	}
 	p := specNewProvenance(m).WithActor(actor)
 
-	ev, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "x"})
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "x"})
 	if err != nil {
 		t.Fatalf("setup: New with a valid name, non-zero provenance and encodable payload must succeed; got error %v", err)
 	}
@@ -323,7 +323,7 @@ func TestSpecIntoRoundTripsThePayload(t *testing.T) {
 	p := specNewProvenance(m)
 	want := specPayload{Foo: "bar", Count: 7}
 
-	ev, err := events.New(m, c, "identity.account.created", p, want)
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, want)
 	if err != nil {
 		t.Fatalf("setup: New with a valid name, provenance and encodable payload must succeed; got error %v", err)
 	}
@@ -343,7 +343,7 @@ func TestSpecIntoIsIdempotentAcrossCalls(t *testing.T) {
 	p := specNewProvenance(m)
 	want := specPayload{Foo: "baz", Count: 3}
 
-	ev, err := events.New(m, c, "identity.account.created", p, want)
+	ev, err := events.New(m, c, "identity.account.created", "account:a1", p, want)
 	if err != nil {
 		t.Fatalf("setup: New must succeed; got error %v", err)
 	}
@@ -420,7 +420,7 @@ func TestSpecNewIsTotalAcrossEveryProvenanceOrigin(t *testing.T) {
 			c := specFakeClock{at: time.Unix(int64(1_700_002_001+i), 0)}
 			p := provenance.New(origin, m)
 
-			if _, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "a"}); err != nil {
+			if _, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "a"}); err != nil {
 				t.Fatalf("New must accept a provenance built from every documented Origin; origin %s produced error %v", labels[i], err)
 			}
 		})
@@ -450,7 +450,7 @@ func TestSpecNewIsTotalAcrossEveryActorKind(t *testing.T) {
 			c := specFakeClock{at: time.Unix(int64(1_700_003_001+i), 0)}
 			p := provenance.New(provenance.OriginRequest, m).WithActor(actor)
 
-			if _, err := events.New(m, c, "identity.account.created", p, specPayload{Foo: "a"}); err != nil {
+			if _, err := events.New(m, c, "identity.account.created", "account:a1", p, specPayload{Foo: "a"}); err != nil {
 				t.Fatalf("New must accept a provenance carrying %s; got error %v", tc.claim, err)
 			}
 		})

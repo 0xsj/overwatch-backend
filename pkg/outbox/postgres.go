@@ -37,6 +37,29 @@ create table outbox (
 create index outbox_due on outbox (due_at, written_at) where buried_at is null;
 create index outbox_buried on outbox (buried_at) where buried_at is not null;
 `,
+}, {
+	Name: "0002_outbox_subject.sql",
+	SQL: `
+-- decisions/0013 put the subject in the envelope, so the outbox has to carry
+-- it. A second file rather than an edit to 0001: the migrator refuses an
+-- applied migration whose checksum moved, and that guard is worth more than
+-- the tidiness of one file for a table nothing has shipped yet.
+--
+-- Backfilled to '' rather than left null, then made NOT NULL. There are no rows
+-- outside a test database, so the backfill is a formality — and writing it as
+-- though there were is how the pattern is right the first time it is not.
+alter table outbox add column if not exists subject text not null default '';
+alter table outbox alter column subject drop default;
+`,
+}, {
+	Name: "0003_outbox_decision.sql",
+	SQL: `
+-- decisions/0014: an event says whether a person is accountable for it, because
+-- a subscriber cannot derive that. Two subscribers read the same row and apply
+-- different predicates to this column.
+alter table outbox add column if not exists decision boolean not null default false;
+alter table outbox alter column decision drop default;
+`,
 }}
 
 // Postgres is the adapter that runs. It takes the pool rather than a DBTX so
@@ -63,10 +86,10 @@ func (p *Postgres) Add(ctx context.Context, evs ...events.Event) error {
 		// id writes one row, which is what makes the event id the dedup key all
 		// the way down rather than only at the handler.
 		_, err = p.db.DB(ctx).Exec(ctx, `
-			insert into outbox (id, name, occurred_at, provenance, payload)
-			values ($1, $2, $3, $4, $5)
+			insert into outbox (id, name, subject, decision, occurred_at, provenance, payload)
+			values ($1, $2, $3, $4, $5, $6, $7)
 			on conflict (id) do nothing`,
-			e.ID, e.Name, e.OccurredAt, prov, []byte(e.Payload))
+			e.ID, e.Name, e.Subject, e.Decision, e.OccurredAt, prov, []byte(e.Payload))
 		if err != nil {
 			return postgres.Translate(ctx, err, "outbox: add "+e.Name)
 		}
@@ -88,7 +111,7 @@ func (p *Postgres) Claim(ctx context.Context, n int, now time.Time) ([]Pending, 
 			for update skip locked
 			limit $3
 		)
-		returning id, name, occurred_at, provenance, payload, attempts`,
+		returning id, name, subject, decision, occurred_at, provenance, payload, attempts`,
 		now, now.Add(claimLease), n)
 	if err != nil {
 		return nil, postgres.Translate(ctx, err, "outbox: claim")
@@ -103,7 +126,7 @@ func (p *Postgres) Claim(ctx context.Context, n int, now time.Time) ([]Pending, 
 			pay  []byte
 			att  int
 		)
-		if err := rows.Scan(&e.ID, &e.Name, &e.OccurredAt, &prov, &pay, &att); err != nil {
+		if err := rows.Scan(&e.ID, &e.Name, &e.Subject, &e.Decision, &e.OccurredAt, &prov, &pay, &att); err != nil {
 			return nil, postgres.Translate(ctx, err, "outbox: scan a claim")
 		}
 		var pv provenance.Provenance

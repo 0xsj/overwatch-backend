@@ -52,6 +52,8 @@ func kindOf(ctx context.Context, code string) errors.Kind {
 		return errors.Conflict
 	case "23514": // check_violation — well-formed, refused by a rule
 		return errors.Unprocessable
+	case "23001": // restrict_violation — the unambiguous half of 23503
+		return errors.Conflict
 	case "23503", "23502": // foreign_key_violation, not_null_violation
 		return errors.Invalid
 	case "22P02", "22001", "22003", "22007", "22008":

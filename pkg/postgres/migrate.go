@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io/fs"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -61,7 +62,55 @@ func FromFS(fsys fs.FS, dir string) ([]Migration, error) {
 // schema that matches no recorded state. Per-migration, a failure leaves
 // everything before it applied and everything after it not, which is exactly
 // what the ledger says and is recoverable by fixing the file.
-func Migrate(ctx context.Context, p *Pool, ms []Migration) (int, error) {
+// defaultLedger is where an applied migration is recorded when a caller names
+// no schema. pkg/outbox uses it: its tables are shared infrastructure rather
+// than a domain's, so its ledger has no schema to belong to.
+const defaultLedger = "schema_migrations"
+
+// schemaName is what InSchema will accept. A schema is an identifier
+// interpolated into DDL, where a bind parameter is not accepted, so it is
+// checked rather than quoted. Quoting would make `"weird-name"` work and put
+// the quoting question at every call site instead.
+var schemaName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
+
+type MigrateOption func(*migrateConfig)
+
+type migrateConfig struct {
+	schema string
+	ledger string
+}
+
+// InSchema puts the tables and their ledger in one schema, so a domain's
+// migration history leaves with the domain. The schema is created by [Migrate]
+// rather than by the first migration, because the ledger is written before any
+// migration runs.
+func InSchema(schema string) MigrateOption {
+	return func(c *migrateConfig) {
+		c.schema = schema
+		c.ledger = schema + "." + defaultLedger
+	}
+}
+
+func newMigrateConfig(opts []MigrateOption) (migrateConfig, error) {
+	c := migrateConfig{ledger: defaultLedger}
+	for _, o := range opts {
+		o(&c)
+	}
+	if c.schema != "" && !schemaName.MatchString(c.schema) {
+		return c, errors.Newf(errors.Invalid,
+			"postgres: %q is not a usable schema name; it is interpolated into DDL, "+
+				"where a bind parameter is not accepted, so it must match [a-z_][a-z0-9_]{0,62}",
+			c.schema)
+	}
+	return c, nil
+}
+
+func Migrate(ctx context.Context, p *Pool, ms []Migration, opts ...MigrateOption) (int, error) {
+	cfg, err := newMigrateConfig(opts)
+	if err != nil {
+		return 0, err
+	}
+
 	conn, err := p.pool.Acquire(ctx)
 	if err != nil {
 		return 0, Translate(ctx, err, "postgres: acquire for migrate")
@@ -75,39 +124,45 @@ func Migrate(ctx context.Context, p *Pool, ms []Migration) (int, error) {
 		_, _ = conn.Exec(context.WithoutCancel(ctx), `select pg_advisory_unlock($1)`, advisoryLock)
 	}()
 
+	if cfg.schema != "" {
+		if _, err := conn.Exec(ctx, `create schema if not exists `+cfg.schema); err != nil {
+			return 0, Translate(ctx, err, "postgres: create schema "+cfg.schema)
+		}
+	}
+
 	if _, err := conn.Exec(ctx, `
-		create table if not exists schema_migrations (
+		create table if not exists `+cfg.ledger+` (
 			name       text        primary key,
 			checksum   text        not null default '',
 			applied_at timestamptz not null default now()
 		)`); err != nil {
-		return 0, Translate(ctx, err, "postgres: create schema_migrations")
+		return 0, Translate(ctx, err, "postgres: create "+cfg.ledger)
 	}
 	// A ledger written by an earlier version of this runner has no checksum
 	// column. Adding it here rather than shipping a migration for the migration
 	// table keeps the runner able to bootstrap itself from nothing.
 	if _, err := conn.Exec(ctx,
-		`alter table schema_migrations add column if not exists checksum text not null default ''`,
+		`alter table `+cfg.ledger+` add column if not exists checksum text not null default ''`,
 	); err != nil {
-		return 0, Translate(ctx, err, "postgres: add schema_migrations.checksum")
+		return 0, Translate(ctx, err, "postgres: add "+cfg.ledger+".checksum")
 	}
 
-	rows, err := conn.Query(ctx, `select name, checksum from schema_migrations`)
+	rows, err := conn.Query(ctx, `select name, checksum from `+cfg.ledger)
 	if err != nil {
-		return 0, Translate(ctx, err, "postgres: read schema_migrations")
+		return 0, Translate(ctx, err, "postgres: read "+cfg.ledger)
 	}
 	applied := map[string]string{}
 	for rows.Next() {
 		var n, sum string
 		if err := rows.Scan(&n, &sum); err != nil {
 			rows.Close()
-			return 0, Translate(ctx, err, "postgres: scan schema_migrations")
+			return 0, Translate(ctx, err, "postgres: scan "+cfg.ledger)
 		}
 		applied[n] = sum
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return 0, Translate(ctx, err, "postgres: read schema_migrations")
+		return 0, Translate(ctx, err, "postgres: read "+cfg.ledger)
 	}
 
 	// Check every recorded migration in this set BEFORE applying any of them. A
@@ -150,7 +205,7 @@ func Migrate(ctx context.Context, p *Pool, ms []Migration) (int, error) {
 			return n, Translate(ctx, err, "postgres: apply "+m.Name)
 		}
 		if _, err := tx.Exec(ctx,
-			`insert into schema_migrations (name, checksum) values ($1, $2)`,
+			`insert into `+cfg.ledger+` (name, checksum) values ($1, $2)`,
 			m.Name, m.Checksum()); err != nil {
 			_ = tx.Rollback(context.WithoutCancel(ctx))
 			return n, Translate(ctx, err, "postgres: record "+m.Name)

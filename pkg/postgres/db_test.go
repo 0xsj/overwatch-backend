@@ -554,3 +554,85 @@ func wantPanic(t *testing.T, contains string, call func()) {
 	}()
 	call()
 }
+
+// ── the ledger belongs to whoever owns the set ─────────────────────────
+//
+// The property under test is not "the option is honoured". It is that two
+// domains migrating into the same database keep SEPARATE histories, which is
+// what makes extracting one of them a dump of one schema rather than an
+// untangling. A shared ledger passes every other test in this file.
+func TestTwoSetsInTwoSchemasKeepSeparateLedgers(t *testing.T) {
+	p := open(t)
+	ctx := context.Background()
+	one := fmt.Sprintf("d_one_%d", time.Now().UnixNano())
+	two := fmt.Sprintf("d_two_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = p.DB(c).Exec(c, "drop schema if exists "+one+" cascade")
+		_, _ = p.DB(c).Exec(c, "drop schema if exists "+two+" cascade")
+	})
+
+	// Both sets open with 0001_, which is the collision a shared ledger turns
+	// into a silently skipped migration.
+	setOne := []postgres.Migration{{Name: "0001_init.sql", SQL: "create table " + one + ".a (id int primary key)"}}
+	setTwo := []postgres.Migration{{Name: "0001_init.sql", SQL: "create table " + two + ".a (id int primary key)"}}
+
+	if n, err := postgres.Migrate(ctx, p, setOne, postgres.InSchema(one)); err != nil || n != 1 {
+		t.Fatalf("first domain applied %d: %v", n, err)
+	}
+	if n, err := postgres.Migrate(ctx, p, setTwo, postgres.InSchema(two)); err != nil || n != 1 {
+		t.Fatalf("second domain applied %d, want 1 — a shared ledger would report 0: %v", n, err)
+	}
+
+	for _, schema := range []string{one, two} {
+		var count int
+		if err := p.DB(ctx).QueryRow(ctx,
+			"select count(*) from "+schema+".schema_migrations").Scan(&count); err != nil {
+			t.Fatalf("%s ledger: %v", schema, err)
+		}
+		if count != 1 {
+			t.Errorf("%s.schema_migrations has %d rows, want 1", schema, count)
+		}
+	}
+}
+
+// The schema cannot come from the migration file: the ledger is written first,
+// so on an empty database the CREATE TABLE would have nowhere to go.
+func TestInSchemaCreatesTheSchemaBeforeTheLedger(t *testing.T) {
+	p := open(t)
+	ctx := context.Background()
+	name := fmt.Sprintf("d_fresh_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		c := context.Background()
+		_, _ = p.DB(c).Exec(c, "drop schema if exists "+name+" cascade")
+	})
+
+	// No `create schema` anywhere in the set.
+	set := []postgres.Migration{{Name: "0001_init.sql", SQL: "create table " + name + ".a (id int primary key)"}}
+	if n, err := postgres.Migrate(ctx, p, set, postgres.InSchema(name)); err != nil || n != 1 {
+		t.Fatalf("applied %d: %v", n, err)
+	}
+}
+
+// A schema name is interpolated into DDL, where a bind parameter is not
+// accepted. The refusal is the whole defence, so it is asserted rather than
+// assumed from the fact that every caller today is a constant.
+func TestAnUnusableSchemaNameIsRefusedRatherThanQuoted(t *testing.T) {
+	p := open(t)
+	ctx := context.Background()
+	for _, name := range []string{
+		"public; drop table x",
+		"Identity",
+		"1identity",
+		"identity-db",
+		"",
+	} {
+		if name == "" {
+			continue // the zero value means "no schema", not "a bad one"
+		}
+		_, err := postgres.Migrate(ctx, p, nil, postgres.InSchema(name))
+		if !errors.IsKind(err, errors.Invalid) {
+			t.Errorf("InSchema(%q) gave %v, want Invalid", name, err)
+		}
+	}
+}

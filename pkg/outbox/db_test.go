@@ -172,7 +172,7 @@ func TestProvenanceSurvivesTheQueueIntact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := events.New(f.ids, f.clk, "identity.account.created", child, map[string]string{"email": "a@b.c"})
+	e, err := events.New(f.ids, f.clk, "identity.account.created", "account:a1", child, map[string]string{"email": "a@b.c"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,5 +259,34 @@ func TestDepthReportsTheAgeOfTheOldestThingOwed(t *testing.T) {
 	}
 	if l.Oldest < 89*time.Second || l.Oldest > 91*time.Second {
 		t.Errorf("oldest = %v, want ~90s from the OLDER of two rows; taking the newest reports a queue that is never behind", l.Oldest)
+	}
+}
+
+// The subject has to survive the store, or decisions/0013 buys nothing: a
+// subscriber reads it from a row a dispatcher rebuilt, not from the value the
+// emitter held.
+func TestTheSubjectSurvivesTheRoundTripThroughTheTable(t *testing.T) {
+	_, store := open(t)
+	ctx := context.Background()
+	f := newFixture(t)
+
+	e, err := events.New(f.ids, f.clk, "identity.session.started", "account:0198f3c1", f.prov, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.NewPublisher(store).Publish(ctx, e); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := store.Claim(ctx, 10, time.Now())
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claimed %d: %v", len(claimed), err)
+	}
+	got := claimed[0].Event
+	if got.Subject != "account:0198f3c1" {
+		t.Errorf("subject came back %q", got.Subject)
+	}
+	if got.SubjectKind() != "account" || got.SubjectID() != "0198f3c1" {
+		t.Errorf("split %q into %q / %q", got.Subject, got.SubjectKind(), got.SubjectID())
 	}
 }

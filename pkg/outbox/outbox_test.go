@@ -38,7 +38,7 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) event(t *testing.T, name string) events.Event {
 	t.Helper()
-	e, err := events.New(f.ids, f.clk, name, f.prov, nil)
+	e, err := events.New(f.ids, f.clk, name, "account:a1", f.prov, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

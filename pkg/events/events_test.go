@@ -53,13 +53,13 @@ func TestNewRefusesWhatASubscriberCouldNotActOn(t *testing.T) {
 	m, c, p := fixtures(t)
 	var zero provenance.Provenance
 
-	if _, err := events.New(m, c, "nonamespace", p, nil); !errors.IsKind(err, errors.Internal) {
+	if _, err := events.New(m, c, "nonamespace", "account:a1", p, nil); !errors.IsKind(err, errors.Internal) {
 		t.Errorf("a name with one segment was accepted: %v", err)
 	}
-	if _, err := events.New(m, c, "identity.account.created", zero, nil); !errors.IsKind(err, errors.Internal) {
+	if _, err := events.New(m, c, "identity.account.created", "account:a1", zero, nil); !errors.IsKind(err, errors.Internal) {
 		t.Errorf("an event with no provenance was accepted: %v — nothing can reconstruct what caused it later", err)
 	}
-	if _, err := events.New(m, c, "identity.account.created", p, make(chan int)); err == nil {
+	if _, err := events.New(m, c, "identity.account.created", "account:a1", p, make(chan int)); err == nil {
 		t.Error("a payload that cannot encode was accepted")
 	}
 }
@@ -72,7 +72,7 @@ func TestAnEventCarriesTheWholeChainAndNotACopyOfSomeFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e, err := events.New(m, c, "identity.account.created", child, map[string]string{"email": "a@b.c"})
+	e, err := events.New(m, c, "identity.account.created", "account:a1", child, map[string]string{"email": "a@b.c"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestAnEventCarriesTheWholeChainAndNotACopyOfSomeFields(t *testing.T) {
 
 func TestTheNamespaceIsTheFirstSegment(t *testing.T) {
 	m, c, p := fixtures(t)
-	e, _ := events.New(m, c, "identity.account.created", p, nil)
+	e, _ := events.New(m, c, "identity.account.created", "account:a1", p, nil)
 	if e.Namespace() != "identity" {
 		t.Errorf("namespace = %q; it is the facet a client groups by", e.Namespace())
 	}
@@ -105,7 +105,7 @@ func TestAPayloadRoundTrips(t *testing.T) {
 		Org   string `json:"org"`
 	}
 	want := account{Email: "sj@example.com", Org: "org_1"}
-	e, err := events.New(m, c, "identity.account.created", p, want)
+	e, err := events.New(m, c, "identity.account.created", "account:a1", p, want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestAPayloadRoundTrips(t *testing.T) {
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
-	empty, _ := events.New(m, c, "identity.account.created", p, nil)
+	empty, _ := events.New(m, c, "identity.account.created", "account:a1", p, nil)
 	if err := empty.Into(&got); !errors.IsKind(err, errors.Internal) {
 		t.Errorf("decoding an absent payload gave %v; the publisher is in this repository, so it is ours", err)
 	}
@@ -130,8 +130,8 @@ func TestNilDependenciesPanicWhereTheyAreWired(t *testing.T) {
 		want string
 		call func()
 	}{
-		{"a nil Minter", "nil Minter", func() { events.New(nil, c, "a.b", p, nil) }},
-		{"a nil Clock", "nil Clock", func() { events.New(m, nil, "a.b", p, nil) }},
+		{"a nil Minter", "nil Minter", func() { events.New(nil, c, "a.b", "account:a1", p, nil) }},
+		{"a nil Clock", "nil Clock", func() { events.New(m, nil, "a.b", "account:a1", p, nil) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) { wantPanic(t, tc.want, tc.call) })
 	}
@@ -155,4 +155,88 @@ func wantPanic(t *testing.T, contains string, call func()) {
 		}
 	}()
 	call()
+}
+
+func TestASubjectIsRefusedUnlessItNamesAThing(t *testing.T) {
+	m, c, p := fixtures(t)
+	for _, tc := range []struct {
+		name    string
+		subject string
+		want    bool
+	}{
+		{"kind and id", "account:0198f3c1", true},
+		{"an underscore in the kind", "api_key:k1", true},
+		{"digits in the kind", "s3:bucket", true},
+		{"a uuid id", "workspace:0198f3c1-1c9e-7a3f-8000-8f2b1c4d5e6f", true},
+		{"a colon inside the id", "target:host:example.com", true},
+		{"empty", "", false},
+		{"no colon", "account", false},
+		{"no kind", ":0198f3c1", false},
+		{"no id", "account:", false},
+		{"an uppercase kind", "Account:a1", false},
+		{"a hyphen in the kind", "api-key:k1", false},
+		{"a space in the id", "account:a 1", false},
+		{"too long", "account:" + strings.Repeat("x", events.MaxSubjectLength), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := events.ValidSubject(tc.subject); got != tc.want {
+				t.Errorf("ValidSubject(%q) = %v, want %v", tc.subject, got, tc.want)
+			}
+			_, err := events.New(m, c, "identity.account.created", tc.subject, p, nil)
+			if minted := err == nil; minted != tc.want {
+				t.Errorf("New with subject %q: err = %v, want minted = %v", tc.subject, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestSubjectKindAndIDSplitWithoutTheCallerParsing(t *testing.T) {
+	m, c, p := fixtures(t)
+	e, err := events.New(m, c, "identity.session.started", "account:a1", p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.SubjectKind() != "account" || e.SubjectID() != "a1" {
+		t.Errorf("split %q into %q / %q", e.Subject, e.SubjectKind(), e.SubjectID())
+	}
+	// Only the FIRST colon separates. An id that contains one is not truncated,
+	// which is what lets a subject name a host or a URL.
+	deep, err := events.New(m, c, "target.host.seen", "target:host:example.com", p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.SubjectKind() != "target" || deep.SubjectID() != "host:example.com" {
+		t.Errorf("split %q into %q / %q", deep.Subject, deep.SubjectKind(), deep.SubjectID())
+	}
+}
+
+func TestWorkAndADecisionAreTheSameEnvelopeWithADifferentClaim(t *testing.T) {
+	m, c, p := fixtures(t)
+
+	work, err := events.New(m, c, "runner.run.started", "run:r119", p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.Decision {
+		t.Error("events.New minted a decision")
+	}
+
+	// A person starting a run is WORK, not audit — the shortcut this guards
+	// against is "the actor is a person, therefore audit".
+	decision, err := events.NewDecision(m, c, "finding.judgement.set", "finding:f7", p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Decision {
+		t.Error("events.NewDecision did not mint a decision")
+	}
+
+	// Everything else about the envelope is identical: a decision is refused for
+	// the same reasons work is, and gains no exemption.
+	if _, err := events.NewDecision(m, c, "not-a-name", "finding:f7", p, nil); err == nil {
+		t.Error("NewDecision accepted a name New would refuse")
+	}
+	if _, err := events.NewDecision(m, c, "finding.judgement.set", "nosubject", p, nil); err == nil {
+		t.Error("NewDecision accepted a subject New would refuse")
+	}
 }
