@@ -127,3 +127,61 @@ func TestUnmarshalRefusesARecordThatViolatesAStatedInvariant(t *testing.T) {
 		})
 	}
 }
+
+// Found by reading, not by a test: UnmarshalJSON accepted `"origin":"unknown"`
+// because ParseOrigin accepts every name String produces, then MarshalJSON
+// omitted the key because the value was OriginUnknown. Absent and explicitly
+// unknown collapsed, and the value vanished mid-round-trip.
+func TestUnmarshalRefusesAnOriginNewCouldNotHaveProduced(t *testing.T) {
+	good := provenance.New(provenance.OriginRequest, minter(t))
+	raw, err := json.Marshal(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ name, to string }{
+		{"the zero origin, spelled out", `"origin":"unknown"`},
+		{"a name no Origin renders", `"origin":"whatever"`},
+		{"absent entirely", ``},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := strings.Replace(string(raw), `"origin":"request"`, tc.to, 1)
+			mutated = strings.Replace(mutated, `,,`, `,`, 1)
+			var back provenance.Provenance
+			if err := json.Unmarshal([]byte(mutated), &back); err == nil {
+				out, _ := json.Marshal(back)
+				t.Fatalf("accepted %s and round-tripped it to %s: New refuses this origin, so no record this package wrote can carry it, and storing one collapses absent with explicitly unknown", tc.name, out)
+			} else if !errors.IsKind(err, errors.Internal) {
+				t.Errorf("reported %v; these are our own bytes", errors.KindOf(err))
+			}
+		})
+	}
+}
+
+// The zero receiver must panic whatever else is wrong with the call. It used to
+// depend on the argument: DeriveFrom(m, id.Nil) returned an error while
+// DeriveFrom(m, real) panicked, so the contract varied by the thing it was not
+// about.
+func TestAZeroReceiverPanicsRegardlessOfTheArguments(t *testing.T) {
+	var zero provenance.Provenance
+	m := minter(t)
+	for _, tc := range []struct {
+		name string
+		call func()
+	}{
+		{"DeriveFrom with a zero cause", func() { zero.DeriveFrom(m, id.Nil) }},
+		{"DeriveFrom with a real cause", func() { zero.DeriveFrom(m, m.NewID()) }},
+		{"Derive", func() { zero.Derive(m) }},
+		{"Retry", func() { zero.Retry() }},
+		{"Adopt", func() { zero.Adopt(provenance.Adopted{}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Error("returned instead of panicking: a zero Provenance is a value no constructor produces, so reaching one is a programming error and must not vary with the arguments")
+				}
+			}()
+			tc.call()
+		})
+	}
+}

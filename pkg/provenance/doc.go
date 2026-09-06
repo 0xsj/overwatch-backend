@@ -212,9 +212,19 @@
 //
 // [Provenance.UnmarshalJSON] refuses what [New] and the derive family could
 // never have produced: a request id that is not an identifier, a depth past
-// [MaxDepth], an attempt of 0, an origin naming no origin, a tenant outside the
-// charset, a malformed traceparent. These are our own bytes, so a violation is
-// corruption rather than input, and it reports errors.Internal.
+// [MaxDepth], an attempt of 0, a tenant outside the charset, a malformed
+// traceparent, and an origin that is absent, unrecognised, or [OriginUnknown].
+// These are our own bytes, so a violation is corruption rather than input, and
+// it reports errors.Internal.
+//
+// The origin case is stricter than it first looks, and deliberately. `unknown`
+// is a name [Origin.String] produces and [ParseOrigin] therefore accepts — but
+// [New] refuses it, so no record this package wrote can carry it. Reading one
+// back would accept a value, store it, and then omit the key on the way out,
+// collapsing *absent* and *explicitly unknown* into one state and losing the
+// value silently. The reader checks membership in [Origins], the same predicate
+// the constructor checks, because a rule enforced at one end of a round trip and
+// not the other is not enforced.
 //
 // Accepting them would be worse than failing. A record whose depth exceeds the
 // bound has escaped the cycle control; one whose attempt is 0 contradicts a rule

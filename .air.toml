@@ -3,7 +3,10 @@ tmp_dir = "tmp"
 
 [build]
   cmd = "go build -o ./tmp/server ./cmd/server"
-  bin = "./tmp/server"
+  # Load .env at RUN time, not at air's start time. air inherits its environment
+  # once, so a bare `air` sees whatever the shell held — including a value the
+  # root .env changed hours ago. Sourcing here means every reload re-reads it.
+  full_bin = "sh -c 'set -a; [ -f .env ] && . ./.env; set +a; exec ./tmp/server'"
 
   include_ext  = ["go"]
   exclude_dir  = ["tmp", "scripts", "testdata"]

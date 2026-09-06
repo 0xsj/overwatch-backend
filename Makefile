@@ -29,3 +29,6 @@ check: ## vet, then test under the race detector
 
 tidy:  ## go mod tidy
 	@go mod tidy
+
+test-db: ## the tests that need a real database — they SKIP without OVERWATCH_TEST_DSN
+	@go test ./... -count=1 -timeout 120s

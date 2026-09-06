@@ -55,6 +55,13 @@ func (p Provenance) Derive(m Minter) (Provenance, error) {
 }
 
 func (p Provenance) DeriveFrom(m Minter, cause id.ID) (Provenance, error) {
+	// The receiver is checked before the argument. Both orders "work"; only this
+	// one is consistent — a zero receiver panics whatever else is wrong with the
+	// call, rather than reporting a recoverable error for one argument and
+	// panicking for another.
+	if p.IsZero() {
+		panic("provenance: derive from the zero Provenance")
+	}
 	if cause.IsZero() {
 		return Provenance{}, errors.New(errors.Internal,
 			"provenance: DeriveFrom with the zero cause")

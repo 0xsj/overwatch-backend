@@ -73,13 +73,12 @@ func (p *Provenance) UnmarshalJSON(b []byte) error {
 		}
 		out.causation = v
 	}
-	if w.Origin != "" {
-		o, ok := ParseOrigin(w.Origin)
-		if !ok {
-			return errors.Newf(errors.Internal, "provenance: origin %q names no origin", w.Origin)
-		}
-		out.origin = o
+	o, ok := ParseOrigin(w.Origin)
+	if !ok || !o.known() {
+		return errors.Newf(errors.Internal,
+			"provenance: origin %q is not one of Origins", w.Origin)
 	}
+	out.origin = o
 	if w.Depth > MaxDepth {
 		return errors.Newf(errors.Internal, "provenance: depth %d is past MaxDepth", w.Depth)
 	}
