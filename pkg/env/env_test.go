@@ -7,6 +7,7 @@
 package env_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/0xsj/overwatch-backend/pkg/env"
@@ -21,13 +22,12 @@ import (
 // ---------------------------------------------------------------------
 
 func TestEnum_PanicsWhenTheCallersOwnFallbackIsNotAllowed(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Errorf("Enum must panic when its fallback is outside the allowed set — no environment can cause that and no operator can fix it, so recording it as a problem would blame them for a programming mistake, and returning it would let the fallback escape the closed set the getter exists to enforce")
-		}
-	}()
-	r := newReader(t, map[string]string{})
-	_ = r.Enum("LOG_LEVEL", "trace", "debug", "info", "warn", "error")
+	// The message names the fallback, so asserting on it distinguishes this
+	// guard from any other panic the getter might grow.
+	wantPanic(t, "trace", func() {
+		r := newReader(t, map[string]string{})
+		_ = r.Enum("LOG_LEVEL", "trace", "debug", "info", "warn", "error")
+	})
 }
 
 func TestEnum_DoesNotPanicWhenTheFallbackIsAllowed(t *testing.T) {
@@ -85,4 +85,24 @@ func TestVarStringRendersTheManifestLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// wantPanic asserts WHICH panic, not merely that one happened. `recover() != nil`
+// cannot distinguish a deliberate guard from a nil dereference two statements
+// later, so it passes when the guard is deleted — measured on custody 0010
+// (M27/M28) and 0014.
+func wantPanic(t *testing.T, contains string, call func()) {
+	t.Helper()
+	defer func() {
+		v := recover()
+		if v == nil {
+			t.Errorf("did not panic; wanted the guard mentioning %q", contains)
+			return
+		}
+		s, ok := v.(string)
+		if !ok || !strings.Contains(s, contains) {
+			t.Errorf("panicked with %v (%T); wanted the guard mentioning %q", v, v, contains)
+		}
+	}()
+	call()
 }

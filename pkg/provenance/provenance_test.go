@@ -84,9 +84,16 @@ func TestValidIDRejectsEveryByteOutsideTheClosedSet(t *testing.T) {
 			t.Errorf("byte %q is outside the documented set and was accepted; the charset is the log-injection surface and it is closed in both directions", b)
 		}
 	}
-	long := strings.Repeat("a", provenance.MaxIDLength+1)
-	if _, err := provenance.Service(long); err == nil {
-		t.Errorf("an id of %d characters was accepted; MaxIDLength is %d", len(long), provenance.MaxIDLength)
+	// AMENDED 2026-09-06, custody 0010: written against the constant, so it
+	// moved with it. Literals, both sides, and one line that notices a change.
+	if _, err := provenance.Service(strings.Repeat("a", 128)); err != nil {
+		t.Errorf("128 characters is the documented limit and must be accepted: %v", err)
+	}
+	if _, err := provenance.Service(strings.Repeat("a", 129)); err == nil {
+		t.Error("129 characters is one past the documented limit and must be refused")
+	}
+	if provenance.MaxIDLength != 128 {
+		t.Errorf("MaxIDLength is %d; the cases above are written against 128 deliberately", provenance.MaxIDLength)
 	}
 }
 
@@ -176,12 +183,27 @@ func TestAZeroReceiverPanicsRegardlessOfTheArguments(t *testing.T) {
 		{"Adopt", func() { zero.Adopt(provenance.Adopted{}) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Error("returned instead of panicking: a zero Provenance is a value no constructor produces, so reaching one is a programming error and must not vary with the arguments")
-				}
-			}()
-			tc.call()
+			wantPanic(t, "zero Provenance", tc.call)
 		})
 	}
+}
+
+// wantPanic asserts not merely that something panicked, but that it panicked
+// with the guard being tested. `recover() != nil` cannot tell a deliberate guard
+// from a nil dereference two statements later, so it passes when the guard is
+// deleted — measured on custody 0010 (M27/M28) and 0014.
+func wantPanic(t *testing.T, contains string, call func()) {
+	t.Helper()
+	defer func() {
+		v := recover()
+		if v == nil {
+			t.Errorf("did not panic; wanted the guard mentioning %q", contains)
+			return
+		}
+		s, ok := v.(string)
+		if !ok || !strings.Contains(s, contains) {
+			t.Errorf("panicked with %v (%T); wanted the guard mentioning %q — a deref two statements later passes a bare recover() check", v, v, contains)
+		}
+	}()
+	call()
 }

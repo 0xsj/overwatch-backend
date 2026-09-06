@@ -73,12 +73,9 @@ func TestConsoleQuotesWhatWouldOtherwiseBeAmbiguous(t *testing.T) {
 
 func TestNewPanicsOnANilClockAndDefaultsTheOutput(t *testing.T) {
 	t.Run("a nil Clock panics at construction", func(t *testing.T) {
-		defer func() {
-			if recover() == nil {
-				t.Errorf("New must panic on a nil Clock — a logger with no clock cannot stamp a line, no environment can cause it, and failing at construction beats failing on the first record")
-			}
-		}()
-		_ = logger.New(logger.Config{Output: &bytes.Buffer{}})
+		wantPanic(t, "nil Clock", func() {
+			_ = logger.New(logger.Config{Output: &bytes.Buffer{}})
+		})
 	})
 	t.Run("a nil Output defaults rather than panicking", func(t *testing.T) {
 		defer func() {
@@ -205,4 +202,24 @@ func TestConsoleLeavesAPrintableValueBare(t *testing.T) {
 			t.Fatalf("want a bare v=%s, got %q", v, buf.String())
 		}
 	}
+}
+
+// wantPanic asserts WHICH panic, not merely that one happened. `recover() != nil`
+// cannot distinguish a deliberate guard from a nil dereference two statements
+// later, so it passes when the guard is deleted — measured on custody 0010
+// (M27/M28) and 0014.
+func wantPanic(t *testing.T, contains string, call func()) {
+	t.Helper()
+	defer func() {
+		v := recover()
+		if v == nil {
+			t.Errorf("did not panic; wanted the guard mentioning %q", contains)
+			return
+		}
+		s, ok := v.(string)
+		if !ok || !strings.Contains(s, contains) {
+			t.Errorf("panicked with %v (%T); wanted the guard mentioning %q", v, v, contains)
+		}
+	}()
+	call()
 }

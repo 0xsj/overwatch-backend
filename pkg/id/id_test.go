@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -59,8 +60,12 @@ func TestParseRoundTripsAndNormalisesCase(t *testing.T) {
 	if fromUpper != original {
 		t.Errorf("case must normalise, so identifiers compare as values and never as strings")
 	}
-	if fromUpper.String() != original.String() {
-		t.Errorf("String() must emit lowercase whatever the input case was")
+	// AMENDED 2026-09-06, custody 0014 M06: this compared
+	// `fromUpper.String() != original.String()`, so both sides ran through the
+	// function under test and a String that emitted UPPERCASE passed it.
+	// Assert against a literal instead.
+	if got := fromUpper.String(); got != strings.ToLower(got) {
+		t.Errorf("String() emitted %q; it must be lowercase whatever the input case was", got)
 	}
 }
 
@@ -219,29 +224,22 @@ func TestV7RejectsMissingDependencies(t *testing.T) {
 		name    string
 		clock   id.Clock
 		entropy io.Reader
+		want    string
 	}{
-		{"a nil clock", nil, rand.Reader},
-		{"a nil entropy source", &fixedClock{time.Now()}, nil},
+		{"a nil clock", nil, rand.Reader, "clock"},
+		{"a nil entropy source", &fixedClock{time.Now()}, nil, "entropy"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Errorf("NewV7 must panic on %s — no environment can produce it, so it is a caller error and belongs at construction rather than at the first identifier", tt.name)
-				}
-			}()
-			_ = id.NewV7(tt.clock, tt.entropy)
+			wantPanic(t, tt.want, func() { _ = id.NewV7(tt.clock, tt.entropy) })
 		})
 	}
 }
 
 func TestV7PanicsWhenEntropyRunsOut(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Errorf("a failing entropy source must panic rather than return a partly-random identifier; on any system this runs on crypto/rand does not fail")
-		}
-	}()
-	g := id.NewV7(&fixedClock{time.Now()}, bytes.NewReader([]byte{1, 2, 3}))
-	_ = g.NewID()
+	wantPanic(t, "entropy", func() {
+		g := id.NewV7(&fixedClock{time.Now()}, bytes.NewReader([]byte{1, 2, 3}))
+		_ = g.NewID()
+	})
 }
 
 func TestSequenceIsDeterministicAndOrderedPastTheCounter(t *testing.T) {
@@ -306,4 +304,24 @@ func TestParseErrorNamesTheInputAndIsSafeToEcho(t *testing.T) {
 	if errors.Is(err, nil) {
 		t.Errorf("unreachable; keeps the stdlib errors import honest")
 	}
+}
+
+// wantPanic asserts WHICH panic, not merely that one happened. `recover() != nil`
+// cannot distinguish a deliberate guard from a nil dereference two statements
+// later, so it passes when the guard is deleted — measured on custody 0010
+// (M27/M28) and 0014.
+func wantPanic(t *testing.T, contains string, call func()) {
+	t.Helper()
+	defer func() {
+		v := recover()
+		if v == nil {
+			t.Errorf("did not panic; wanted the guard mentioning %q", contains)
+			return
+		}
+		s, ok := v.(string)
+		if !ok || !strings.Contains(s, contains) {
+			t.Errorf("panicked with %v (%T); wanted the guard mentioning %q", v, v, contains)
+		}
+	}()
+	call()
 }

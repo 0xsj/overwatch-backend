@@ -233,33 +233,75 @@ func TestARollbackUndoesEverythingInTheUnit(t *testing.T) {
 	}
 }
 
+// AMENDED 2026-09-06, found by custody 0013's mutation round as T01.
+//
+// The first version made the NESTED call fail. Under a mutant where InTx opens
+// a second transaction, that second transaction rolls back too — so the count
+// was 0 and the test passed. It constructed the one arrangement in which the
+// failure it is named for is invisible, while its own comment described the
+// arrangement that would have caught it.
+//
+// The nested call must SUCCEED and the outer must fail. Then joining rolls the
+// nested insert back with everything else, and a separate transaction commits
+// it and leaves it behind — which is half a unit of work committed, the thing
+// the whole rule exists to prevent.
 func TestANestedInTxJoinsRatherThanOpeningASecond(t *testing.T) {
 	p := open(t)
 	ctx := context.Background()
 	exec(t, p, `create table t (id int primary key)`)
 
 	err := p.InTx(ctx, func(ctx context.Context) error {
+		if err := p.InTx(ctx, func(ctx context.Context) error {
+			_, err := p.DB(ctx).Exec(ctx, `insert into t values (1)`)
+			return err
+		}); err != nil {
+			return err
+		}
+		// The nested call returned cleanly. If it committed on its own, its row
+		// is now durable and this rollback cannot reach it.
+		return errors.New(errors.Invalid, "the outer unit fails after the inner one succeeded")
+	})
+	if err == nil {
+		t.Fatal("want the outer failure")
+	}
+
+	var n int
+	if err := p.DB(ctx).QueryRow(ctx, `select count(*) from t`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("%d rows survived the outer rollback; the nested call committed independently, which is half a logical unit of work durable and the other half gone", n)
+	}
+}
+
+// The other direction, and it is a different property: a failure inside a
+// nested call must reach the outer caller rather than being absorbed.
+func TestANestedFailureReachesTheOuterCaller(t *testing.T) {
+	p := open(t)
+	ctx := context.Background()
+	exec(t, p, `create table t (id int primary key)`)
+
+	want := errors.New(errors.Invalid, "fail inside the nested call")
+	err := p.InTx(ctx, func(ctx context.Context) error {
 		if _, err := p.DB(ctx).Exec(ctx, `insert into t values (1)`); err != nil {
 			return err
 		}
-		// If this opened its own transaction, the outer rollback below would
-		// leave this row behind — half an operation committed.
 		return p.InTx(ctx, func(ctx context.Context) error {
 			if _, err := p.DB(ctx).Exec(ctx, `insert into t values (2)`); err != nil {
 				return err
 			}
-			return errors.New(errors.Invalid, "fail inside the nested call")
+			return want
 		})
 	})
-	if err == nil {
-		t.Fatal("want the nested failure")
+	if !errors.Is(err, want) {
+		t.Fatalf("InTx returned %v, want the nested function's own error unwrapped", err)
 	}
 	var n int
 	if err := p.DB(ctx).QueryRow(ctx, `select count(*) from t`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
-		t.Fatalf("%d rows survived; the nested call committed independently of the outer one", n)
+		t.Fatalf("%d rows survived", n)
 	}
 }
 
@@ -268,17 +310,14 @@ func TestAPanicRollsBackAndIsRePanicked(t *testing.T) {
 	ctx := context.Background()
 	exec(t, p, `create table t (id int primary key)`)
 
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("the panic was swallowed; that turns a bug into a silent no-op commit")
-			}
-		}()
+	// The panic's own value must come back out. A bare recover() check passes
+	// when InTx replaces it with a nil dereference of its own.
+	wantPanic(t, "boom", func() {
 		_ = p.InTx(ctx, func(ctx context.Context) error {
 			_, _ = p.DB(ctx).Exec(ctx, `insert into t values (1)`)
 			panic("boom")
 		})
-	}()
+	})
 
 	var n int
 	if err := p.DB(ctx).QueryRow(ctx, `select count(*) from t`).Scan(&n); err != nil {
@@ -494,4 +533,24 @@ func TestALedgerWrittenBeforeChecksumsExistedStillWorks(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("applied %d, want 1 — the recorded one must be skipped, and an empty checksum cannot be compared against anything", n)
 	}
+}
+
+// wantPanic asserts WHICH panic, not merely that one happened. `recover() != nil`
+// cannot distinguish a deliberate guard from a nil dereference two statements
+// later, so it passes when the guard is deleted — measured on custody 0010
+// (M27/M28) and 0014.
+func wantPanic(t *testing.T, contains string, call func()) {
+	t.Helper()
+	defer func() {
+		v := recover()
+		if v == nil {
+			t.Errorf("did not panic; wanted the guard mentioning %q", contains)
+			return
+		}
+		s, ok := v.(string)
+		if !ok || !strings.Contains(s, contains) {
+			t.Errorf("panicked with %v (%T); wanted the guard mentioning %q", v, v, contains)
+		}
+	}()
+	call()
 }

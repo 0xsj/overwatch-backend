@@ -47,16 +47,25 @@
 // The mapping is grouped by **what a caller should do**, which is what Kind is
 // for, and it is not always the same as what the code literally says:
 //
-//	23505 · 23P01   Conflict        the row is already there
-//	23503 · 23502   Invalid         the request named something that is not
-//	23514           Unprocessable   well-formed, and refused by a rule
-//	22P02 · 22001   Invalid         the value will not fit the column
-//	22003           Invalid
-//	40001 · 40P01   Unavailable     serialization failure, deadlock — RETRYABLE
-//	55P03 · 53300   Unavailable     lock unavailable, out of connections
-//	08***           Unavailable     the connection went away
-//	57014           Canceled/Timeout  see below
-//	42*** · 22012   Internal        our SQL is wrong, not the caller's
+//	23505 · 23P01           Conflict        the row is already there
+//	23503 · 23502           Invalid         the request named something that is not
+//	23514                   Unprocessable   well-formed, and refused by a rule
+//	22P02 · 22001 · 22003   Invalid         the value will not fit the column
+//	22007 · 22008           Invalid         the date or time will not parse
+//	40001 · 40P01 · 40**    Unavailable     serialization failure, deadlock — RETRYABLE
+//	55P03 · 53300 · 53400   Unavailable     lock unavailable, out of connections
+//	53**                    Unavailable     insufficient resources, generally
+//	08**                    Unavailable     the connection went away
+//	57P01 · 57P02 · 57P03   Unavailable     the server is shutting down or starting
+//	57014                   Canceled/Timeout  see below
+//	42501                   Forbidden       insufficient privilege — see below
+//	everything else         Internal        42*** and 22012 arrive here
+//
+// The last row is a default, not a rule: 42*** (broken SQL) and 22012 (our
+// arithmetic) are not matched by name, they simply fall through. Anything this
+// table does not name is Internal, which is the fail-closed answer — an
+// unrecognised failure must become a 500 rather than a code that invites a
+// caller to retry or to edit their input.
 //
 // **23503 is genuinely ambiguous and is mapped anyway.** A foreign key violation
 // on INSERT means the caller named a parent that does not exist — Invalid. The
@@ -66,10 +75,57 @@
 // here, and a repository that performs a restricted delete should check for
 // children explicitly rather than reading a status code out of this table.
 //
-// **57014 is two different events.** A statement_timeout firing is a Timeout,
-// which is retryable. A caller cancelling is Canceled, which is not — retrying
-// spends work on somebody who has already gone. They arrive with the same code,
-// so [Translate] reads the context: done means the caller left.
+// **42501 is carved out of the 42 class, and the carve-out is not settled.**
+// This file used to claim the whole 42 class was Internal. It is not: the code
+// maps 42501 (insufficient_privilege) to Forbidden, and that contradiction was
+// found by a suite written from this document, which asserted the documented
+// rule against two members of the class and failed on the second.
+//
+// The argument for Forbidden: it is an authorization failure, not broken SQL,
+// and Internal additionally HIDES the message from the caller.
+//
+// The argument against, which is the stronger one today: Overwatch has one
+// database role and no row-level security, so 42501 can only mean the
+// application's own role is missing a grant. That is a deployment fault. A
+// caller can do nothing about it, and rendering it as 403 tells them they are
+// not allowed to do something they are in fact allowed to do. Internal — a 500,
+// with the message hidden — is the honest answer while that is true.
+//
+// The behaviour is documented here as it stands rather than changed, because
+// changing it is a decision about whether per-caller database roles are ever
+// coming, and that belongs in decisions/ and not in a doc amendment made by a
+// test run. If they are not coming, delete the case.
+//
+// **57014 is two different events, and the context is the SECOND line of
+// defence, not the first.** A statement_timeout firing is a Timeout, which is
+// retryable. A caller cancelling is Canceled, which is not — retrying spends
+// work on somebody who has already gone.
+//
+// The obvious reading of that — "both arrive as 57014, so [Translate] reads the
+// context to tell them apart" — is what this file used to say and it is wrong
+// about the mechanism. Measured against a live server: a caller cancelling
+// mid-query gets `context canceled` back from pgx with **no SQLSTATE at all**,
+// and [Translate] catches it three branches earlier, on `errors.Is(err,
+// context.Canceled)`. A statement_timeout firing under a live context is the
+// only one of the two that actually reaches the 57014 case. So:
+//
+//	caller cancels          -> context.Canceled, no SQLSTATE  -> Canceled
+//	client deadline expires -> context.DeadlineExceeded       -> Timeout
+//	statement_timeout fires -> 57014, context still live      -> Timeout
+//	57014 AND context done  -> the race between the two       -> Canceled
+//
+// The last row is the context check earning its keep: the driver can return the
+// server's error before it notices the cancellation. It is a backstop for a
+// race, not the primary discriminator.
+//
+// **An open question, recorded rather than settled.** That last row reads
+// `ctx.Err() != nil`, which is also true for a client deadline that has expired
+// — so a 57014 arriving under an expired deadline is classified Canceled (not
+// retryable) when Timeout (retryable) is the better answer, since nobody
+// cancelled and the caller has not gone. It is rare, because the
+// DeadlineExceeded branch catches the common shape first. Splitting on
+// `errors.Is(ctx.Err(), context.Canceled)` would fix it. Not changed here
+// because it is a behavioural decision, not a typo.
 //
 // # Transactions are carried on the context, and nest by joining
 //

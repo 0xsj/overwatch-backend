@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -352,9 +353,17 @@ func TestANilLoggerFailsWhereItIsWiredNotInsideARecover(t *testing.T) {
 		{"WithLogging", func() { httpx.WithLogging(nil) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// AMENDED: a bare recover() cannot tell this guard from the nil
+			// dereference it exists to prevent — which is the exact bug, so the
+			// test passed with the guard deleted.
 			defer func() {
-				if recover() == nil {
-					t.Error("constructed cleanly: a nil logger then fails inside the deferred recover, which replaces the original panic with a nil dereference and writes no status — the middleware destroys the evidence of the bug it exists to report")
+				v := recover()
+				if v == nil {
+					t.Error("constructed cleanly: a nil logger then fails inside the deferred recover, which replaces the original panic with a nil dereference and writes no status")
+					return
+				}
+				if s, ok := v.(string); !ok || !strings.Contains(s, "nil Logger") {
+					t.Errorf("panicked with %v (%T); wanted the eager guard naming a nil Logger", v, v)
 				}
 			}()
 			tc.call()
@@ -476,5 +485,30 @@ func TestAPanickingHandlerIsStillNamedInTheRecoveryLine(t *testing.T) {
 	}
 	if !contains(buf.String(), want) {
 		t.Fatalf("the recovery line does not carry %s: %s\nr.WithContext returns a COPY, so an outer recover would otherwise hold a context predating the chain — on the one line that most needs it", want, buf.String())
+	}
+}
+
+// MW-17, custody 0012: the one gap both suites shared. doc.go states "if the
+// handler had already written a response before panicking, nothing is written
+// over it" — and both suites tested it only through a handler that calls
+// WriteHeader first. Deleting `r.wrote = true` from recorder.Write survived
+// both, because WriteHeader sets the same flag.
+//
+// The uncovered case is the one doc.go singles out for the 200 default: a
+// handler that writes a BODY with no explicit WriteHeader, then panics. Its
+// half-response gets overwritten and nothing notices.
+func TestAPanicAfterABodyWithNoWriteHeaderDoesNotOverwriteIt(t *testing.T) {
+	h := httpx.WithRecovery(logger.Nop())(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"partial":true`)) // no WriteHeader, so this sent a 200
+			panic("too late")
+		}))
+	w := serve(t, h, httptest.NewRequest("GET", "/", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d; the 200 was already on the wire before the panic and cannot be revised", w.Code)
+	}
+	if got := w.Body.String(); got != `{"partial":true` {
+		t.Fatalf("body = %q; half a response is worse than an unexplained one, and appending to it makes it neither", got)
 	}
 }
