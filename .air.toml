@@ -1,0 +1,26 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/server ./cmd/server"
+  bin = "./tmp/server"
+
+  include_ext  = ["go"]
+  exclude_dir  = ["tmp", "scripts", "testdata"]
+  exclude_regex = ["_test\\.go"]
+
+  delay = 300
+  stop_on_error = true
+
+  send_interrupt = true
+  kill_delay = "2s"
+
+[log]
+  main_only = false
+  time = false
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = false

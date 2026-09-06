@@ -1,0 +1,3 @@
+# air's build output, and the real values — RUNNING.md: .env is never committed.
+tmp/
+.env
