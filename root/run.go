@@ -64,6 +64,29 @@ func Run() error {
 	// constructed, because decisions/0022 names "a sweeper that is constructed
 	// and never started" as the failure that looks exactly like working: a
 	// table that is not shrinking looks like nothing at all.
+	// The executor is a FOURTH lifecycle — decisions/0033. It claims planned
+	// runs and spawns their processes, and it is started HERE for the reason the
+	// sweep is: a worker that is constructed and never started looks exactly
+	// like a system with no work.
+	executed := make(chan struct{})
+	go func() {
+		defer close(executed)
+		a.executor.Run(ctx)
+	}()
+
+	// The scheduler is the FIFTH lifecycle — decisions/0038. It is nil when
+	// SCHEDULER_BATCH is zero, and the channel is closed immediately so the
+	// drain below needs no special case.
+	scheduled := make(chan struct{})
+	go func() {
+		defer close(scheduled)
+		if a.scheduler == nil {
+			a.log.InfoContext(a.boot, "scheduler off", "reason", "SCHEDULER_BATCH is 0")
+			return
+		}
+		a.scheduler.Run(ctx)
+	}()
+
 	swept := make(chan struct{})
 	go func() {
 		defer close(swept)
@@ -103,6 +126,16 @@ func Run() error {
 	// the next start recomputes the cutoff and carries on. Waiting for it would
 	// hold shutdown open for a scan that has no deadline of its own.
 	<-swept
+	// The executor IS waited for, and it is the only one of the three that has
+	// to be: it holds a transaction with claimed runs and live child processes.
+	// Exiting under it would leave those rows locked until the connection dies
+	// and orphan the processes — execx kills the group on context cancellation,
+	// so waiting is what lets that finish.
+	// The scheduler is drained BEFORE the executor: it only starts runs, and
+	// letting it start one while the executor is finishing would leave a run
+	// nothing will pick up until the next boot.
+	<-scheduled
+	<-executed
 	if err := a.dispatcher.Drain(shutCtx); err != nil {
 		return pkgerrors.Wrap(err, pkgerrors.Unavailable, "the outbox did not drain")
 	}

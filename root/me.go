@@ -6,12 +6,25 @@ import (
 	"time"
 
 	auditquery "github.com/0xsj/overwatch-backend/internal/audit/app/query"
+	checkcmd "github.com/0xsj/overwatch-backend/internal/check/app/command"
+	checkquery "github.com/0xsj/overwatch-backend/internal/check/app/query"
+	entcmd "github.com/0xsj/overwatch-backend/internal/entity/app/command"
+	entquery "github.com/0xsj/overwatch-backend/internal/entity/app/query"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identityhttp "github.com/0xsj/overwatch-backend/internal/identity/transport/http"
 	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
+	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
 	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
+	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
+	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
+	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
+	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
+	targetcmd "github.com/0xsj/overwatch-backend/internal/target/app/command"
+	targetquery "github.com/0xsj/overwatch-backend/internal/target/app/query"
+	toolcmd "github.com/0xsj/overwatch-backend/internal/tool/app/command"
+	toolquery "github.com/0xsj/overwatch-backend/internal/tool/app/query"
 	workspacecmd "github.com/0xsj/overwatch-backend/internal/workspace/app/command"
 	workspacequery "github.com/0xsj/overwatch-backend/internal/workspace/app/query"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
@@ -23,19 +36,33 @@ import (
 // separately rather than behind one façade: a façade over three domains is the
 // coupling decisions/0017 exists to prevent, wearing a struct.
 type me struct {
-	sessions   *identityquery.Sessions
-	settings   *identitycmd.Settings
-	people     *identityquery.Directory
-	orgs       *orgquery.Orgs
-	access     *orgquery.Access
-	workspaces *workspacequery.Workspaces
-	opener     *workspacecmd.Service
-	grants     *orgcmd.Grants
-	invites    *orgcmd.Invites
-	membership *orgcmd.Members
-	ledger     *auditquery.Ledger
-	trail      *journalquery.Trail
-	log        *slog.Logger
+	sessions    *identityquery.Sessions
+	settings    *identitycmd.Settings
+	people      *identityquery.Directory
+	orgs        *orgquery.Orgs
+	access      *orgquery.Access
+	workspaces  *workspacequery.Workspaces
+	opener      *workspacecmd.Service
+	grants      *orgcmd.Grants
+	invites     *orgcmd.Invites
+	membership  *orgcmd.Members
+	targets     *targetquery.Targets
+	targetsCmd  *targetcmd.Targets
+	rules       *scopequery.Rules
+	rulesCmd    *scopecmd.Rules
+	checks      *checkquery.Checks
+	checksCmd   *checkcmd.Checks
+	runs        *runquery.Runs
+	runsCmd     *runcmd.Runs
+	observed    *obsquery.Observations
+	graph       *entquery.Graph
+	rulings     *entcmd.Rulings
+	tools       *toolquery.Tools
+	toolsCmd    *toolcmd.Tools
+	mappingsCmd *toolcmd.Mappings
+	ledger      *auditquery.Ledger
+	trail       *journalquery.Trail
+	log         *slog.Logger
 }
 
 func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
@@ -43,11 +70,23 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 	orgs *orgquery.Orgs, access *orgquery.Access,
 	workspaces *workspacequery.Workspaces, opener *workspacecmd.Service,
 	grants *orgcmd.Grants, invites *orgcmd.Invites, membership *orgcmd.Members,
+	targets *targetquery.Targets, targetsCmd *targetcmd.Targets,
+	rules *scopequery.Rules, rulesCmd *scopecmd.Rules,
+	tools *toolquery.Tools, toolsCmd *toolcmd.Tools, mappingsCmd *toolcmd.Mappings,
+	checks *checkquery.Checks, checksCmd *checkcmd.Checks,
+	runs *runquery.Runs, runsCmd *runcmd.Runs, observed *obsquery.Observations,
+	graph *entquery.Graph, rulings *entcmd.Rulings,
 	ledger *auditquery.Ledger, trail *journalquery.Trail,
 	log *slog.Logger) *me {
 	if sessions == nil || settings == nil || people == nil || orgs == nil || access == nil ||
 		workspaces == nil || opener == nil || grants == nil || invites == nil ||
-		membership == nil || ledger == nil || trail == nil {
+		membership == nil || targets == nil || targetsCmd == nil ||
+		rules == nil || rulesCmd == nil ||
+		tools == nil || toolsCmd == nil || mappingsCmd == nil ||
+		checks == nil || checksCmd == nil ||
+		runs == nil || runsCmd == nil || observed == nil ||
+		graph == nil || rulings == nil ||
+		ledger == nil || trail == nil {
 		panic("root: newMe with a nil dependency")
 	}
 	if log == nil {
@@ -56,6 +95,12 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 	return &me{sessions: sessions, settings: settings, people: people, orgs: orgs,
 		access: access, workspaces: workspaces, opener: opener,
 		grants: grants, invites: invites, membership: membership,
+		targets: targets, targetsCmd: targetsCmd,
+		rules: rules, rulesCmd: rulesCmd,
+		tools: tools, toolsCmd: toolsCmd, mappingsCmd: mappingsCmd,
+		checks: checks, checksCmd: checksCmd,
+		runs: runs, runsCmd: runsCmd, observed: observed,
+		graph: graph, rulings: rulings,
 		ledger: ledger, trail: trail, log: log}
 }
 
@@ -149,6 +194,84 @@ func (m *me) register(mux *http.ServeMux) {
 	// Closing an account — decisions/0028. The one endpoint that consults both
 	// identity and org in a single request, because neither can answer alone.
 	mux.HandleFunc("POST /v1/me/close", m.closeAccount)
+
+	// The first PRODUCT surface — decisions/0029. Every route is scoped by the
+	// engagement in the path, never by a target id alone.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/targets", m.listTargets)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/targets", m.addTarget)
+	mux.HandleFunc("PATCH /v1/workspaces/{workspace}/targets/{target}", m.renameTarget)
+	mux.HandleFunc("DELETE /v1/workspaces/{workspace}/targets/{target}", m.archiveTarget)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/targets/{target}/reopen", m.reopenTarget)
+
+	// Scope — decisions/0010 and 0030. Reading is a record read; editing needs
+	// ADMIN, and DELETE supersedes rather than removes.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/targets/{target}/scope", m.listRules)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/targets/{target}/scope", m.addRule)
+	mux.HandleFunc("DELETE /v1/workspaces/{workspace}/targets/{target}/scope/{rule}", m.supersedeRule)
+
+	// Tools and mappings — decisions/0031. Under /orgs and NOT /workspaces,
+	// because these are what the firm can do rather than what it observed, and
+	// the path is the first place that claim is visible.
+	mux.HandleFunc("GET /v1/orgs/{org}/tools", m.listTools)
+	mux.HandleFunc("POST /v1/orgs/{org}/tools", m.addTool)
+	mux.HandleFunc("PATCH /v1/orgs/{org}/tools/{tool}", m.updateTool)
+	mux.HandleFunc("DELETE /v1/orgs/{org}/tools/{tool}", m.archiveTool)
+	mux.HandleFunc("GET /v1/orgs/{org}/tools/{tool}/mappings", m.listMappings)
+	// POST is also what a CORRECTION is — a version whose author is a person.
+	mux.HandleFunc("POST /v1/orgs/{org}/tools/{tool}/mappings", m.addMapping)
+	mux.HandleFunc("POST /v1/orgs/{org}/tools/{tool}/mappings/{mapping}/promote", m.promoteMapping)
+
+	// Checks — decisions/0032. Also under /orgs: a check is a question the firm
+	// knows how to ask, and it is the same question for every client.
+	mux.HandleFunc("GET /v1/orgs/{org}/checks", m.listChecks)
+	mux.HandleFunc("POST /v1/orgs/{org}/checks", m.addCheck)
+	mux.HandleFunc("PATCH /v1/orgs/{org}/checks/{check}", m.updateCheck)
+	mux.HandleFunc("DELETE /v1/orgs/{org}/checks/{check}", m.archiveCheck)
+	mux.HandleFunc("GET /v1/orgs/{org}/checks/{check}/chain", m.readChain)
+	// PUT, because an editor holds the whole graph and sends the whole graph.
+	mux.HandleFunc("PUT /v1/orgs/{org}/checks/{check}/chain", m.saveChain)
+
+	// Runs — decisions/0033. Under /workspaces: a run is a claim about a
+	// client, which is the side of 0031's test that keeps the narrow key.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/runs", m.listRuns)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/runs", m.startRun)
+	// The spawn PREVIEW — the same walk as starting, without the write.
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/runs/preview", m.previewRun)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/runs/{run}", m.readRun)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/artifacts/{artifact}", m.readArtifact)
+	// Which spawns one scope rule refused — the read that makes an append-only
+	// rule ledger worth the rows (0030).
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/scope/{rule}/refusals", m.listRefusals)
+
+	// Observations — decisions/0035. What ONE SOURCE SAID, per field.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/subjects", m.listSubjects)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/observations", m.listObservations)
+	// PRODUCT.md's central claim, as an endpoint: every value walks backwards
+	// to the parser version, the raw bytes, the exact command, and the scope
+	// rule that allowed the command to run.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/observations/{observation}/lineage", m.readLineage)
+	// "How much of what the tools printed actually became an observation."
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/invocations/{invocation}/extraction", m.readExtraction)
+
+	// The graph — decisions/0036, 0009, 0008, 0003.
+	// `assets` reads a VIEW: 0009 asked for the word and the query to be the
+	// same object, and `fragments` is the wider set it is a role within.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/assets", m.listAssets)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/fragments", m.listFragments)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/fragments/{fragment}", m.readFragment)
+	// The write that makes "what have I never looked at" answerable.
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/fragments/{fragment}/judgement", m.judgeFragment)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/entities", m.listEntities)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/entities/{entity}", m.readCanvas)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/entities/{entity}/judgement", m.judgeEntity)
+	// Ruling on a claim never rewrites who proposed it — 0008.
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/attributions/{attribution}", m.decideAttribution)
+
+	// COVERAGE — decisions/0011 and 0037. What have I not looked at.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/coverage", m.readCoverage)
+	// A human READ, which is not a judgement: 0011 says READ BY YOU is what
+	// keeps `never read` and `no judgement` separable.
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/fragments/{fragment}/read", m.markRead)
 }
 
 func (m *me) handle(w http.ResponseWriter, r *http.Request) {

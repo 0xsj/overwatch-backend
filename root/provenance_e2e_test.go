@@ -12,6 +12,12 @@ import (
 	auditapp "github.com/0xsj/overwatch-backend/internal/audit/app"
 	auditquery "github.com/0xsj/overwatch-backend/internal/audit/app/query"
 	auditpg "github.com/0xsj/overwatch-backend/internal/audit/infra/postgres"
+	checkcmd "github.com/0xsj/overwatch-backend/internal/check/app/command"
+	checkquery "github.com/0xsj/overwatch-backend/internal/check/app/query"
+	checkpg "github.com/0xsj/overwatch-backend/internal/check/infra/postgres"
+	entcmd "github.com/0xsj/overwatch-backend/internal/entity/app/command"
+	entquery "github.com/0xsj/overwatch-backend/internal/entity/app/query"
+	entpg "github.com/0xsj/overwatch-backend/internal/entity/infra/postgres"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
@@ -19,12 +25,27 @@ import (
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
 	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
 	journalpg "github.com/0xsj/overwatch-backend/internal/journal/infra/postgres"
+	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
+	obspg "github.com/0xsj/overwatch-backend/internal/observation/infra/postgres"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
 	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
+	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
+	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
+	runpg "github.com/0xsj/overwatch-backend/internal/run/infra/postgres"
+	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
+	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
+	scopepg "github.com/0xsj/overwatch-backend/internal/scope/infra/postgres"
+	targetcmd "github.com/0xsj/overwatch-backend/internal/target/app/command"
+	targetquery "github.com/0xsj/overwatch-backend/internal/target/app/query"
+	targetpg "github.com/0xsj/overwatch-backend/internal/target/infra/postgres"
+	toolcmd "github.com/0xsj/overwatch-backend/internal/tool/app/command"
+	toolquery "github.com/0xsj/overwatch-backend/internal/tool/app/query"
+	toolpg "github.com/0xsj/overwatch-backend/internal/tool/infra/postgres"
 	workspacecmd "github.com/0xsj/overwatch-backend/internal/workspace/app/command"
 	workspacequery "github.com/0xsj/overwatch-backend/internal/workspace/app/query"
 	workspacepg "github.com/0xsj/overwatch-backend/internal/workspace/infra/postgres"
+	"github.com/0xsj/overwatch-backend/pkg/blob"
 	"github.com/0xsj/overwatch-backend/pkg/clock"
 	"github.com/0xsj/overwatch-backend/pkg/crypto"
 	"github.com/0xsj/overwatch-backend/pkg/events"
@@ -60,6 +81,13 @@ func tracedSystem(t *testing.T) traced {
 		testx.Schema{Name: workspacepg.Schema, Migrations: workspacepg.Migrations},
 		testx.Schema{Name: journalpg.Schema, Migrations: journalpg.Migrations},
 		testx.Schema{Name: auditpg.Schema, Migrations: auditpg.Migrations},
+		testx.Schema{Name: targetpg.Schema, Migrations: targetpg.Migrations},
+		testx.Schema{Name: scopepg.Schema, Migrations: scopepg.Migrations},
+		testx.Schema{Name: toolpg.Schema, Migrations: toolpg.Migrations},
+		testx.Schema{Name: checkpg.Schema, Migrations: checkpg.Migrations},
+		testx.Schema{Name: runpg.Schema, Migrations: runpg.Migrations},
+		testx.Schema{Name: obspg.Schema, Migrations: obspg.Migrations},
+		testx.Schema{Name: entpg.Schema, Migrations: entpg.Migrations},
 	)
 
 	clk := clock.System{}
@@ -85,18 +113,57 @@ func tracedSystem(t *testing.T) traced {
 
 	settings := identitycmd.NewSettings(accounts, mailer, publisher, hasher,
 		crypto.NewMinter(rand.Reader), ids, clk)
+	toolReads := toolquery.NewTools(toolpg.NewStore(p))
+	checkReads := checkquery.NewChecks(checkpg.NewStore(p))
+	workspaceReads := workspacequery.NewWorkspaces(workspacepg.NewStore(p))
+	kit := toolbox{tools: toolReads}
+
+	// A real blob store under the test's own temp directory. t.TempDir is
+	// removed with the test, so artifacts do not leak between runs.
+	bytes, err := blob.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runReads := runquery.NewRuns(runpg.NewStore(p), blobs{store: bytes})
+
 	mux := http.NewServeMux()
 	newMe(sessions, settings,
 		identityquery.NewDirectory(accounts),
 		orgquery.NewOrgs(orgStore),
 		orgquery.NewAccess(orgStore),
-		workspacequery.NewWorkspaces(workspacepg.NewStore(p)),
+		workspaceReads,
 		workspaceService,
 		orgcmd.NewGrants(orgStore, orgquery.NewAccess(orgStore), publisher, ids, clk),
 		orgcmd.NewInvites(orgStore, directory{people: identityquery.NewDirectory(accounts)},
 			orgquery.NewAccess(orgStore), mailer, crypto.NewMinter(rand.Reader),
 			publisher, p, ids, clk),
 		orgcmd.NewMembers(orgStore, publisher, p, ids, clk),
+		targetquery.NewTargets(targetpg.NewStore(p)),
+		targetcmd.NewTargets(targetpg.NewStore(p), publisher, ids, clk),
+		scopequery.NewRules(scopepg.NewStore(p)),
+		scopecmd.NewRules(scopepg.NewStore(p), publisher, ids, clk),
+		toolReads,
+		toolcmd.NewTools(toolpg.NewStore(p), publisher, ids, clk),
+		toolcmd.NewMappings(toolpg.NewStore(p), p, publisher, ids, clk),
+		checkReads,
+		checkcmd.NewChecks(checkpg.NewStore(p), kit, p, publisher, ids, clk),
+		runReads,
+		// The REAL adapters, not stubs. They are the only thing that proves the
+		// five ports `run` borrows are wired to what they claim.
+		runcmd.NewRuns(runpg.NewStore(p),
+			chains{checks: checkReads, tools: toolReads, workspaces: workspaceReads},
+			targets{targets: targetquery.NewTargets(targetpg.NewStore(p))},
+			spawns{rules: scopequery.NewRules(scopepg.NewStore(p))},
+			p, publisher, ids, clk),
+		obsquery.NewObservations(obspg.NewStore(p),
+			mappingStep{tools: toolReads},
+			runSteps{runs: runReads},
+			ruleStep{rules: scopequery.NewRules(scopepg.NewStore(p))},
+			orgOf{reads: workspaceReads}),
+		entquery.NewGraph(entpg.NewStore(p),
+			coverageChecks{checks: checkReads, workspaces: workspaceReads},
+			coverageChecked{runs: runReads, observed: obsquery.NewObservations(obspg.NewStore(p), mappingStep{tools: toolReads}, runSteps{runs: runReads}, ruleStep{rules: scopequery.NewRules(scopepg.NewStore(p))}, orgOf{reads: workspaceReads})}),
+		entcmd.NewRulings(entpg.NewStore(p), publisher, ids, clk),
 		auditquery.NewLedger(auditpg.NewStore(p)),
 		journalquery.NewTrail(journalpg.NewStore(p)),
 		logger.Nop()).register(mux)

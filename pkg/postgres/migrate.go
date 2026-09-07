@@ -73,6 +73,25 @@ const defaultLedger = "schema_migrations"
 // the quoting question at every call site instead.
 var schemaName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
+// reservedSchema is the shape check's blind spot, found on 2026-09-07 by a
+// domain called `check`: the name matched the pattern and `create schema check`
+// is still a syntax error, because `check` is the SQL constraint keyword.
+//
+// **The refusal is here rather than a pair of quotes in the DDL** because
+// quoting only moves the problem. A schema that needs quotes needs them in every
+// hand-written query file too, forever, and that is a tax paid by a person who
+// fails at deploy rather than at compile. Refusing the name costs one word.
+//
+// It is not the full reserved list — it is the words a DOMAIN in a product like
+// this plausibly gets called. A name that is reserved and absent here still
+// fails, just later and less legibly.
+var reservedSchema = map[string]bool{
+	"check": true, "user": true, "order": true, "group": true, "table": true,
+	"grant": true, "session": true, "default": true, "all": true, "case": true,
+	"references": true, "collate": true, "column": true, "constraint": true,
+	"limit": true, "offset": true, "select": true, "where": true, "current_user": true,
+}
+
 type MigrateOption func(*migrateConfig)
 
 type migrateConfig struct {
@@ -95,6 +114,10 @@ func newMigrateConfig(opts []MigrateOption) (migrateConfig, error) {
 	c := migrateConfig{ledger: defaultLedger}
 	for _, o := range opts {
 		o(&c)
+	}
+	if reservedSchema[c.schema] {
+		return c, errors.Newf(errors.Invalid,
+			"postgres: %q is a reserved SQL word and cannot be a schema name", c.schema)
 	}
 	if c.schema != "" && !schemaName.MatchString(c.schema) {
 		return c, errors.Newf(errors.Invalid,

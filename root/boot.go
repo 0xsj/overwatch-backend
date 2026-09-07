@@ -9,6 +9,12 @@ import (
 	auditapp "github.com/0xsj/overwatch-backend/internal/audit/app"
 	auditquery "github.com/0xsj/overwatch-backend/internal/audit/app/query"
 	auditpg "github.com/0xsj/overwatch-backend/internal/audit/infra/postgres"
+	checkcmd "github.com/0xsj/overwatch-backend/internal/check/app/command"
+	checkquery "github.com/0xsj/overwatch-backend/internal/check/app/query"
+	checkpg "github.com/0xsj/overwatch-backend/internal/check/infra/postgres"
+	entcmd "github.com/0xsj/overwatch-backend/internal/entity/app/command"
+	entquery "github.com/0xsj/overwatch-backend/internal/entity/app/query"
+	entpg "github.com/0xsj/overwatch-backend/internal/entity/infra/postgres"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
@@ -16,16 +22,33 @@ import (
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
 	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
 	journalpg "github.com/0xsj/overwatch-backend/internal/journal/infra/postgres"
+	obscmd "github.com/0xsj/overwatch-backend/internal/observation/app/command"
+	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
+	obspg "github.com/0xsj/overwatch-backend/internal/observation/infra/postgres"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
 	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
+	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
+	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
+	runpg "github.com/0xsj/overwatch-backend/internal/run/infra/postgres"
+	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
+	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
+	scopepg "github.com/0xsj/overwatch-backend/internal/scope/infra/postgres"
+	targetcmd "github.com/0xsj/overwatch-backend/internal/target/app/command"
+	targetquery "github.com/0xsj/overwatch-backend/internal/target/app/query"
+	targetpg "github.com/0xsj/overwatch-backend/internal/target/infra/postgres"
+	toolcmd "github.com/0xsj/overwatch-backend/internal/tool/app/command"
+	toolquery "github.com/0xsj/overwatch-backend/internal/tool/app/query"
+	toolpg "github.com/0xsj/overwatch-backend/internal/tool/infra/postgres"
 	workspacecmd "github.com/0xsj/overwatch-backend/internal/workspace/app/command"
 	workspacequery "github.com/0xsj/overwatch-backend/internal/workspace/app/query"
 	workspacepg "github.com/0xsj/overwatch-backend/internal/workspace/infra/postgres"
+	"github.com/0xsj/overwatch-backend/pkg/blob"
 	"github.com/0xsj/overwatch-backend/pkg/clock"
 	"github.com/0xsj/overwatch-backend/pkg/crypto"
 	"github.com/0xsj/overwatch-backend/pkg/env"
 	"github.com/0xsj/overwatch-backend/pkg/events"
+	"github.com/0xsj/overwatch-backend/pkg/execx"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 	"github.com/0xsj/overwatch-backend/pkg/limit"
@@ -53,7 +76,14 @@ type app struct {
 	boot  context.Context
 	close func()
 
-	sweeper    *journalapp.Sweeper
+	sweeper *journalapp.Sweeper
+	// executor is the FOURTH lifecycle — decisions/0033 §6. Constructed here
+	// and STARTED in run.go, because 0022's lesson is that a worker which is
+	// built and never started looks exactly like a system with no work.
+	executor *runcmd.Executor
+	// scheduler is the FIFTH lifecycle — decisions/0038. It plans; the executor
+	// runs. It is nil when SCHEDULER_BATCH is zero, which is the off switch.
+	scheduler  *runcmd.Scheduler
 	identity   *identityhttp.API
 	whoami     httpx.Identifier
 	dispatcher *outbox.Dispatcher
@@ -136,6 +166,13 @@ func Boot(ctx context.Context) (*app, error) {
 		{"workspace", workspacepg.Migrations, []postgres.MigrateOption{postgres.InSchema(workspacepg.Schema)}},
 		{"audit", auditpg.Migrations, []postgres.MigrateOption{postgres.InSchema(auditpg.Schema)}},
 		{"journal", journalpg.Migrations, []postgres.MigrateOption{postgres.InSchema(journalpg.Schema)}},
+		{"target", targetpg.Migrations, []postgres.MigrateOption{postgres.InSchema(targetpg.Schema)}},
+		{"scope", scopepg.Migrations, []postgres.MigrateOption{postgres.InSchema(scopepg.Schema)}},
+		{"tool", toolpg.Migrations, []postgres.MigrateOption{postgres.InSchema(toolpg.Schema)}},
+		{"checks", checkpg.Migrations, []postgres.MigrateOption{postgres.InSchema(checkpg.Schema)}},
+		{"run", runpg.Migrations, []postgres.MigrateOption{postgres.InSchema(runpg.Schema)}},
+		{"observation", obspg.Migrations, []postgres.MigrateOption{postgres.InSchema(obspg.Schema)}},
+		{"entity", entpg.Migrations, []postgres.MigrateOption{postgres.InSchema(entpg.Schema)}},
 	} {
 		n, err := postgres.Migrate(bootCtx, db, set.ms, set.opts...)
 		if err != nil {
@@ -204,6 +241,73 @@ func Boot(ctx context.Context) (*app, error) {
 	orgAccess := orgquery.NewAccess(orgStore)
 	people := identityquery.NewDirectory(accounts)
 	members := orgcmd.NewMembers(orgStore, publisher, db, ids, clk)
+
+	// The first product domain — decisions/0029.
+	targetStore := targetpg.NewStore(db)
+	scopeStore := scopepg.NewStore(db)
+	toolStore := toolpg.NewStore(db)
+	checkStore := checkpg.NewStore(db)
+	runStore := runpg.NewStore(db)
+	toolReads := toolquery.NewTools(toolStore)
+	checkReads := checkquery.NewChecks(checkStore)
+	targetReads := targetquery.NewTargets(targetStore)
+	workspaceReads := workspacequery.NewWorkspaces(workspacepg.NewStore(db))
+	scopeReads := scopequery.NewRules(scopeStore)
+	kit := toolbox{tools: toolReads}
+
+	// The artifact store is constructed at BOOT so a bad path kills the process
+	// here rather than at the first run — decisions/0033. An unwritable
+	// directory discovered mid-scan means bytes that were produced and lost.
+	artifacts, err := blob.New(cfg.ArtifactRoot)
+	if err != nil {
+		return nil, err
+	}
+	bytes := blobs{store: artifacts}
+
+	runsCmd := runcmd.NewRuns(runStore,
+		chains{checks: checkReads, tools: toolReads, workspaces: workspaceReads},
+		targets{targets: targetReads},
+		spawns{rules: scopeReads},
+		db, publisher, ids, clk)
+
+	obsStore := obspg.NewStore(db)
+	runReads := runquery.NewRuns(runStore, bytes)
+	// Extraction is a PORT the executor calls — 0035 §6. It is synchronous and
+	// inside the executor's transaction, so a finished run's observation count
+	// is a number rather than a promise.
+	extractor := obscmd.NewExtractor(obsStore,
+		liveMappings{tools: toolReads}, publisher, ids, clk)
+
+	// The graph — decisions/0036. Two SUBSCRIBERS: one on `target.added` for the
+	// root entity, one on `extract.observation.created` for the fragments and
+	// the attributions. So the graph is eventually consistent, arriving one
+	// outbox delivery after the run that produced the observations.
+	entStore := entpg.NewStore(db)
+	obsReads := obsquery.NewObservations(obsStore,
+		mappingStep{tools: toolReads},
+		runSteps{runs: runReads},
+		ruleStep{rules: scopeReads},
+		orgOf{reads: workspaceReads})
+	assembler := entcmd.NewAssembler(entStore,
+		subjects{observed: obsReads},
+		targetOfRun{runs: runReads},
+		claims{rules: scopeReads},
+		publisher, ids, clk)
+
+	var scheduler *runcmd.Scheduler
+	if cfg.SchedulerBatch > 0 {
+		scheduler = runcmd.NewScheduler(runsCmd,
+			schedulable{checks: checkReads, workspaces: workspaceReads, targets: targetReads},
+			runStore, ids, clk, cfg.SchedulerEvery, cfg.SchedulerBatch, log)
+	}
+
+	executor := runcmd.NewExecutor(runStore, runsCmd, kit,
+		orgOf{reads: workspaceReads}, execxSpawner{}, bytes,
+		extracts{extractor: extractor}, db, publisher,
+		ids, clk, execx.Policy{
+			Timeout:   cfg.RunTimeout,
+			MaxOutput: cfg.RunMaxOutput,
+		}, 4, 2*time.Second, log)
 	invites := orgcmd.NewInvites(orgStore, directory{people: people}, orgAccess,
 		mailer, crypto.NewMinter(rand.Reader), publisher, db, ids, clk)
 	grants := orgcmd.NewGrants(orgStore, orgAccess, publisher, ids, clk)
@@ -251,6 +355,11 @@ func Boot(ctx context.Context) (*app, error) {
 			// A membership it cannot end fails the handler and buries the event,
 			// which is the alarm for the race that record names.
 			orgcmd.NewDepartures(orgStore, orgStore, ids, clk).Handle,
+			// The graph, one delivery behind the run — decisions/0036.
+			entcmd.NewSubscriber(assembler, ids).Handle,
+			// And the other half: `target` writes down the root entity id that
+			// 0029 declared and left zero.
+			targetcmd.NewRootSubscriber(targetStore).Handle,
 			auditapp.NewSubscriber(auditpg.NewStore(db), ids, clk).Handle,
 			journalapp.NewSubscriber(journalpg.NewStore(db), ids, clk).Handle,
 		},
@@ -265,12 +374,30 @@ func Boot(ctx context.Context) (*app, error) {
 		whoami:     identityhttp.Identifier(sessions),
 		dispatcher: dispatcher,
 		sweeper:    sweeper,
+		executor:   executor,
+		scheduler:  scheduler,
 		me: newMe(sessions, settings,
 			people,
 			orgquery.NewOrgs(orgpg.NewStore(db)),
 			orgAccess,
 			workspacequery.NewWorkspaces(workspacepg.NewStore(db)),
 			workspaceService, grants, invites, members,
+			targetquery.NewTargets(targetStore),
+			targetcmd.NewTargets(targetStore, publisher, ids, clk),
+			scopequery.NewRules(scopeStore),
+			scopecmd.NewRules(scopeStore, publisher, ids, clk),
+			toolReads,
+			toolcmd.NewTools(toolStore, publisher, ids, clk),
+			toolcmd.NewMappings(toolStore, db, publisher, ids, clk),
+			checkReads,
+			checkcmd.NewChecks(checkStore, kit, db, publisher, ids, clk),
+			runReads,
+			runsCmd,
+			obsReads,
+			entquery.NewGraph(entStore,
+				coverageChecks{checks: checkReads, workspaces: workspaceReads},
+				coverageChecked{runs: runReads, observed: obsReads}),
+			entcmd.NewRulings(entStore, publisher, ids, clk),
 			auditquery.NewLedger(auditpg.NewStore(db)),
 			journalquery.NewTrail(journalpg.NewStore(db)), log),
 		close: func() { db.Close() },

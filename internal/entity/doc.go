@@ -1,13 +1,7 @@
 // Package entity is identity across sources and time.
 //
-// # PLACEHOLDER — not built
-//
-// This file exists so the directory has a name and a contract before it has
-// code. Written 2026-09-06 from drafts/domain-map.md, which binds nothing. It is
-// expanded into a real contract by the session that builds this domain, and that
-// expansion happens BEFORE the implementation — custody 0010-0013 measured why:
-// where the document states the behaviour a barriered suite dominates, and where
-// the code moved past the document it can see nothing.
+// Built 2026-09-07 — decisions/0036. What follows was the placeholder's contract
+// and is now the package's; the additions are marked.
 //
 // # Owns
 //
@@ -35,7 +29,55 @@
 //
 // The observations themselves, and the surface they describe.
 //
+// # A fragment IS a tuple — 0036
+//
+//	(workspace, kind, value)
+//
+// Deduplicated, and that is not a denormalisation of an id: it is what a
+// fragment is. An observation joins to one on exactly those three columns, and
+// `observation` carries no fragment id — a subscriber creates fragments AFTER
+// the observations that imply them, so such a column could only be written by a
+// second domain into a schema it does not own.
+//
+// # A fragment admits a MANUAL origin — 0036, resolving 0009's own doubt
+//
+//	observed   read out of an artifact. Carries first_seen and last_seen
+//	manual     typed in. Carries neither, and that is not a gap
+//
+// `0009` said a `/24` typed into a scope rule is a fragment nobody observed, that
+// admitting it was "more likely" than the alternative, and that it "is not
+// written down anywhere". It is now.
+//
+// # A RULE decides without a person — 0036 amends 0008
+//
+//	decided_at   set  iff  state <> proposed
+//	decided_by   set  iff  a PERSON decided
+//
+// `human` and `rule` claimants are born ACCEPTED; only a `model` is born
+// proposed, and only a model carries confidence. Asking somebody to agree with a
+// scope rule they wrote is the `reviewed vs in scope` pair collapsing backwards.
+//
+// # Assembled by a SUBSCRIBER, so the graph is eventually consistent
+//
+// `extract.observation.created` -> upsert fragments -> ask scope's CLAIM gate ->
+// attribute the permitted ones to the target's root entity. A finished run's own
+// record is complete; the graph over it arrives one outbox delivery later.
+//
+// # Deliberately absent
+//
+// **`derivation`.** `0003` is sealed on its shape and nothing can produce one:
+// an edge means "this fragment was read out of that one" and needs the upstream
+// fragment known at extraction time, which needs the chain to feed itself. The
+// first one written must already carry an invocation and an artifact, which is a
+// shape better decided against a caller than in advance.
+//
+// **`entity.merged`.** Identity resolution across sources needs a rule for what
+// happens to the attributions on both sides. Two entities for one real-world
+// thing is the state the product is in until then.
+//
 // # Emits
 //
-// \tattribution.proposed · accepted · rejected · entity.merged
+//	entity.root.created · entity.fragment.seen
+//	entity.attribution.proposed · accepted · rejected
+//	entity.judgement.set
 package entity

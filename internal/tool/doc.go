@@ -1,25 +1,45 @@
-// Package tool is a definition and a field mapping, never an integration.
+// Package tool owns what the firm can run, and how its output becomes a field.
 //
-// # PLACEHOLDER — not built
+// **A tool is a definition and a field mapping — never an integration.** The
+// distinction is `CLAUDE.md`'s and it is load-bearing: an integration is code
+// per tool and a definition is a row, and the difference is whether adding
+// `subfinder` is a deploy or an insert.
 //
-// This file exists so the directory has a name and a contract before it has
-// code. Written 2026-09-06 from drafts/domain-map.md, which binds nothing. It is
-// expanded into a real contract by the session that builds this domain, and that
-// expansion happens BEFORE the implementation — custody 0010-0013 measured why:
-// where the document states the behaviour a barriered suite dominates, and where
-// the code moved past the document it can see nothing.
+// # These are the firm's rows, not an engagement's — decisions/0031
 //
-// # Owns
+// `0005` says every product row carries a `workspace_id`. `0031` narrows that to
+// rows recording something **observed**, and a tool is not one:
 //
-// The tool: its kind, its argv template, and the mapping from its output to
-// fields. The mapping is what makes coverage answerable — it declares which
-// fields a run of this tool WOULD have produced.
+//	observed    a claim about a client   -> workspace_id
+//	capability  a thing the firm owns    -> org_id
 //
-// # Does not own
+// **The correction loop is why.** Fixing a mapping once must fix it everywhere;
+// per-workspace mappings mean a firm re-corrects the same parser for every
+// client it takes on, which is the cost the whole loop exists to avoid.
 //
-// Execution, and the parsing itself. It owns the mapping parsing follows.
+// # A mapping version is never edited
 //
-// # Emits
+// An observation cites the version that produced it, so a version whose
+// expression changed under a citation makes that observation's lineage a lie.
+// Correcting a mapping is **adding a version** — the same reasoning `0030`
+// applies to a scope rule, and for the same reason: three surfaces cite an id.
 //
-// \ttool.added · tool.mapping.changed · tool.reviewed
+// **`correction` gets no table.** It is creating a version whose author is a
+// person, and the distinction worth keeping — who authored it — is a field.
+//
+// # Promotion is what makes a version live
+//
+// A version is drafted, then promoted. Exactly one version of a tool's mapping
+// is live at a time, and promoting a new one retires the old — so "which mapping
+// produced this" always has an answer and "which mapping is running" has exactly
+// one.
+//
+// # Who may
+//
+//	read    org membership
+//	write   owner | admin — 0019 places "tool definitions" on that rung
+//
+// This is the first product surface the CAPABILITY GATE does not protect, and it
+// is deliberate: an admin with no grant on any engagement can edit a parser every
+// engagement uses. That is the same reach `0019` gives them over people.
 package tool

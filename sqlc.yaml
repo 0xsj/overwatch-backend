@@ -69,3 +69,76 @@ sql:
         sql_package: pgx/v5
         emit_empty_slices: true
         emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/target/infra/postgres/migrations
+    queries: internal/target/infra/postgres/queries
+    gen:
+      go:
+        package: targetdb
+        out: internal/target/infra/postgres/targetdb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/scope/infra/postgres/migrations
+    queries: internal/scope/infra/postgres/queries
+    gen:
+      go:
+        package: scopedb
+        out: internal/scope/infra/postgres/scopedb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/tool/infra/postgres/migrations
+    queries: internal/tool/infra/postgres/queries
+    gen:
+      go:
+        package: tooldb
+        out: internal/tool/infra/postgres/tooldb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+  - engine: postgresql
+    schema: internal/check/infra/postgres/migrations
+    queries: internal/check/infra/postgres/queries
+    gen:
+      go:
+        package: checkdb
+        out: internal/check/infra/postgres/checkdb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+  - engine: postgresql
+    schema: internal/run/infra/postgres/migrations
+    queries: internal/run/infra/postgres/queries
+    gen:
+      go:
+        package: rundb
+        out: internal/run/infra/postgres/rundb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+  - engine: postgresql
+    schema: internal/observation/infra/postgres/migrations
+    queries: internal/observation/infra/postgres/queries
+    gen:
+      go:
+        package: observationdb
+        out: internal/observation/infra/postgres/observationdb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+  - engine: postgresql
+    schema: internal/entity/infra/postgres/migrations
+    queries: internal/entity/infra/postgres/queries
+    gen:
+      go:
+        package: entitydb
+        out: internal/entity/infra/postgres/entitydb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false

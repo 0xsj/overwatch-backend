@@ -1,46 +1,56 @@
-// Package observation is what ONE SOURCE said, with lineage back to the bytes.
+// Package observation holds what ONE SOURCE SAID, per field, with lineage to the
+// bytes it was read out of.
 //
-// # PLACEHOLDER — not built
+// **An observation, never a fact.** `PRODUCT.md` calls that the load-bearing
+// word: every other tool treats its records as facts, and calling ours a fact
+// commits the same error in the vocabulary. A source said something. That is all
+// that is ever held.
 //
-// This file exists so the directory has a name and a contract before it has
-// code. Written 2026-09-06 from drafts/domain-map.md, which binds nothing. It is
-// expanded into a real contract by the session that builds this domain, and that
-// expansion happens BEFORE the implementation — custody 0010-0013 measured why:
-// where the document states the behaviour a barriered suite dominates, and where
-// the code moved past the document it can see nothing.
+// # Per field — decisions/0035
 //
-// # Owns
+// Six fields read out of one httpx record is SIX rows, not one row with six
+// columns. That is what makes lineage a per-VALUE link, and what lets a
+// correction change what one field means without touching the other five.
 //
-// The observation: its subject, its field, its value, and lineage — the
-// invocation, the artifact, and byte offsets into it.
+//	subject_kind · subject_value    what it is about
+//	field · value                   what was said
+//	invocation · artifact · mapping the lineage
+//	observed_at                     when the TOOL ran
 //
-// THREE STATES for every field, and they are three: found, looked for and not
-// there, never looked for. omitempty on a bare string collapses two of them,
-// which is the bug that writes a live host off as dead.
+// The subject is carried INLINE rather than as a `fragment` reference.
+// `fragment` is UNBUILT, and an observation is complete without one — *a source
+// said this host has this server header* is a whole statement. A fragment is a
+// dedup over those two columns and adds a column here rather than changing what
+// a row means.
 //
-// A rule-derived observation carries NO confidence. Not 1.0 — absent. In fact
-// NO observation carries one: confidence is the signature of a claim that two
-// things are the same, which is an attribution. Fifty-five screens agree —
-// "rule-derived | no confidence" is what the log renders.
+// # A field nobody mapped is RECORDED, never guessed
 //
-// An observation may have MANUAL, run-less provenance: verified by hand, with an
-// artifact and no invocation. The lineage chain must admit a non-tool source.
+// Extraction enumerates every leaf path in a record and diffs it against the
+// live mappings. A path with no mapping becomes an [Unmapped] row:
 //
-// COVERAGE is a projection rooted here and it is RAGGED — decisions/0011. The
-// denominator is the sum over subjects of the checks APPLICABLE to that
-// subject's kind, never subjects times checks. An ASN has no TLS certificate, and
-// a cell for one is not a gap in coverage — it is not a pair. Four cell states:
-// fresh, stale, never, n/a — and n/a leaves both numerator and denominator.
+//	FIELDS SEEN   every distinct leaf path
+//	MAPPED        paths a live mapping claimed
+//	LEFT ALONE    the difference — kept in the artifact, never guessed at
 //
-// That is the three-state rule one level up, and getting it wrong inflates the
-// never-attempted count in the one report section that exists to avoid implying
-// a completeness nobody achieved.
+// **This is the most tempting rule in the product to break.** `webserver` is
+// obviously a server header. Naming it anyway would put a value in the record
+// that no source was asked for, carrying lineage that points at bytes which do
+// not justify the NAME — and that is the difference between an observation and a
+// fact, one level down.
 //
-// # Does not own
+// It is also the only measurement of the correction loop that exists, which is
+// `PRODUCT.md`'s central economic claim and has never run long enough for
+// anybody to know whether it improves.
 //
-// Identity across sources. Two observations agreeing is not an entity.
+// # The expression language is a dotted path and nothing more
 //
-// # Emits
+//	.host      .a.b      .a[].b
 //
-// \tobservation.recorded
+// No filters, no functions, no arithmetic. The moment an expression can COMPUTE,
+// a mapping stops being a reading and becomes a derivation — and `0003` is
+// emphatic that those are different edges and only one of them is a claim.
+//
+// # These are the engagement's rows — 0031
+//
+// `workspace_id`, non-null. An observation is a claim about a client.
 package observation
