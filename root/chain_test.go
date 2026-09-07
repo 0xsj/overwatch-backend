@@ -3,7 +3,6 @@ package root
 import (
 	"context"
 	"crypto/rand"
-	"os"
 	"testing"
 
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
@@ -21,6 +20,7 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/outbox"
 	"github.com/0xsj/overwatch-backend/pkg/postgres"
 	"github.com/0xsj/overwatch-backend/pkg/secret"
+	"github.com/0xsj/overwatch-backend/pkg/testx"
 )
 
 var cheap = crypto.Params{Memory: 64, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32}
@@ -33,45 +33,12 @@ type chain struct {
 
 func wired(t *testing.T) chain {
 	t.Helper()
-	dsn := os.Getenv("OVERWATCH_TEST_DSN")
-	if dsn == "" {
-		t.Skip("OVERWATCH_TEST_DSN is unset — run `make test-db`")
-	}
-	ctx := context.Background()
-	p, err := postgres.Open(ctx, postgres.Config{DSN: dsn})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(p.Close)
-
-	for _, s := range []string{"identity", "org", "workspace"} {
-		if _, err := p.DB(ctx).Exec(ctx, "drop schema if exists "+s+" cascade"); err != nil {
-			t.Fatalf("drop %s: %v", s, err)
-		}
-	}
-	// The ledger goes with the table: a forward-only migrator will not re-apply
-	// what it recorded, so dropping outbox alone leaves it claiming a table that
-	// is not there.
-	for _, q := range []string{"drop table if exists outbox cascade", "drop table if exists schema_migrations cascade"} {
-		if _, err := p.DB(ctx).Exec(ctx, q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	if _, err := postgres.Migrate(ctx, p, outbox.Migrations); err != nil {
-		t.Fatalf("migrate outbox: %v", err)
-	}
-	for _, set := range []struct {
-		ms     []postgres.Migration
-		schema string
-	}{
-		{identitypg.Migrations, identitypg.Schema},
-		{orgpg.Migrations, orgpg.Schema},
-		{workspacepg.Migrations, workspacepg.Schema},
-	} {
-		if _, err := postgres.Migrate(ctx, p, set.ms, postgres.InSchema(set.schema)); err != nil {
-			t.Fatalf("migrate %s: %v", set.schema, err)
-		}
-	}
+	p := testx.Postgres(t,
+		testx.Schema{Name: "outbox", Migrations: outbox.Migrations, Unqualified: true},
+		testx.Schema{Name: identitypg.Schema, Migrations: identitypg.Migrations},
+		testx.Schema{Name: orgpg.Schema, Migrations: orgpg.Migrations},
+		testx.Schema{Name: workspacepg.Schema, Migrations: workspacepg.Migrations},
+	)
 
 	clk := clock.System{}
 	ids := id.NewV7(clk, rand.Reader)

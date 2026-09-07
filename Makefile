@@ -27,6 +27,13 @@ check: ## vet, then test under the race detector
 	@go vet ./...
 	@go test -race ./...
 
+recent: ## the newest journal lines, newest first
+	@$(LOAD_ENV) psql "$$DATABASE_URL" -f scripts/recent.sql
+
+chain: ## one request's causation tree — make chain C=<correlation-uuid>
+	@test -n "$(C)" || { echo "usage: make chain C=<correlation-uuid>  (the X-Correlation-Id header of any response)"; exit 1; }
+	@$(LOAD_ENV) psql "$$DATABASE_URL" -v c="$(C)" -f scripts/chain.sql
+
 tidy:  ## go mod tidy
 	@go mod tidy
 

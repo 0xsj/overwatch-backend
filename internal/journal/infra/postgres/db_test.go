@@ -2,7 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -11,8 +10,8 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/clock"
 	"github.com/0xsj/overwatch-backend/pkg/events"
 	"github.com/0xsj/overwatch-backend/pkg/id"
-	"github.com/0xsj/overwatch-backend/pkg/postgres"
 	"github.com/0xsj/overwatch-backend/pkg/provenance"
+	"github.com/0xsj/overwatch-backend/pkg/testx"
 )
 
 var at = time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
@@ -23,22 +22,7 @@ func (fixedClock) Now() time.Time { return at }
 
 func store(t *testing.T) *journalpg.Store {
 	t.Helper()
-	dsn := os.Getenv("OVERWATCH_TEST_DSN")
-	if dsn == "" {
-		t.Skip("OVERWATCH_TEST_DSN is unset — run `make test-db`")
-	}
-	ctx := context.Background()
-	p, err := postgres.Open(ctx, postgres.Config{DSN: dsn})
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	t.Cleanup(p.Close)
-	if _, err := p.DB(ctx).Exec(ctx, "drop schema if exists journal cascade"); err != nil {
-		t.Fatalf("drop schema: %v", err)
-	}
-	if _, err := postgres.Migrate(ctx, p, journalpg.Migrations, postgres.InSchema(journalpg.Schema)); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	p := testx.Postgres(t, testx.Schema{Name: journalpg.Schema, Migrations: journalpg.Migrations})
 	return journalpg.NewStore(p)
 }
 
