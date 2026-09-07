@@ -1,14 +1,23 @@
 // Package query answers questions about identity without changing anything.
 //
-// **It is empty, and that is the current state rather than an omission.**
-// Nothing reads identity yet: registration is the only operation, and it is a
-// command. The package exists so the convention is visible before there are
-// twenty files to move.
+// [Sessions.Authenticate] is the first of them and the reason the split exists:
+// it runs on every authenticated request and needs **none** of the write side's
+// ports — no transaction, no publisher, no hasher. Sharing a port set with
+// `command` would drag a password hasher into the hottest path in the system.
 //
-// # What belongs here when it arrives
+// It answers with a [Caller], which is a view rather than an aggregate: what a
+// middleware needs to name the actor, and nothing else.
 //
-//	session validation      on every authenticated request. The hottest path
-//	                        in the system, and the reason the split exists
+// **Unknown, revoked and expired all answer [ErrNoSession].** Which of the three
+// it was is not the caller's business, and distinguishing them turns the
+// endpoint into an oracle for guessing tokens.
+//
+// **An account archived after its session was minted stops working
+// immediately.** The session's own expiry cannot see that, so the account is
+// read and checked on every request rather than trusted from the token.
+//
+// # What belongs here when the rest arrives
+//
 //	"my sessions"           a list, with the caller's own marked
 //	api keys for an account revoked ones included — a revoked key is part of
 //	                        the answer to "what happened to my key"

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
+	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
 	identityhttp "github.com/0xsj/overwatch-backend/internal/identity/transport/http"
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
@@ -53,14 +54,22 @@ func tracedSystem(t *testing.T) traced {
 	ids := id.NewV7(clk, rand.Reader)
 	publisher := outbox.NewPublisher(outbox.NewPostgres(p))
 
+	accounts := identitypg.NewStore(p)
+	hasher := crypto.NewHasher(cheap, rand.Reader)
+	auth := identitycmd.NewAuthenticator(accounts, publisher, hasher,
+		crypto.NewMinter(rand.Reader), ids, clk, 0)
+	sessions := identityquery.NewSessions(accounts, clk)
+
 	mux := http.NewServeMux()
-	identityhttp.NewAPI(identitycmd.NewRegistrar(identitypg.NewStore(p), p, publisher,
-		crypto.NewHasher(cheap, rand.Reader), ids, clk), logger.Nop()).Routes(mux)
+	identityhttp.NewAPI(
+		identitycmd.NewRegistrar(accounts, p, publisher, hasher, ids, clk),
+		auth, logger.Nop()).Routes(mux)
 
 	return traced{
-		// The real middleware, with a nil Identifier: a registration is
-		// unauthenticated, which is why the actor below is anonymous.
-		handler: httpx.Chain(mux, httpx.WithProvenance(ids, nil)),
+		// The real middleware with the real Identifier. A registration carries
+		// no token, so its actor is anonymous — but a signed-in request's is
+		// not, which is what TestASignedInRequestNamesThePerson asserts.
+		handler: httpx.Chain(mux, httpx.WithProvenance(ids, identityhttp.Identifier(sessions))),
 		pump: outbox.New(outbox.Config{
 			Store: outbox.NewPostgres(p), Clock: clk, Log: logger.Nop(),
 			Handlers: []events.Handler{
@@ -88,6 +97,37 @@ func (s traced) register(t *testing.T, email string, headers map[string]string) 
 
 // drain runs the pump until the outbox is empty — the chain is three hops, and
 // each hop's event is published by the hop before it.
+func (s traced) post(t *testing.T, path, body string, headers map[string]string) *http.Response {
+	t.Helper()
+	return s.do(t, http.MethodPost, path, body, headers)
+}
+
+func (s traced) delete(t *testing.T, path string, headers map[string]string) *http.Response {
+	t.Helper()
+	return s.do(t, http.MethodDelete, path, "", headers)
+}
+
+func (s traced) do(t *testing.T, method, path, body string, headers map[string]string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("content-type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	s.handler.ServeHTTP(rec, req)
+	return rec.Result()
+}
+
+func decode(t *testing.T, res *http.Response, into any) {
+	t.Helper()
+	if err := json.NewDecoder(res.Body).Decode(into); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
 func (s traced) drain(t *testing.T) {
 	t.Helper()
 	if err := s.pump.Drain(context.Background()); err != nil {
@@ -322,5 +362,92 @@ func TestDepthAndAttemptAreNotTakenFromTheCaller(t *testing.T) {
 	lines := s.lines(t)
 	if lines[0].Depth != 0 {
 		t.Errorf("the root is at depth %d — a caller set it", lines[0].Depth)
+	}
+}
+
+// The payoff, and the first time the record layer does what the product claims.
+// Until an Identifier was wired, every audit entry and journal line in the
+// system said `anonymous` — including for things a person plainly did.
+func TestASignedInRequestNamesThePersonInTheRecord(t *testing.T) {
+	s := tracedSystem(t)
+
+	res := s.register(t, "sam@example.com", nil)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register: %d", res.StatusCode)
+	}
+	var registered struct {
+		AccountID string `json:"account_id"`
+	}
+	decode(t, res, &registered)
+
+	// Signing in carries no token, so this one is anonymous too.
+	signIn := s.post(t, "/v1/sessions",
+		`{"email":"sam@example.com","password":"a passphrase nobody guesses"}`, nil)
+	if signIn.StatusCode != http.StatusCreated {
+		t.Fatalf("sign in: %d", signIn.StatusCode)
+	}
+	var session struct {
+		Token  string `json:"token"`
+		Status string `json:"status"`
+	}
+	decode(t, signIn, &session)
+	if session.Token == "" {
+		t.Fatal("no token")
+	}
+	// decisions/0018: a pending account signs in.
+	if session.Status != "pending" {
+		t.Errorf("status %q", session.Status)
+	}
+
+	s.drain(t)
+	byAction := map[string]line{}
+	for _, l := range s.lines(t) {
+		byAction[l.Action] = l
+	}
+
+	started, ok := byAction["identity.session.started"]
+	if !ok {
+		t.Fatal("signing in produced no journal line")
+	}
+	want := "user:" + registered.AccountID
+	if started.Actor != want {
+		t.Errorf("actor is %q, want %q — the Identifier is not resolving the token", started.Actor, want)
+	}
+	// And a request made WITH the token names the person too.
+	out := s.delete(t, "/v1/sessions/current", map[string]string{
+		"Authorization": "Bearer " + session.Token,
+	})
+	if out.StatusCode != http.StatusNoContent {
+		t.Fatalf("sign out: %d", out.StatusCode)
+	}
+	s.drain(t)
+	for _, l := range s.lines(t) {
+		if l.Action != "identity.session.ended" {
+			continue
+		}
+		if l.Actor != want {
+			t.Errorf("sign-out actor is %q, want %q", l.Actor, want)
+		}
+		return
+	}
+	t.Error("signing out produced no journal line")
+}
+
+// A bad token must not fail the request at the middleware. Provenance is
+// metadata, never the thing that authorises — so it yields the anonymous actor
+// and the handler refuses properly.
+func TestABadTokenIsAnonymousRatherThanRejectedByTheMiddleware(t *testing.T) {
+	s := tracedSystem(t)
+	res := s.post(t, "/v1/sessions",
+		`{"email":"nobody@example.com","password":"a passphrase nobody guesses"}`,
+		map[string]string{"Authorization": "Bearer not-a-real-token"})
+
+	// The handler's answer, not the middleware's: rejected credentials, not a
+	// complaint about the header.
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status %d, want 401 from the handler", res.StatusCode)
+	}
+	if res.Header.Get(httpx.HeaderRequestID) == "" {
+		t.Error("the chain was not installed for a request with a bad token")
 	}
 }

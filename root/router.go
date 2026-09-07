@@ -16,7 +16,11 @@ import (
 //	             otherwise escape every recover, dropping the connection with no
 //	             500 and no log line
 //	provenance   inside recovery, and it installs the chain IN PLACE so the
-//	             recovery above still names the request it died on
+//	             recovery above still names the request it died on. Its
+//	             Identifier resolves the bearer token, which is what makes an
+//	             audit entry name a person rather than `anonymous` — and it is
+//	             SILENT on a bad token, because provenance is metadata and must
+//	             never be the thing that authorises
 //	logging      innermost, so it measures the handler and not the middleware
 func (a *app) routes() http.Handler {
 	mux := http.NewServeMux()
@@ -26,7 +30,7 @@ func (a *app) routes() http.Handler {
 
 	return httpx.Chain(mux,
 		httpx.WithRecovery(a.log),
-		httpx.WithProvenance(a.ids, nil),
+		httpx.WithProvenance(a.ids, a.whoami),
 		// Liveness is polled every few seconds forever. Logging it buries
 		// everything else and tells nobody anything.
 		httpx.WithLogging(a.log, "/healthz"),

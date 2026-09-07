@@ -61,9 +61,18 @@
 //
 // [Status] is a closed set of three:
 //
-//	pending    created, not yet verified. Cannot authenticate
-//	active     verified
-//	archived   removed, and still named by every record it authored
+//	pending    created, not yet verified. CAN sign in; cannot act
+//	active     verified. Full capability
+//	archived   removed, cannot sign in, and still named by every record it authored
+//
+// **A pending account authenticates** — decisions/0018. Authentication answers
+// who you are; whether you have somewhere to put things is authorisation, and
+// putting it at the first gate made a typo a permanent lockout and made a stuck
+// subscriber able to lock out a verified user. [Account.CanAuthenticate] is
+// therefore false only for archived.
+//
+// The protection did not go away: it moved to the gate that resolves a caller's
+// workspace, which refuses when there is none.
 //
 // **Archived is terminal.** An archived account does not return to active,
 // because reinstating one silently reattaches every historical claim it made to
@@ -220,6 +229,27 @@
 // ErrAccountNotFound, present is ErrStaleWrite. A caller retries one of those
 // and not the other, which is the whole reason the extra read is worth paying
 // for rather than collapsing both into a conflict.
+//
+// # Signing in, and the three things it must not leak
+//
+// **A wrong password and an unknown address answer identically.** Same error,
+// same shape, and the same WORK: a caller that finds no account still verifies
+// against [crypto.Hasher.Dummy] and discards the result. Skipping it makes the
+// endpoint a user directory readable with a stopwatch — 50ms for a real account,
+// 0.2ms for a stranger — and no amount of care in the comparison closes that.
+//
+// **A session stores the hash of its token and never the token.** The plaintext
+// is returned once, to the caller who signed in. A stolen database yields
+// nothing that can be presented.
+//
+// **A rehash happens during verification or not at all.** [crypto.Verification]
+// reports when a stored hash is below current policy, and the plaintext is in
+// hand exactly once — at that moment. Deferring it means the parameters chosen
+// on the first day are frozen for the life of every account.
+//
+// A rehash that fails does not fail the sign-in. The credential the caller
+// presented was correct; refusing them because an optimisation could not be
+// written would trade a correct outcome for a tidier one.
 //
 // # Deliberately absent
 //

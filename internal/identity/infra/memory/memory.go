@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/identity/domain"
 	"github.com/0xsj/overwatch-backend/pkg/id"
@@ -174,4 +175,72 @@ func (s *Store) SaveCredential(_ context.Context, c domain.Credential) error {
 	}
 	s.credentials[c.ID] = c
 	return nil
+}
+
+func (s *Store) CreateSession(_ context.Context, sn domain.Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.sessions {
+		if existing.Hash == sn.Hash {
+			return fmt.Errorf("identity: insert session: %w", domain.ErrAlreadyRevoked)
+		}
+	}
+	s.sessions[sn.ID] = sn
+	return nil
+}
+
+func (s *Store) SessionByHash(_ context.Context, hash string) (domain.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sn := range s.sessions {
+		if sn.Hash == hash {
+			return sn, nil
+		}
+	}
+	return domain.Session{}, fmt.Errorf("identity: read session: %w", domain.ErrSessionGone)
+}
+
+func (s *Store) SessionsFor(_ context.Context, account id.ID) ([]domain.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]domain.Session, 0, len(s.sessions))
+	for _, sn := range s.sessions {
+		if sn.AccountID == account {
+			out = append(out, sn)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) EndSession(_ context.Context, want id.ID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sn, ok := s.sessions[want]
+	if !ok || sn.Revoked() {
+		return fmt.Errorf("identity: revoke session: %w", domain.ErrSessionGone)
+	}
+	next, err := sn.Revoke(at)
+	if err != nil {
+		return err
+	}
+	s.sessions[want] = next
+	return nil
+}
+
+func (s *Store) EndSessionsFor(_ context.Context, account id.ID, at time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for k, sn := range s.sessions {
+		if sn.AccountID != account || sn.Revoked() {
+			continue
+		}
+		next, err := sn.Revoke(at)
+		if err != nil {
+			return n, err
+		}
+		s.sessions[k] = next
+		n++
+	}
+	return n, nil
 }

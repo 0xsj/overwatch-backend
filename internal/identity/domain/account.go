@@ -138,7 +138,7 @@ func (a Account) Rename(name string, at time.Time) (Account, error) {
 	return a.advance(at, func(next *Account) { next.Name = name }), nil
 }
 
-func (a Account) CanAuthenticate() bool { return a.Status == StatusActive }
+func (a Account) CanAuthenticate() bool { return a.Status != StatusArchived }
 
 func (a Account) advance(at time.Time, apply func(*Account)) Account {
 	next := a

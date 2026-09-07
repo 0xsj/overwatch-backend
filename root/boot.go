@@ -9,6 +9,7 @@ import (
 	auditapp "github.com/0xsj/overwatch-backend/internal/audit/app"
 	auditpg "github.com/0xsj/overwatch-backend/internal/audit/infra/postgres"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
+	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
 	identityhttp "github.com/0xsj/overwatch-backend/internal/identity/transport/http"
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
@@ -21,6 +22,7 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/crypto"
 	"github.com/0xsj/overwatch-backend/pkg/env"
 	"github.com/0xsj/overwatch-backend/pkg/events"
+	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 	"github.com/0xsj/overwatch-backend/pkg/logger"
 	"github.com/0xsj/overwatch-backend/pkg/outbox"
@@ -46,6 +48,7 @@ type app struct {
 	close func()
 
 	identity   *identityhttp.API
+	whoami     httpx.Identifier
 	dispatcher *outbox.Dispatcher
 }
 
@@ -138,10 +141,12 @@ func Boot(ctx context.Context) (*app, error) {
 	store := outbox.NewPostgres(db)
 	publisher := outbox.NewPublisher(store)
 
-	registrar := identitycmd.NewRegistrar(
-		identitypg.NewStore(db), db, publisher,
-		crypto.NewHasher(crypto.Default, rand.Reader), ids, clk,
-	)
+	accounts := identitypg.NewStore(db)
+	hasher := crypto.NewHasher(crypto.Default, rand.Reader)
+	registrar := identitycmd.NewRegistrar(accounts, db, publisher, hasher, ids, clk)
+	authenticator := identitycmd.NewAuthenticator(
+		accounts, publisher, hasher, crypto.NewMinter(rand.Reader), ids, clk, 0)
+	sessions := identityquery.NewSessions(accounts, clk)
 
 	// The registration chain — decisions/0017. Each link runs in its own
 	// transaction against its own schema, so any of the three can become a
@@ -177,7 +182,10 @@ func Boot(ctx context.Context) (*app, error) {
 
 	return &app{
 		cfg: cfg, log: log, clk: clk, ids: ids, db: db, boot: bootCtx,
-		identity:   identityhttp.NewAPI(registrar, log),
+		identity: identityhttp.NewAPI(registrar, authenticator, log),
+		// The moment this is non-nil, every record in the system starts naming
+		// a person instead of `anonymous`.
+		whoami:     identityhttp.Identifier(sessions),
 		dispatcher: dispatcher,
 		close:      func() { db.Close() },
 	}, nil

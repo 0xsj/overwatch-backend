@@ -13,21 +13,24 @@ import (
 
 type API struct {
 	registrar *command.Registrar
+	auth      *command.Authenticator
 	log       *slog.Logger
 }
 
-func NewAPI(registrar *command.Registrar, log *slog.Logger) *API {
-	if registrar == nil {
-		panic("identity: NewAPI with a nil registrar")
+func NewAPI(registrar *command.Registrar, auth *command.Authenticator, log *slog.Logger) *API {
+	if registrar == nil || auth == nil {
+		panic("identity: NewAPI with a nil dependency")
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &API{registrar: registrar, log: log}
+	return &API{registrar: registrar, auth: auth, log: log}
 }
 
 func (a *API) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/register", a.register)
+	mux.HandleFunc("POST /v1/sessions", a.signIn)
+	mux.HandleFunc("DELETE /v1/sessions/current", a.signOut)
 }
 
 type registerRequest struct {

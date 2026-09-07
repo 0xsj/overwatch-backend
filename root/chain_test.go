@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
+	"github.com/0xsj/overwatch-backend/internal/identity/domain"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
@@ -84,10 +85,19 @@ func TestTheChainProvisionsTenancyFromTheEventAlone(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	// Immediately after registering: an account, and no tenancy yet. That window
-	// is safe precisely because the account cannot authenticate.
-	if got.Account.CanAuthenticate() {
-		t.Fatal("a freshly registered account can authenticate — the window is no longer safe")
+	// Immediately after registering: an account, and no tenancy yet.
+	//
+	// decisions/0018 moved what makes that window safe. It is no longer that the
+	// account cannot authenticate — it can, and signing in immediately is the
+	// point — it is that a PENDING account cannot ACT, and the capability gate
+	// refuses a caller whose workspace does not resolve. That gate belongs to
+	// the first workspace operation built, and 0018 is where the requirement is
+	// written down.
+	if got.Account.Status != domain.StatusPending {
+		t.Fatalf("a freshly registered account is %v, want pending", got.Account.Status)
+	}
+	if !got.Account.CanAuthenticate() {
+		t.Fatal("a pending account cannot sign in — decisions/0018 says it must be able to")
 	}
 	if n := count(t, c.pool, "select count(*) from org.org"); n != 0 {
 		t.Errorf("%d orgs before the chain ran", n)
