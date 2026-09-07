@@ -8,8 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0xsj/overwatch-backend/pkg/clock"
+	"github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/events"
 	"github.com/0xsj/overwatch-backend/pkg/id"
+	"github.com/0xsj/overwatch-backend/pkg/logger"
 	"github.com/0xsj/overwatch-backend/pkg/outbox"
 	"github.com/0xsj/overwatch-backend/pkg/postgres"
 	"github.com/0xsj/overwatch-backend/pkg/provenance"
@@ -288,5 +291,151 @@ func TestTheSubjectSurvivesTheRoundTripThroughTheTable(t *testing.T) {
 	}
 	if got.SubjectKind() != "account" || got.SubjectID() != "0198f3c1" {
 		t.Errorf("split %q into %q / %q", got.Subject, got.SubjectKind(), got.SubjectID())
+	}
+}
+
+// ── the wake ───────────────────────────────────────────────────────────
+//
+// The property is latency, and the property that makes it safe is that
+// correctness does not depend on it. Both are asserted, because a wake that is
+// merely fast is an optimisation and a wake that is fast AND optional is a
+// design.
+func TestACommittedPublishWakesAListenerAndARollbackDoesNot(t *testing.T) {
+	pool, store := open(t)
+	ctx := context.Background()
+	f := newFixture(t)
+
+	wake, err := pool.Listen(ctx, outbox.NotifyChannel, nil)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	// A rollback must not wake anybody: the NOTIFY rides the transaction, so an
+	// event that never existed cannot announce itself.
+	_ = pool.InTx(ctx, func(ctx context.Context) error {
+		if err := outbox.NewPublisher(store).Publish(ctx, f.event(t, "rolled.back")); err != nil {
+			return err
+		}
+		return errors.New(errors.Unavailable, "no")
+	})
+	select {
+	case <-wake:
+		t.Fatal("a rolled-back publish woke the dispatcher")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	if err := outbox.NewPublisher(store).Publish(ctx, f.event(t, "identity.account.created")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a committed publish did not wake the listener")
+	}
+}
+
+// Ten events in one transaction are one wake, not ten. Postgres collapses
+// identical notifications within a transaction, and the channel has one slot —
+// the consumer was going to look at everything anyway.
+func TestABatchWakesOnce(t *testing.T) {
+	pool, store := open(t)
+	ctx := context.Background()
+	f := newFixture(t)
+
+	wake, err := pool.Listen(ctx, outbox.NotifyChannel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch := make([]events.Event, 0, 10)
+	for i := 0; i < 10; i++ {
+		batch = append(batch, f.event(t, "identity.account.created"))
+	}
+	if err := outbox.NewPublisher(store).Publish(ctx, batch...); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no wake")
+	}
+	select {
+	case <-wake:
+		t.Error("a second wake for one transaction — the slot is not coalescing")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// The dispatcher must deliver without a wake at all, or the ticker has stopped
+// being a backstop and started being decoration.
+func TestDeliveryDoesNotDependOnTheWake(t *testing.T) {
+	pool, store := open(t)
+	ctx := context.Background()
+	f := newFixture(t)
+	_ = pool
+
+	var got int
+	d := outbox.New(outbox.Config{
+		Store: store, Clock: clock.System{}, Log: logger.Nop(),
+		// No Wake at all: a nil channel blocks forever in the select, which is
+		// exactly the "every notification was missed" case.
+		Handlers: []events.Handler{func(context.Context, events.Event) error {
+			got++
+			return nil
+		}},
+	})
+	if err := outbox.NewPublisher(store).Publish(ctx, f.event(t, "identity.account.created")); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got != 1 {
+		t.Errorf("delivered %d events with no wake, want 1", got)
+	}
+}
+
+func TestAChannelNameIsValidatedRatherThanQuoted(t *testing.T) {
+	pool, _ := open(t)
+	for _, name := range []string{"", "Outbox", "outbox-events", "outbox; drop table x"} {
+		if _, err := pool.Listen(context.Background(), name, nil); !errors.IsKind(err, errors.Invalid) {
+			t.Errorf("Listen(%q) gave %v, want Invalid", name, err)
+		}
+	}
+}
+
+// Run is the loop the server actually uses, and it is not the one Drain
+// exercises. This sets the ticker far out of reach, so a delivery inside two
+// seconds can only have come from the wake — which is what a test on Drain
+// cannot tell you, and what a live measurement caught after the unit tests
+// passed against the wrong loop.
+func TestRunDeliversOnTheWakeAndNotOnTheTicker(t *testing.T) {
+	pool, store := open(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := newFixture(t)
+
+	wake, err := pool.Listen(ctx, outbox.NotifyChannel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan struct{}, 4)
+	d := outbox.New(outbox.Config{
+		Store: store, Clock: clock.System{}, Log: logger.Nop(),
+		Wake:     wake,
+		Interval: 30 * time.Second,
+		Handlers: []events.Handler{func(context.Context, events.Event) error {
+			delivered <- struct{}{}
+			return nil
+		}},
+	})
+	go func() { _ = d.Run(ctx) }()
+
+	if err := outbox.NewPublisher(store).Publish(ctx, f.event(t, "identity.account.created")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing delivered in 2s with a 30s ticker — Run is not selecting on the wake")
 	}
 }

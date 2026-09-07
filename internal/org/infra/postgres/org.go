@@ -13,16 +13,33 @@ import (
 
 func (s *Store) CreateOrg(ctx context.Context, o domain.Org) error {
 	err := s.q(ctx).InsertOrg(ctx, orgdb.InsertOrgParams{
-		ID:        uuid(o.ID),
-		Name:      o.Name,
-		Version:   int32(o.Version),
-		CreatedAt: stamp(o.CreatedAt),
-		UpdatedAt: stamp(o.UpdatedAt),
+		ID:            uuid(o.ID),
+		Name:          o.Name,
+		Version:       int32(o.Version),
+		CreatedAt:     stamp(o.CreatedAt),
+		UpdatedAt:     stamp(o.UpdatedAt),
+		SourceEventID: maybe(o.SourceEvent),
 	})
-	if err != nil {
-		return postgres.Translate(ctx, err, "org: insert org")
+	if err == nil {
+		return nil
 	}
-	return nil
+	translated := postgres.Translate(ctx, err, "org: insert org")
+	if postgres.IsConstraint(translated, "org_source_event") {
+		return fmt.Errorf("org: insert org: %w", domain.ErrAlreadyProvisioned)
+	}
+	return translated
+}
+
+func (s *Store) OrgBySourceEvent(ctx context.Context, event id.ID) (domain.Org, error) {
+	row, err := s.q(ctx).OrgBySourceEvent(ctx, maybe(event))
+	if err != nil {
+		translated := postgres.Translate(ctx, err, "org: read by source event")
+		if errors.IsKind(translated, errors.NotFound) {
+			return domain.Org{}, fmt.Errorf("org: read by source event: %w", domain.ErrOrgNotFound)
+		}
+		return domain.Org{}, translated
+	}
+	return org(row), nil
 }
 
 func (s *Store) OrgByID(ctx context.Context, want id.ID) (domain.Org, error) {

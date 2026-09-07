@@ -13,6 +13,7 @@ const (
 type AccountCreated struct {
 	AccountID string `json:"account_id"`
 	Email     string `json:"email"`
+	Name      string `json:"name"`
 }
 
 type AccountActivated struct {

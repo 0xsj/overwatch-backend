@@ -45,6 +45,13 @@ func (s *Store) q(ctx context.Context) *workspacedb.Queries {
 
 func uuid(i id.ID) pgtype.UUID { return pgtype.UUID{Bytes: i, Valid: true} }
 
+func maybe(i id.ID) pgtype.UUID {
+	if i.IsZero() {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: i, Valid: true}
+}
+
 func ident(u pgtype.UUID) id.ID {
 	if !u.Valid {
 		return id.Nil
@@ -72,27 +79,29 @@ func workspace(row workspacedb.WorkspaceWorkspace) (domain.Workspace, error) {
 		return domain.Workspace{}, err
 	}
 	return domain.Workspace{
-		ID:         ident(row.ID),
-		OrgID:      ident(row.OrgID),
-		Name:       row.Name,
-		Status:     status,
-		Version:    int(row.Version),
-		CreatedAt:  instant(row.CreatedAt),
-		UpdatedAt:  instant(row.UpdatedAt),
-		ArchivedAt: instant(row.ArchivedAt),
+		ID:          ident(row.ID),
+		OrgID:       ident(row.OrgID),
+		Name:        row.Name,
+		Status:      status,
+		Version:     int(row.Version),
+		CreatedAt:   instant(row.CreatedAt),
+		UpdatedAt:   instant(row.UpdatedAt),
+		ArchivedAt:  instant(row.ArchivedAt),
+		SourceEvent: ident(row.SourceEventID),
 	}, nil
 }
 
 func (s *Store) Create(ctx context.Context, w domain.Workspace) error {
 	err := s.q(ctx).InsertWorkspace(ctx, workspacedb.InsertWorkspaceParams{
-		ID:         uuid(w.ID),
-		OrgID:      uuid(w.OrgID),
-		Name:       w.Name,
-		Status:     w.Status.String(),
-		Version:    int32(w.Version),
-		CreatedAt:  stamp(w.CreatedAt),
-		UpdatedAt:  stamp(w.UpdatedAt),
-		ArchivedAt: stamp(w.ArchivedAt),
+		ID:            uuid(w.ID),
+		OrgID:         uuid(w.OrgID),
+		Name:          w.Name,
+		Status:        w.Status.String(),
+		Version:       int32(w.Version),
+		CreatedAt:     stamp(w.CreatedAt),
+		UpdatedAt:     stamp(w.UpdatedAt),
+		ArchivedAt:    stamp(w.ArchivedAt),
+		SourceEventID: maybe(w.SourceEvent),
 	})
 	if err == nil {
 		return nil
@@ -100,6 +109,9 @@ func (s *Store) Create(ctx context.Context, w domain.Workspace) error {
 	translated := postgres.Translate(ctx, err, "workspace: insert")
 	if postgres.IsConstraint(translated, "workspace_live_name") {
 		return fmt.Errorf("workspace: insert: %w", domain.ErrNameTaken)
+	}
+	if postgres.IsConstraint(translated, "workspace_source_event") {
+		return fmt.Errorf("workspace: insert: %w", domain.ErrAlreadyProvisioned)
 	}
 	return translated
 }

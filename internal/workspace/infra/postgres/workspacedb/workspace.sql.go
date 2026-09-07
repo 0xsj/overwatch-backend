@@ -13,19 +13,20 @@ import (
 
 const insertWorkspace = `-- name: InsertWorkspace :exec
 insert into workspace.workspace (
-    id, org_id, name, status, version, created_at, updated_at, archived_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8)
+    id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type InsertWorkspaceParams struct {
-	ID         pgtype.UUID
-	OrgID      pgtype.UUID
-	Name       string
-	Status     string
-	Version    int32
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	ArchivedAt pgtype.Timestamptz
+	ID            pgtype.UUID
+	OrgID         pgtype.UUID
+	Name          string
+	Status        string
+	Version       int32
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	ArchivedAt    pgtype.Timestamptz
+	SourceEventID pgtype.UUID
 }
 
 func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams) error {
@@ -38,6 +39,7 @@ func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.ArchivedAt,
+		arg.SourceEventID,
 	)
 	return err
 }
@@ -75,7 +77,7 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 }
 
 const workspaceByID = `-- name: WorkspaceByID :one
-select id, org_id, name, status, version, created_at, updated_at, archived_at
+select id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
 from workspace.workspace where id = $1
 `
 
@@ -91,12 +93,35 @@ func (q *Queries) WorkspaceByID(ctx context.Context, id pgtype.UUID) (WorkspaceW
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.SourceEventID,
+	)
+	return i, err
+}
+
+const workspaceBySourceEvent = `-- name: WorkspaceBySourceEvent :one
+select id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
+from workspace.workspace where source_event_id = $1
+`
+
+func (q *Queries) WorkspaceBySourceEvent(ctx context.Context, sourceEventID pgtype.UUID) (WorkspaceWorkspace, error) {
+	row := q.db.QueryRow(ctx, workspaceBySourceEvent, sourceEventID)
+	var i WorkspaceWorkspace
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Name,
+		&i.Status,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ArchivedAt,
+		&i.SourceEventID,
 	)
 	return i, err
 }
 
 const workspacesForOrg = `-- name: WorkspacesForOrg :many
-select id, org_id, name, status, version, created_at, updated_at, archived_at
+select id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
 from workspace.workspace
 where org_id = $1 and status <> 'archived'
 order by created_at
@@ -120,6 +145,7 @@ func (q *Queries) WorkspacesForOrg(ctx context.Context, orgID pgtype.UUID) ([]Wo
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ArchivedAt,
+			&i.SourceEventID,
 		); err != nil {
 			return nil, err
 		}

@@ -13,15 +13,6 @@ type Repository interface {
 	CreateCredential(ctx context.Context, c domain.Credential) error
 }
 
-type Tenancy struct {
-	OrgID       id.ID
-	WorkspaceID id.ID
-}
-
-type Provisioner interface {
-	Provision(ctx context.Context, owner id.ID, name string) (Tenancy, error)
-}
-
 type Transactor interface {
 	InTx(ctx context.Context, fn func(context.Context) error) error
 }

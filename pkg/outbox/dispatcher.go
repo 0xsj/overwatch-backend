@@ -17,6 +17,12 @@ type Config struct {
 	Log      *slog.Logger
 	Handlers []events.Handler
 
+	// Wake is an optional nudge: a receive means something MAY be due, never
+	// that anything is. The dispatcher does not know what feeds it — a Postgres
+	// LISTEN today, a broker later — and correctness never depends on it, which
+	// is why Interval remains and is the backstop rather than the fallback.
+	Wake <-chan struct{}
+
 	Batch       int
 	Interval    time.Duration
 	MaxAttempts int
@@ -171,10 +177,11 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-d.cfg.Wake:
 		case <-t.C:
-			if _, err := d.Dispatch(ctx); err != nil && ctx.Err() == nil {
-				d.cfg.Log.ErrorContext(ctx, "dispatch failed", "cause", err)
-			}
+		}
+		if _, err := d.Dispatch(ctx); err != nil && ctx.Err() == nil {
+			d.cfg.Log.ErrorContext(ctx, "dispatch failed", "cause", err)
 		}
 	}
 }

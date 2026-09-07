@@ -27,7 +27,6 @@ var (
 
 type Registrar struct {
 	repo      Repository
-	tenancy   Provisioner
 	tx        Transactor
 	publisher events.Publisher
 	hasher    Hasher
@@ -37,19 +36,18 @@ type Registrar struct {
 
 func NewRegistrar(
 	repo Repository,
-	tenancy Provisioner,
 	tx Transactor,
 	publisher events.Publisher,
 	hasher Hasher,
 	ids Minter,
 	clock Clock,
 ) *Registrar {
-	if repo == nil || tenancy == nil || tx == nil || publisher == nil ||
+	if repo == nil || tx == nil || publisher == nil ||
 		hasher == nil || ids == nil || clock == nil {
 		panic("identity: NewRegistrar with a nil dependency")
 	}
 	return &Registrar{
-		repo: repo, tenancy: tenancy, tx: tx,
+		repo: repo, tx: tx,
 		publisher: publisher, hasher: hasher, ids: ids, clock: clock,
 	}
 }
@@ -62,7 +60,6 @@ type Registration struct {
 
 type Registered struct {
 	Account domain.Account
-	Tenancy Tenancy
 }
 
 func (r *Registrar) Register(ctx context.Context, in Registration) (Registered, error) {
@@ -104,12 +101,15 @@ func (r *Registrar) Register(ctx context.Context, in Registration) (Registered, 
 	}
 	created, err := events.NewDecision(r.ids, r.clock,
 		domain.EventAccountCreated, SubjectKind+":"+account.ID.String(), prov,
-		domain.AccountCreated{AccountID: account.ID.String(), Email: email.String()})
+		domain.AccountCreated{
+			AccountID: account.ID.String(),
+			Email:     email.String(),
+			Name:      name,
+		})
 	if err != nil {
 		return Registered{}, fmt.Errorf("identity: register: %w", err)
 	}
 
-	var tenancy Tenancy
 	err = r.tx.InTx(ctx, func(ctx context.Context) error {
 		if err := r.repo.CreateAccount(ctx, account); err != nil {
 			return err
@@ -117,15 +117,10 @@ func (r *Registrar) Register(ctx context.Context, in Registration) (Registered, 
 		if err := r.repo.CreateCredential(ctx, credential); err != nil {
 			return err
 		}
-		t, err := r.tenancy.Provision(ctx, account.ID, name)
-		if err != nil {
-			return err
-		}
-		tenancy = t
 		return r.publisher.Publish(ctx, created)
 	})
 	if err != nil {
 		return Registered{}, fmt.Errorf("identity: register: %w", err)
 	}
-	return Registered{Account: account, Tenancy: tenancy}, nil
+	return Registered{Account: account}, nil
 }

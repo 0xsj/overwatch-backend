@@ -26,7 +26,9 @@ func NewService(repo Repository, publisher events.Publisher, ids Minter, clock C
 	return &Service{repo: repo, publisher: publisher, ids: ids, clock: clock}
 }
 
-func (s *Service) Provision(ctx context.Context, org id.ID, name string) (domain.Workspace, error) {
+// Provision creates a workspace for an org. `cause` is the event that asked for
+// it and is what makes a redelivery a no-op — decisions/0017.
+func (s *Service) Provision(ctx context.Context, org id.ID, name string, cause id.ID) (domain.Workspace, error) {
 	if name == "" {
 		name = DefaultName
 	}
@@ -35,6 +37,9 @@ func (s *Service) Provision(ctx context.Context, org id.ID, name string) (domain
 		return domain.Workspace{}, fmt.Errorf("workspace: provision: %w", err)
 	}
 
+	// The caller owns the causal chain. A subscriber installs a provenance
+	// derived from the event it is handling; minting one here would silently
+	// start a new chain and the journal could no longer join what one act did.
 	prov, ok := provenance.Current(ctx)
 	if !ok {
 		prov = provenance.New(provenance.OriginRequest, s.ids)
@@ -49,6 +54,8 @@ func (s *Service) Provision(ctx context.Context, org id.ID, name string) (domain
 	if err != nil {
 		return domain.Workspace{}, fmt.Errorf("workspace: provision: %w", err)
 	}
+
+	space.SourceEvent = cause
 
 	if err := s.repo.Create(ctx, space); err != nil {
 		return domain.Workspace{}, fmt.Errorf("workspace: provision: %w", err)

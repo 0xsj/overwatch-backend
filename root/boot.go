@@ -138,20 +138,38 @@ func Boot(ctx context.Context) (*app, error) {
 	store := outbox.NewPostgres(db)
 	publisher := outbox.NewPublisher(store)
 
-	tenancy := &tenancy{
-		orgs:       orgcmd.NewService(orgpg.NewStore(db), publisher, ids, clk),
-		workspaces: workspacecmd.NewService(workspacepg.NewStore(db), publisher, ids, clk),
-	}
 	registrar := identitycmd.NewRegistrar(
-		identitypg.NewStore(db), tenancy, db, publisher,
+		identitypg.NewStore(db), db, publisher,
 		crypto.NewHasher(crypto.Default, rand.Reader), ids, clk,
 	)
 
+	// The registration chain — decisions/0017. Each link runs in its own
+	// transaction against its own schema, so any of the three can become a
+	// separate service by replacing one handler here with a NATS publisher.
+	orgs := orgcmd.NewSubscriber(orgcmd.NewService(orgpg.NewStore(db), publisher, ids, clk), ids)
+	workspaces := workspacecmd.NewSubscriber(
+		workspacecmd.NewService(workspacepg.NewStore(db), publisher, ids, clk), ids)
+
+	// The poll interval is a backstop, not the delivery mechanism. A publish
+	// notifies inside its own transaction, so a committed event wakes the
+	// dispatcher in milliseconds instead of waiting out the ticker. If the
+	// listening connection is lost the wakes stop and the ticker carries on —
+	// slower, never wrong, and logged.
+	wake, err := db.Listen(bootCtx, outbox.NotifyChannel, log)
+	if err != nil {
+		return nil, err
+	}
+
 	dispatcher := outbox.New(outbox.Config{
 		Store: store,
+		Wake:  wake,
 		Clock: clk,
 		Log:   log,
 		Handlers: []events.Handler{
+			// The chain first: a link that fails is retried with the event, and
+			// the observers are idempotent, so they see it again harmlessly.
+			orgs.Handle,
+			workspaces.Handle,
 			auditapp.NewSubscriber(auditpg.NewStore(db), ids, clk).Handle,
 			journalapp.NewSubscriber(journalpg.NewStore(db), ids, clk).Handle,
 		},

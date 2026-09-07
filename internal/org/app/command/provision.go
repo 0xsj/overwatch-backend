@@ -29,7 +29,9 @@ type Provisioned struct {
 	Member domain.Member
 }
 
-func (s *Service) Provision(ctx context.Context, owner id.ID, name string) (Provisioned, error) {
+// Provision creates the founding org for an owner. `cause` is the event that
+// asked for it, and it is what makes a redelivery a no-op — decisions/0017.
+func (s *Service) Provision(ctx context.Context, owner id.ID, name string, cause id.ID) (Provisioned, error) {
 	at := s.clock.Now()
 
 	org, err := domain.NewOrg(s.ids.NewID(), name, at)
@@ -41,6 +43,9 @@ func (s *Service) Provision(ctx context.Context, owner id.ID, name string) (Prov
 		return Provisioned{}, fmt.Errorf("org: provision: %w", err)
 	}
 
+	// The caller owns the causal chain. A subscriber installs a provenance
+	// derived from the event it is handling; minting one here would silently
+	// start a new chain and the journal could no longer join what one act did.
 	prov, ok := provenance.Current(ctx)
 	if !ok {
 		prov = provenance.New(provenance.OriginRequest, s.ids)
@@ -51,6 +56,8 @@ func (s *Service) Provision(ctx context.Context, owner id.ID, name string) (Prov
 	if err != nil {
 		return Provisioned{}, fmt.Errorf("org: provision: %w", err)
 	}
+
+	org.SourceEvent = cause
 
 	if err := s.repo.CreateOrg(ctx, org); err != nil {
 		return Provisioned{}, fmt.Errorf("org: provision: %w", err)

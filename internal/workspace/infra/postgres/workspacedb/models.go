@@ -9,12 +9,13 @@ import (
 )
 
 type WorkspaceWorkspace struct {
-	ID         pgtype.UUID
-	OrgID      pgtype.UUID
-	Name       string
-	Status     string
-	Version    int32
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	ArchivedAt pgtype.Timestamptz
+	ID            pgtype.UUID
+	OrgID         pgtype.UUID
+	Name          string
+	Status        string
+	Version       int32
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	ArchivedAt    pgtype.Timestamptz
+	SourceEventID pgtype.UUID
 }

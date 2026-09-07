@@ -21,9 +21,10 @@ type OrgMember struct {
 }
 
 type OrgOrg struct {
-	ID        pgtype.UUID
-	Name      string
-	Version   int32
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID            pgtype.UUID
+	Name          string
+	Version       int32
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	SourceEventID pgtype.UUID
 }

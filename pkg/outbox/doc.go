@@ -64,6 +64,23 @@
 // detail: the memory adapter exists so a test of the dispatcher's *policy*
 // — backoff, burial, poison isolation — needs no database at all.
 //
+// # A wake is a nudge, and the ticker is what makes it optional
+//
+// [Postgres.Add] issues a NOTIFY on [NotifyChannel] inside the caller's
+// transaction, so it is delivered **on commit** and never for an event that
+// rolled back. [Config.Wake] is a channel the dispatcher selects on beside its
+// ticker, and it does not know what feeds it: a Postgres listener today, a
+// broker later, nothing at all in a test.
+//
+// **Correctness never depends on it.** The interval remains and is the backstop
+// rather than the fallback — miss every notification and the only thing lost is
+// latency. That is the property that makes the whole thing safe to add: it can
+// fail entirely and the system still delivers.
+//
+// The NOTIFY's own error is deliberately discarded. The rows are already
+// written; failing the caller's transaction because a latency optimisation did
+// not fire trades a correct outcome for a faster one.
+//
 // # Deliberately absent
 //
 // Ordering. Nothing here promises two events arrive in the order they were

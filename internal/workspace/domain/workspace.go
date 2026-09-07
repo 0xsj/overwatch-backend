@@ -20,6 +20,8 @@ var (
 	ErrNameTaken     = errors.New(errors.Conflict, "that name is already used in this organisation")
 	ErrArchived      = errors.New(errors.Conflict, "the workspace is archived")
 	ErrStaleWrite    = errors.New(errors.Conflict, "the record changed since it was read")
+	// A redelivery, not a failure — decisions/0007 and 0017.
+	ErrAlreadyProvisioned = errors.New(errors.Conflict, "already provisioned from that event")
 )
 
 type Status uint8
@@ -56,6 +58,10 @@ type Workspace struct {
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	ArchivedAt time.Time
+
+	// SourceEvent is the event this workspace was provisioned from, and is zero
+	// for one a person created — decisions/0017.
+	SourceEvent id.ID
 }
 
 func New(newID, orgID id.ID, name string, at time.Time) (Workspace, error) {

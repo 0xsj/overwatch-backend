@@ -48,6 +48,18 @@ func Run() error {
 				strconv.Itoa(a.cfg.ServerPort)+" -sTCP:LISTEN`. On macOS, 7000 and 5000 are AirPlay Receiver")
 	}
 
+	// The dispatcher is a second lifecycle beside the listener, not a goroutine
+	// somebody starts and forgets. It polls until the signal context is
+	// cancelled; the drain below is what stops the process exiting with events
+	// committed and nobody having tried to deliver them.
+	dispatched := make(chan struct{})
+	go func() {
+		defer close(dispatched)
+		if err := a.dispatcher.Run(ctx); err != nil {
+			a.log.ErrorContext(a.boot, "dispatcher stopped", "cause", err)
+		}
+	}()
+
 	errc := make(chan error, 1)
 	go func() {
 		a.log.InfoContext(a.boot, "listening", "addr", ln.Addr().String())
@@ -71,6 +83,15 @@ func Run() error {
 	if err := srv.Shutdown(shutCtx); err != nil {
 		return pkgerrors.Wrap(err, pkgerrors.Timeout, "shutdown did not finish")
 	}
+
+	// Requests have stopped, so nothing new is being committed. Wait for the
+	// poll loop to notice the cancellation, then empty the table — in that
+	// order, or the drain races the loop for the same rows.
+	<-dispatched
+	if err := a.dispatcher.Drain(shutCtx); err != nil {
+		return pkgerrors.Wrap(err, pkgerrors.Unavailable, "the outbox did not drain")
+	}
+	a.log.InfoContext(a.boot, "drained")
 	return nil
 }
 

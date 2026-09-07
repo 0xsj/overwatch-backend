@@ -41,6 +41,13 @@ func (s *Store) q(ctx context.Context) *orgdb.Queries { return orgdb.New(s.db.DB
 
 func uuid(i id.ID) pgtype.UUID { return pgtype.UUID{Bytes: i, Valid: true} }
 
+func maybe(i id.ID) pgtype.UUID {
+	if i.IsZero() {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: i, Valid: true}
+}
+
 func ident(u pgtype.UUID) id.ID {
 	if !u.Valid {
 		return id.Nil
@@ -64,11 +71,12 @@ func instant(t pgtype.Timestamptz) time.Time {
 
 func org(row orgdb.OrgOrg) domain.Org {
 	return domain.Org{
-		ID:        ident(row.ID),
-		Name:      row.Name,
-		Version:   int(row.Version),
-		CreatedAt: instant(row.CreatedAt),
-		UpdatedAt: instant(row.UpdatedAt),
+		ID:          ident(row.ID),
+		Name:        row.Name,
+		Version:     int(row.Version),
+		CreatedAt:   instant(row.CreatedAt),
+		UpdatedAt:   instant(row.UpdatedAt),
+		SourceEvent: ident(row.SourceEventID),
 	}
 }
 

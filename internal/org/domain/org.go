@@ -15,6 +15,11 @@ type Org struct {
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// SourceEvent is the event this org was provisioned from, and is zero for
+	// one a person created. It is the idempotency key decisions/0017 needs: a
+	// redelivered account.created must not produce a second org.
+	SourceEvent id.ID
 }
 
 func NewOrg(newID id.ID, name string, at time.Time) (Org, error) {

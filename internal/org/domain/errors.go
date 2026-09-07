@@ -19,4 +19,8 @@ var (
 	ErrLastOwner      = errors.New(errors.Conflict, "an organisation cannot lose its last owner")
 
 	ErrStaleWrite = errors.New(errors.Conflict, "the record changed since it was read")
+
+	// A redelivery, not a failure. decisions/0007 makes delivery at-least-once,
+	// so a subscriber seeing this has already done its work.
+	ErrAlreadyProvisioned = errors.New(errors.Conflict, "already provisioned from that event")
 )

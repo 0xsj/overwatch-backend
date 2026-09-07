@@ -41,7 +41,7 @@ func TestProvisioningMakesAnOrgAndItsFoundingOwner(t *testing.T) {
 	ctx := context.Background()
 	owner := ids.NewID()
 
-	got, err := s.Provision(ctx, owner, "Sam Lee")
+	got, err := s.Provision(ctx, owner, "Sam Lee", ids.NewID())
 	if err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -71,13 +71,13 @@ func TestTheSameAccountCannotBeProvisionedIntoOneOrgTwice(t *testing.T) {
 	ctx := context.Background()
 	owner := ids.NewID()
 
-	first, err := s.Provision(ctx, owner, "Sam Lee")
+	first, err := s.Provision(ctx, owner, "Sam Lee", ids.NewID())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Two orgs may share a name — a personal org is named after its owner, and
 	// two people called Sam Lee are two orgs.
-	if _, err := s.Provision(ctx, ids.NewID(), "Sam Lee"); err != nil {
+	if _, err := s.Provision(ctx, ids.NewID(), "Sam Lee", ids.NewID()); err != nil {
 		t.Fatalf("a second org of the same name was refused: %v", err)
 	}
 	// But one account cannot hold two live memberships of one org.
@@ -99,7 +99,7 @@ func TestAFailedPublishRollsBackWhenTheCallerHoldsTheTransaction(t *testing.T) {
 	// This package opens no transaction: it runs inside somebody else's. The
 	// rollback is therefore the caller's, and this is what that looks like.
 	err := store.InTx(ctx, func(ctx context.Context) error {
-		_, err := s.Provision(ctx, owner, "Sam Lee")
+		_, err := s.Provision(ctx, owner, "Sam Lee", ids.NewID())
 		return err
 	})
 	if err == nil {
@@ -112,7 +112,7 @@ func TestAFailedPublishRollsBackWhenTheCallerHoldsTheTransaction(t *testing.T) {
 
 func TestAnOrgNeedsAName(t *testing.T) {
 	s, _, _, ids := harness(t)
-	if _, err := s.Provision(context.Background(), ids.NewID(), "   "); !errors.Is(err, domain.ErrNameRequired) {
+	if _, err := s.Provision(context.Background(), ids.NewID(), "   ", ids.NewID()); !errors.Is(err, domain.ErrNameRequired) {
 		t.Errorf("an unnamed org was accepted: %v", err)
 	}
 }

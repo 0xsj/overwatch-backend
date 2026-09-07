@@ -5,16 +5,21 @@
 // policy, the email shape and the transaction all live in internal/identity/app;
 // what is here is decoding, one call, and encoding.
 //
-// # The registration response says nothing a caller has not earned
+// # The registration response carries no tenancy, and that is decisions/0017
 //
-// It returns the account id, the email as stored, and the ids of the org and
-// workspace that were provisioned — because the client needs the workspace id to
-// build its next URL, which is what ALIGNMENT.md asks for.
+// It returns the account id, the email as stored, and the **status** — which is
+// `pending`, and is the whole answer to "what can I do next": nothing, until the
+// account is activated.
 //
-// It does **not** return the account's status, its name, or anything about the
-// credential. A response is a commitment: every field in it is one somebody will
-// build against, and the ones that are not needed yet are cheaper to add than to
-// withdraw.
+// It does not carry an org or a workspace id, because at the moment this
+// responds neither exists yet. Registration publishes a fact; org and workspace
+// provision themselves from it, each in its own transaction. A caller that needs
+// a workspace id has signed in, and signing in requires activation, which
+// requires a workspace.
+//
+// It does not return the name or anything about the credential. A response is a
+// commitment: every field is one somebody will build against, and the ones not
+// needed yet are cheaper to add than to withdraw.
 //
 // # Errors go out as kinds, never as sentences
 //

@@ -207,6 +207,32 @@
 // pkg/outbox uses: its tables are shared infrastructure rather than a domain's,
 // so its ledger has no schema to belong to.
 //
+// # Listen is the one thing here that holds a connection open
+//
+// [Pool.Listen] does not take one from the pool. A pooled connection has a
+// lifetime and an idle timeout and will be closed under a long LISTEN; a
+// listener needs its own, dialled from the same configuration and held until
+// the context ends.
+//
+// It returns a channel with **one slot and a non-blocking send**, which is the
+// whole semantics: a receive means *something may be due*, never how much and
+// never what. Ten notifications arriving while a consumer is busy collapse into
+// one wake, because the consumer was going to look at everything anyway.
+//
+// **A dropped connection degrades rather than fails.** The loop reconnects with
+// backoff and logs, and whatever polls on its own is unaffected — which is why
+// a caller must keep polling. A design where correctness depends on the
+// notification is a design that stops working the first time a network blips,
+// silently, in the middle of the night.
+//
+// One unconditional wake follows a successful resume. A gap in listening is a
+// gap in wakes and nothing can know what it missed, so the resume itself is
+// treated as a notification: one late delivery instead of a stall.
+//
+// The channel name is **validated, not quoted**, for the same reason a schema
+// name is — it is interpolated into LISTEN, where a bind parameter is not
+// accepted.
+//
 // # Deliberately absent
 //
 // A query builder. sqlc generates from SQL, so SQL is the source and the schema

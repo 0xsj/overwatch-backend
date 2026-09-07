@@ -65,6 +65,10 @@ alter table outbox alter column decision drop default;
 // Postgres is the adapter that runs. It takes the pool rather than a DBTX so
 // that Add can ask for the CONTEXT's transaction — which is the whole property
 // decisions/0007 turns on, and the one a stored DBTX would quietly discard.
+// NotifyChannel is what Add signals on and what a waker listens to. One name,
+// declared where the insert is, so the two halves cannot drift.
+const NotifyChannel = "overwatch_outbox"
+
 type Postgres struct {
 	db *postgres.Pool
 }
@@ -94,6 +98,16 @@ func (p *Postgres) Add(ctx context.Context, evs ...events.Event) error {
 			return postgres.Translate(ctx, err, "outbox: add "+e.Name)
 		}
 	}
+
+	// NOTIFY inside the caller's transaction, so it is delivered ON COMMIT and
+	// never for an event that rolled back. Postgres collapses identical
+	// notifications within one transaction, so a batch of ten wakes once.
+	//
+	// A failure here is deliberately NOT returned: the rows are written and the
+	// ticker will find them. Failing the caller's transaction because a
+	// latency optimisation did not fire would trade a correct outcome for a
+	// faster one.
+	_, _ = p.db.DB(ctx).Exec(ctx, "select pg_notify($1, '')", NotifyChannel)
 	return nil
 }
 

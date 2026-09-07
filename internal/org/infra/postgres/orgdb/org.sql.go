@@ -57,16 +57,17 @@ func (q *Queries) InsertMember(ctx context.Context, arg InsertMemberParams) erro
 }
 
 const insertOrg = `-- name: InsertOrg :exec
-insert into org.org (id, name, version, created_at, updated_at)
-values ($1, $2, $3, $4, $5)
+insert into org.org (id, name, version, created_at, updated_at, source_event_id)
+values ($1, $2, $3, $4, $5, $6)
 `
 
 type InsertOrgParams struct {
-	ID        pgtype.UUID
-	Name      string
-	Version   int32
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID            pgtype.UUID
+	Name          string
+	Version       int32
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	SourceEventID pgtype.UUID
 }
 
 func (q *Queries) InsertOrg(ctx context.Context, arg InsertOrgParams) error {
@@ -76,6 +77,7 @@ func (q *Queries) InsertOrg(ctx context.Context, arg InsertOrgParams) error {
 		arg.Version,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.SourceEventID,
 	)
 	return err
 }
@@ -168,7 +170,7 @@ func (q *Queries) MembersOf(ctx context.Context, orgID pgtype.UUID) ([]OrgMember
 }
 
 const orgByID = `-- name: OrgByID :one
-select id, name, version, created_at, updated_at from org.org where id = $1
+select id, name, version, created_at, updated_at, source_event_id from org.org where id = $1
 `
 
 func (q *Queries) OrgByID(ctx context.Context, id pgtype.UUID) (OrgOrg, error) {
@@ -180,12 +182,32 @@ func (q *Queries) OrgByID(ctx context.Context, id pgtype.UUID) (OrgOrg, error) {
 		&i.Version,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SourceEventID,
+	)
+	return i, err
+}
+
+const orgBySourceEvent = `-- name: OrgBySourceEvent :one
+select id, name, version, created_at, updated_at, source_event_id
+from org.org where source_event_id = $1
+`
+
+func (q *Queries) OrgBySourceEvent(ctx context.Context, sourceEventID pgtype.UUID) (OrgOrg, error) {
+	row := q.db.QueryRow(ctx, orgBySourceEvent, sourceEventID)
+	var i OrgOrg
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.SourceEventID,
 	)
 	return i, err
 }
 
 const orgsForAccount = `-- name: OrgsForAccount :many
-select o.id, o.name, o.version, o.created_at, o.updated_at
+select o.id, o.name, o.version, o.created_at, o.updated_at, o.source_event_id
 from org.org o
 join org.member m on m.org_id = o.id
 where m.account_id = $1 and m.status <> 'archived'
@@ -207,6 +229,7 @@ func (q *Queries) OrgsForAccount(ctx context.Context, accountID pgtype.UUID) ([]
 			&i.Version,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SourceEventID,
 		); err != nil {
 			return nil, err
 		}

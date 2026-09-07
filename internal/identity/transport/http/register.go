@@ -37,10 +37,9 @@ type registerRequest struct {
 }
 
 type registerResponse struct {
-	AccountID   string `json:"account_id"`
-	Email       string `json:"email"`
-	OrgID       string `json:"org_id"`
-	WorkspaceID string `json:"workspace_id"`
+	AccountID string `json:"account_id"`
+	Email     string `json:"email"`
+	Status    string `json:"status"`
 }
 
 func (a *API) register(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +62,8 @@ func (a *API) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(w, r, http.StatusCreated, registerResponse{
-		AccountID:   out.Account.ID.String(),
-		Email:       out.Account.Email.String(),
-		OrgID:       out.Tenancy.OrgID.String(),
-		WorkspaceID: out.Tenancy.WorkspaceID.String(),
+		AccountID: out.Account.ID.String(),
+		Email:     out.Account.Email.String(),
+		Status:    out.Account.Status.String(),
 	})
 }
