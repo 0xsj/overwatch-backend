@@ -22,6 +22,7 @@ var ErrNoSession = errors.New(errors.Unauthenticated, "not signed in")
 type Reader interface {
 	SessionByHash(ctx context.Context, hash string) (domain.Session, error)
 	AccountByID(ctx context.Context, account id.ID) (domain.Account, error)
+	LiveSessionsFor(ctx context.Context, account id.ID, at time.Time) ([]domain.Session, error)
 }
 
 type Clock interface {
@@ -94,4 +95,45 @@ func (s *Sessions) Authenticate(ctx context.Context, presented string) (Caller, 
 		SessionID: session.ID,
 		ExpiresAt: session.ExpiresAt,
 	}, nil
+}
+
+// Device is one row of "where am I signed in". The user agent and the address
+// are shown VERBATIM and are never parsed into a friendly device name: both are
+// written by the client, so a tidied "Chrome on macOS" is a claim this server
+// cannot stand behind, and the whole purpose of the screen is that a person
+// recognises a session they do not recognise.
+type Device struct {
+	SessionID id.ID
+	UserAgent string
+	Address   string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
+
+	// Current marks the session that asked. Without it the screen has a "sign
+	// out everywhere" button and no way to say which row is you.
+	Current bool
+}
+
+// Mine lists the caller's live sessions, newest first. It takes the CURRENT
+// session id rather than deriving it, because this package must not see a token.
+func (s *Sessions) Mine(ctx context.Context, account, current id.ID) ([]Device, error) {
+	if account.IsZero() {
+		return nil, domain.ErrIDRequired
+	}
+	found, err := s.reader.LiveSessionsFor(ctx, account, s.clock.Now())
+	if err != nil {
+		return nil, fmt.Errorf("identity: my sessions: %w", err)
+	}
+	out := make([]Device, 0, len(found))
+	for _, sn := range found {
+		out = append(out, Device{
+			SessionID: sn.ID,
+			UserAgent: sn.UserAgent,
+			Address:   sn.Address,
+			IssuedAt:  sn.IssuedAt,
+			ExpiresAt: sn.ExpiresAt,
+			Current:   sn.ID == current,
+		})
+	}
+	return out, nil
 }

@@ -64,8 +64,14 @@ func (s *Store) ForOrigin(ctx context.Context, origin string, limit int32) ([]do
 	return collect(ctx, rows, err, "journal: by origin")
 }
 
-func (s *Store) ExpireBefore(ctx context.Context, cutoff time.Time) (int, error) {
-	n, err := s.q(ctx).ExpireLinesBefore(ctx, stamp(cutoff))
+// ExpireBefore deletes at most `batch` work lines older than the cutoff and
+// reports how many went. It NEVER deletes a decision — decisions/0022 — and the
+// caller repeats until a pass deletes fewer than a full batch.
+func (s *Store) ExpireBefore(ctx context.Context, cutoff time.Time, batch int) (int, error) {
+	n, err := s.q(ctx).ExpireLinesBefore(ctx, journaldb.ExpireLinesBeforeParams{
+		OccurredAt: stamp(cutoff),
+		Limit:      int32(batch),
+	})
 	if err != nil {
 		return 0, postgres.Translate(ctx, err, "journal: expire")
 	}

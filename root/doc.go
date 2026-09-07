@@ -5,30 +5,35 @@
 // sibling. The import checks enforce that (U1, U2), so this file is not a
 // convention — it is the only place a cross-domain operation can legally live.
 //
-// # Registration is NOT here, and the port is why
+// # Registration is NOT here, and no adapter for it is either
 //
-// It lives in internal/identity/app, because identity declares a [Provisioner]
-// port — "somewhere to put things", in terms of an account id and a name — and
-// implements none of it. Nothing but id.ID and a string crosses that boundary,
-// so identity never learns that an org or a workspace exists.
+// decisions/0017 made registration a CHAIN. identity writes an account and
+// publishes a fact; org provisions from that fact and publishes its own;
+// workspace provisions from org's. Three transactions, three schemas, and no
+// code anywhere that holds two of the three vocabularies at once.
 //
-// **What is here is the adapter that satisfies it.** `tenancy` knows two sibling
-// domains, which nothing else in the tree may, and that is exactly the licence
-// U2 grants the root: *the only thing allowed to know two vocabularies.*
+// **The `tenancy` adapter this file used to describe was deleted.** It was a
+// cross-domain WRITE living at the root under U2's licence, and while that was
+// legal it made the three domains inseparable in one transaction — which the
+// documents were simultaneously claiming could be split with a pg_dump. What
+// stands in its place is three subscribers in the list below.
 //
-// It was in this package first, and moving it was the correction: the root had
-// ended up constructing identity's aggregates, minting identity's events, and
-// inventing string literals for org's — behaviour, not wiring. decisions/0012 §5
-// puts registration at the root and reasoned from an incomplete option set; see
-// STATUS, and the record wants superseding.
+// The window it opened is real and invisible: for a few milliseconds an account
+// exists with no org. Nothing can reach it, because a pending account cannot
+// reach a product write path and the capability gate refuses a caller with no
+// workspace — decisions/0018.
 //
-// # The transaction is opened by identity and joined by everything under it
+// # What IS here is the composed READ
 //
-// pkg/postgres carries it on the context, so `tenancy` writes through org's and
-// workspace's repositories inside a transaction it has never heard of, with no
-// flag and no second method. **That is the whole guarantee**: no foreign key
-// crosses a schema boundary, so nothing in the database prevents an org with no
-// account, and this composition is what stands in its place.
+// `GET /v1/me` — see me.go. It answers "who am I, and where may I go", and the
+// second half is org's and workspace's vocabulary. It is a join of three
+// ANSWERS rather than of three tables: identity says who the caller is, org says
+// which orgs they are a live member of, and workspace lists the workspaces of
+// each org the membership already authorised.
+//
+// **That is the licence U2 grants, spent on a read rather than a write.** A read
+// composed here can be pulled apart into three client calls the day these become
+// three services; a write composed here could not.
 //
 // # There is no bus, because the dispatcher already is one
 //
@@ -82,9 +87,19 @@
 //
 // # The default workspace is named and the name is ordinary
 //
-// decisions/0012: an account is never without a workspace, and the provisioned
+// decisions/0017: an account that can ACT has a workspace, and the provisioned
 // one is an ordinary row — no is_default, no is_personal. It is named so it is
 // never rendered blank, and renaming it is the same operation as renaming any
 // other. ALIGNMENT.md asks the client for a stepper that names it at signup;
 // this does not wait for one.
+//
+// # Mail is constructed at boot and fails there
+//
+// [mail.New] refuses to build without a BASE_URL, so a deployment that would
+// mail links pointing at the wrong host does not start. That is the failure mode
+// worth killing the process for: the link arrives, looks correct, and does
+// nothing, and nobody involved can tell why.
+//
+// BASE_URL is the **client's** origin and not this server's — a verification
+// link is clicked in a browser and lands on a screen.
 package root

@@ -19,7 +19,8 @@ update identity.session
 set revoked_at = $2
 where id = $1 and revoked_at is null;
 
--- name: RevokeSessionsForAccount :execrows
+-- name: RevokeSessionsForAccount :many
 update identity.session
 set revoked_at = $2
-where account_id = $1 and revoked_at is null;
+where account_id = $1 and revoked_at is null
+returning id;

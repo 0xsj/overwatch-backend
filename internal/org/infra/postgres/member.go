@@ -70,15 +70,10 @@ func (s *Store) MembersOf(ctx context.Context, orgID id.ID) ([]domain.Member, er
 // which is why the count is read inside whatever transaction is on the context
 // rather than on a fresh connection.
 func (s *Store) SaveMember(ctx context.Context, m domain.Member) error {
-	if m.Archived() && m.Role == domain.RoleOwner {
-		n, err := s.q(ctx).CountLiveOwners(ctx, uuid(m.OrgID))
-		if err != nil {
-			return postgres.Translate(ctx, err, "org: count owners")
-		}
-		if n <= 1 {
-			return fmt.Errorf("org: archive member: %w", domain.ErrLastOwner)
-		}
-	}
+	// The last-owner guard used to live here and covered ARCHIVING only — not
+	// demotion, which reaches zero owners by a different path — and it counted
+	// without locking. It moved to the command, which can hold a transaction
+	// open across the check and the write. decisions/0026.
 	n, err := s.q(ctx).UpdateMember(ctx, orgdb.UpdateMemberParams{
 		ID:         uuid(m.ID),
 		Role:       m.Role.String(),
@@ -106,4 +101,32 @@ func notFound(ctx context.Context, err error, op string) error {
 		return fmt.Errorf("%s: %w", op, domain.ErrMemberNotFound)
 	}
 	return translated
+}
+
+// LockLiveOwners returns the ACCOUNT ids of the org's live owners and LOCKS
+// those member rows until the
+// transaction ends — decisions/0026. The caller counts. It must be called inside
+// a transaction; outside one the lock is released immediately and the check is
+// the racy count it replaced.
+func (s *Store) LockLiveOwners(ctx context.Context, org id.ID) ([]id.ID, error) {
+	rows, err := s.q(ctx).LockLiveOwners(ctx, uuid(org))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "org: lock owners")
+	}
+	out := make([]id.ID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ident(row))
+	}
+	return out, nil
+}
+
+// RevokeGrantsFor deletes every grant a departing member held.
+func (s *Store) RevokeGrantsFor(ctx context.Context, org, account id.ID) (int, error) {
+	n, err := s.q(ctx).RevokeGrantsFor(ctx, orgdb.RevokeGrantsForParams{
+		OrgID: uuid(org), AccountID: uuid(account),
+	})
+	if err != nil {
+		return 0, postgres.Translate(ctx, err, "org: revoke grants for member")
+	}
+	return int(n), nil
 }

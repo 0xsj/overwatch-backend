@@ -27,6 +27,8 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", a.live)
 	mux.HandleFunc("GET /readyz", a.ready)
 	a.identity.Routes(mux)
+	// Composed at the root and nowhere else — see me.go.
+	a.me.register(mux)
 
 	return httpx.Chain(mux,
 		httpx.WithRecovery(a.log),

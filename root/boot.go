@@ -7,16 +7,20 @@ import (
 	"time"
 
 	auditapp "github.com/0xsj/overwatch-backend/internal/audit/app"
+	auditquery "github.com/0xsj/overwatch-backend/internal/audit/app/query"
 	auditpg "github.com/0xsj/overwatch-backend/internal/audit/infra/postgres"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
 	identityhttp "github.com/0xsj/overwatch-backend/internal/identity/transport/http"
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
+	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
 	journalpg "github.com/0xsj/overwatch-backend/internal/journal/infra/postgres"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
+	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
 	workspacecmd "github.com/0xsj/overwatch-backend/internal/workspace/app/command"
+	workspacequery "github.com/0xsj/overwatch-backend/internal/workspace/app/query"
 	workspacepg "github.com/0xsj/overwatch-backend/internal/workspace/infra/postgres"
 	"github.com/0xsj/overwatch-backend/pkg/clock"
 	"github.com/0xsj/overwatch-backend/pkg/crypto"
@@ -24,7 +28,9 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/events"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
+	"github.com/0xsj/overwatch-backend/pkg/limit"
 	"github.com/0xsj/overwatch-backend/pkg/logger"
+	"github.com/0xsj/overwatch-backend/pkg/mail"
 	"github.com/0xsj/overwatch-backend/pkg/outbox"
 	"github.com/0xsj/overwatch-backend/pkg/postgres"
 	"github.com/0xsj/overwatch-backend/pkg/provenance"
@@ -47,9 +53,14 @@ type app struct {
 	boot  context.Context
 	close func()
 
+	sweeper    *journalapp.Sweeper
 	identity   *identityhttp.API
 	whoami     httpx.Identifier
 	dispatcher *outbox.Dispatcher
+
+	// The composed read. See me.go for why it lives at the root and nowhere
+	// else.
+	me *me
 }
 
 // boot constructs in dependency order and fails at the first thing missing.
@@ -141,19 +152,74 @@ func Boot(ctx context.Context) (*app, error) {
 	store := outbox.NewPostgres(db)
 	publisher := outbox.NewPublisher(store)
 
+	// Mail is constructed BEFORE anything that sends one, and fails here. A
+	// mailer that cannot be built is a registration that silently never
+	// delivers a link, which looks to the person registering like nothing
+	// happened at all.
+	mailer, err := mail.New(mail.Config{
+		Addr:    cfg.MailAddr,
+		From:    cfg.MailFrom,
+		BaseURL: cfg.BaseURL,
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.InfoContext(bootCtx, "mail ready",
+		"addr", cfg.MailAddr, "from", cfg.MailFrom, "links_point_at", cfg.BaseURL)
+
 	accounts := identitypg.NewStore(db)
 	hasher := crypto.NewHasher(crypto.Default, rand.Reader)
 	registrar := identitycmd.NewRegistrar(accounts, db, publisher, hasher, ids, clk)
 	authenticator := identitycmd.NewAuthenticator(
 		accounts, publisher, hasher, crypto.NewMinter(rand.Reader), ids, clk, 0)
 	sessions := identityquery.NewSessions(accounts, clk)
+	verifier := identitycmd.NewVerifier(
+		accounts, mailer, publisher, hasher, crypto.NewMinter(rand.Reader), ids, clk)
+	settings := identitycmd.NewSettings(
+		accounts, mailer, publisher, hasher, crypto.NewMinter(rand.Reader), ids, clk)
+
+	// Five an hour, per address, per endpoint. The endpoints that send mail are
+	// unauthenticated by necessity, so without this they are a way to post mail
+	// from this domain to anywhere, at whatever rate a script manages.
+	mailLimit := limit.New(limit.Config{
+		Rule:  limit.Rule{Burst: 5, Every: 12 * time.Minute},
+		Clock: clk,
+	})
 
 	// The registration chain — decisions/0017. Each link runs in its own
 	// transaction against its own schema, so any of the three can become a
 	// separate service by replacing one handler here with a NATS publisher.
-	orgs := orgcmd.NewSubscriber(orgcmd.NewService(orgpg.NewStore(db), publisher, ids, clk), ids)
-	workspaces := workspacecmd.NewSubscriber(
-		workspacecmd.NewService(workspacepg.NewStore(db), publisher, ids, clk), ids)
+	orgStore := orgpg.NewStore(db)
+	orgs := orgcmd.NewSubscriber(orgcmd.NewService(orgStore, publisher, ids, clk), ids)
+	workspaceService := workspacecmd.NewService(workspacepg.NewStore(db), publisher, ids, clk)
+	workspaces := workspacecmd.NewSubscriber(workspaceService, ids)
+
+	// The fourth link — decisions/0020. It reacts to workspace.opened and gives
+	// whoever opened an engagement `admin` on it. Registration does not trigger
+	// it: the chain emits workspace.created, which is work, and never
+	// workspace.opened, which is a choice somebody made.
+	granter := orgcmd.NewGranter(orgStore, ids, clk)
+
+	orgAccess := orgquery.NewAccess(orgStore)
+	people := identityquery.NewDirectory(accounts)
+	members := orgcmd.NewMembers(orgStore, publisher, db, ids, clk)
+	invites := orgcmd.NewInvites(orgStore, directory{people: people}, orgAccess,
+		mailer, crypto.NewMinter(rand.Reader), publisher, db, ids, clk)
+	grants := orgcmd.NewGrants(orgStore, orgAccess, publisher, ids, clk)
+
+	// The sweep — decisions/0022. Constructed HERE and started in run.go, so a
+	// retention below the floor kills the process at boot rather than at the
+	// first tick, by which point it would have deleted everything.
+	sweeper, err := journalapp.NewSweeper(journalapp.SweeperConfig{
+		Store:     journalpg.NewStore(db),
+		Clock:     clk,
+		Log:       log,
+		Retention: time.Duration(cfg.JournalRetentionDays) * 24 * time.Hour,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	// The poll interval is a backstop, not the delivery mechanism. A publish
 	// notifies inside its own transaction, so a committed event wakes the
@@ -175,6 +241,16 @@ func Boot(ctx context.Context) (*app, error) {
 			// the observers are idempotent, so they see it again harmlessly.
 			orgs.Handle,
 			workspaces.Handle,
+			granter.Handle,
+			// Identity listens for its OWN account.created and sends the first
+			// verification link. Registration therefore never learns that a
+			// mail server exists, and an SMTP outage cannot fail a
+			// registration that already succeeded.
+			identitycmd.NewSubscriber(verifier, ids).Handle,
+			// Ends every membership an archived account held — decisions/0028.
+			// A membership it cannot end fails the handler and buries the event,
+			// which is the alarm for the race that record names.
+			orgcmd.NewDepartures(orgStore, orgStore, ids, clk).Handle,
 			auditapp.NewSubscriber(auditpg.NewStore(db), ids, clk).Handle,
 			journalapp.NewSubscriber(journalpg.NewStore(db), ids, clk).Handle,
 		},
@@ -182,11 +258,21 @@ func Boot(ctx context.Context) (*app, error) {
 
 	return &app{
 		cfg: cfg, log: log, clk: clk, ids: ids, db: db, boot: bootCtx,
-		identity: identityhttp.NewAPI(registrar, authenticator, log),
+		identity: identityhttp.NewAPI(registrar, authenticator, verifier,
+			settings, sessions, mailLimit, log),
 		// The moment this is non-nil, every record in the system starts naming
 		// a person instead of `anonymous`.
 		whoami:     identityhttp.Identifier(sessions),
 		dispatcher: dispatcher,
-		close:      func() { db.Close() },
+		sweeper:    sweeper,
+		me: newMe(sessions, settings,
+			people,
+			orgquery.NewOrgs(orgpg.NewStore(db)),
+			orgAccess,
+			workspacequery.NewWorkspaces(workspacepg.NewStore(db)),
+			workspaceService, grants, invites, members,
+			auditquery.NewLedger(auditpg.NewStore(db)),
+			journalquery.NewTrail(journalpg.NewStore(db)), log),
+		close: func() { db.Close() },
 	}, nil
 }

@@ -124,6 +124,33 @@ func (a Account) Archive(at time.Time) (Account, error) {
 	return a.advance(at, func(next *Account) { next.Status = StatusArchived }), nil
 }
 
+// ChangeEmail moves the account to an address that has already been proved —
+// decisions/0021. The domain does not know how it was proved; what it enforces
+// is that an archived account cannot move, because an archived account is
+// somebody who left and their address must stop being a way back in.
+func (a Account) ChangeEmail(next Email, at time.Time) (Account, error) {
+	if at.IsZero() {
+		return a, ErrTimeRequired
+	}
+	if next.String() == "" {
+		return a, ErrEmailRequired
+	}
+	if a.Status == StatusArchived {
+		return a, ErrAccountArchived
+	}
+	if a.Email == next {
+		return a, nil
+	}
+	out := a.advance(at, func(n *Account) { n.Email = next })
+	// A confirmed address is a proved address, so a pending account becomes
+	// active here for the same reason verification activates one: the only
+	// proof an address works is a message arriving at it, and one just did.
+	if out.Status == StatusPending {
+		out.Status = StatusActive
+	}
+	return out, nil
+}
+
 func (a Account) Rename(name string, at time.Time) (Account, error) {
 	if at.IsZero() {
 		return a, ErrTimeRequired

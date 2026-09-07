@@ -40,7 +40,7 @@ func TestAnUnnamedWorkspaceGetsTheDefaultRatherThanABlank(t *testing.T) {
 	s, store, _, ids := harness(t)
 	ctx := context.Background()
 
-	got, err := s.Provision(ctx, ids.NewID(), "", ids.NewID())
+	got, err := s.Provision(ctx, ids.NewID(), ids.NewID(), "", ids.NewID())
 	if err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestAnUnnamedWorkspaceGetsTheDefaultRatherThanABlank(t *testing.T) {
 // under `system`.
 func TestTheCreatedEventIsTenantedToTheWorkspaceItMade(t *testing.T) {
 	s, _, pub, ids := harness(t)
-	got, err := s.Provision(context.Background(), ids.NewID(), "CTF1", ids.NewID())
+	got, err := s.Provision(context.Background(), ids.NewID(), ids.NewID(), "CTF1", ids.NewID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,14 +82,14 @@ func TestTwoLiveWorkspacesInOneOrgCannotShareANameEvenByCase(t *testing.T) {
 	ctx := context.Background()
 	org := ids.NewID()
 
-	if _, err := s.Provision(ctx, org, "Acme Q3", ids.NewID()); err != nil {
+	if _, err := s.Provision(ctx, org, ids.NewID(), "Acme Q3", ids.NewID()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Provision(ctx, org, "acme q3", ids.NewID()); !errors.Is(err, domain.ErrNameTaken) {
+	if _, err := s.Provision(ctx, org, ids.NewID(), "acme q3", ids.NewID()); !errors.Is(err, domain.ErrNameTaken) {
 		t.Errorf("a case variant was accepted: %v — the Postgres index is on lower(name)", err)
 	}
 	// A different org may use it freely. That is the wall.
-	if _, err := s.Provision(ctx, ids.NewID(), "Acme Q3", ids.NewID()); err != nil {
+	if _, err := s.Provision(ctx, ids.NewID(), ids.NewID(), "Acme Q3", ids.NewID()); err != nil {
 		t.Errorf("another org was blocked by this org's name: %v", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestAFailedPublishRollsBackWhenTheCallerHoldsTheTransaction(t *testing.T) {
 	pub.fail = errors.New(errors.Unavailable, "the outbox is down")
 
 	err := store.InTx(ctx, func(ctx context.Context) error {
-		_, err := s.Provision(ctx, org, "CTF1", ids.NewID())
+		_, err := s.Provision(ctx, org, ids.NewID(), "CTF1", ids.NewID())
 		return err
 	})
 	if err == nil {

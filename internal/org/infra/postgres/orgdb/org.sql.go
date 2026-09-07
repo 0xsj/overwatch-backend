@@ -23,6 +23,197 @@ func (q *Queries) CountLiveOwners(ctx context.Context, orgID pgtype.UUID) (int64
 	return count, err
 }
 
+const deleteGrant = `-- name: DeleteGrant :execrows
+delete from org.grant where org_id = $1 and account_id = $2 and workspace_id = $3
+`
+
+type DeleteGrantParams struct {
+	OrgID       pgtype.UUID
+	AccountID   pgtype.UUID
+	WorkspaceID pgtype.UUID
+}
+
+func (q *Queries) DeleteGrant(ctx context.Context, arg DeleteGrantParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteGrant, arg.OrgID, arg.AccountID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const grantFor = `-- name: GrantFor :one
+select id, org_id, account_id, workspace_id, level, version, created_at, updated_at
+from org.grant where org_id = $1 and account_id = $2 and workspace_id = $3
+`
+
+type GrantForParams struct {
+	OrgID       pgtype.UUID
+	AccountID   pgtype.UUID
+	WorkspaceID pgtype.UUID
+}
+
+func (q *Queries) GrantFor(ctx context.Context, arg GrantForParams) (OrgGrant, error) {
+	row := q.db.QueryRow(ctx, grantFor, arg.OrgID, arg.AccountID, arg.WorkspaceID)
+	var i OrgGrant
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.AccountID,
+		&i.WorkspaceID,
+		&i.Level,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const grantsForAccount = `-- name: GrantsForAccount :many
+select id, org_id, account_id, workspace_id, level, version, created_at, updated_at
+from org.grant where account_id = $1 and org_id = $2
+`
+
+type GrantsForAccountParams struct {
+	AccountID pgtype.UUID
+	OrgID     pgtype.UUID
+}
+
+func (q *Queries) GrantsForAccount(ctx context.Context, arg GrantsForAccountParams) ([]OrgGrant, error) {
+	rows, err := q.db.Query(ctx, grantsForAccount, arg.AccountID, arg.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrgGrant{}
+	for rows.Next() {
+		var i OrgGrant
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.AccountID,
+			&i.WorkspaceID,
+			&i.Level,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const grantsOnWorkspace = `-- name: GrantsOnWorkspace :many
+select id, org_id, account_id, workspace_id, level, version, created_at, updated_at
+from org.grant where workspace_id = $1 order by created_at
+`
+
+func (q *Queries) GrantsOnWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]OrgGrant, error) {
+	rows, err := q.db.Query(ctx, grantsOnWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrgGrant{}
+	for rows.Next() {
+		var i OrgGrant
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.AccountID,
+			&i.WorkspaceID,
+			&i.Level,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertGrant = `-- name: InsertGrant :exec
+insert into org.grant (
+    id, org_id, account_id, workspace_id, level, version, created_at, updated_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertGrantParams struct {
+	ID          pgtype.UUID
+	OrgID       pgtype.UUID
+	AccountID   pgtype.UUID
+	WorkspaceID pgtype.UUID
+	Level       string
+	Version     int32
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) InsertGrant(ctx context.Context, arg InsertGrantParams) error {
+	_, err := q.db.Exec(ctx, insertGrant,
+		arg.ID,
+		arg.OrgID,
+		arg.AccountID,
+		arg.WorkspaceID,
+		arg.Level,
+		arg.Version,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const insertInvite = `-- name: InsertInvite :exec
+insert into org.invite (
+    id, org_id, email, role, invited_by, workspace_id, level, hash,
+    created_at, expires_at, accepted_at, accepted_by, revoked_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+`
+
+type InsertInviteParams struct {
+	ID          pgtype.UUID
+	OrgID       pgtype.UUID
+	Email       string
+	Role        string
+	InvitedBy   pgtype.UUID
+	WorkspaceID pgtype.UUID
+	Level       pgtype.Text
+	Hash        string
+	CreatedAt   pgtype.Timestamptz
+	ExpiresAt   pgtype.Timestamptz
+	AcceptedAt  pgtype.Timestamptz
+	AcceptedBy  pgtype.UUID
+	RevokedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) InsertInvite(ctx context.Context, arg InsertInviteParams) error {
+	_, err := q.db.Exec(ctx, insertInvite,
+		arg.ID,
+		arg.OrgID,
+		arg.Email,
+		arg.Role,
+		arg.InvitedBy,
+		arg.WorkspaceID,
+		arg.Level,
+		arg.Hash,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+		arg.AcceptedAt,
+		arg.AcceptedBy,
+		arg.RevokedAt,
+	)
+	return err
+}
+
 const insertMember = `-- name: InsertMember :exec
 insert into org.member (
     id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
@@ -82,6 +273,106 @@ func (q *Queries) InsertOrg(ctx context.Context, arg InsertOrgParams) error {
 	return err
 }
 
+const inviteByHash = `-- name: InviteByHash :one
+select id, org_id, email, role, invited_by, workspace_id, level, hash,
+       created_at, expires_at, accepted_at, accepted_by, revoked_at
+from org.invite where hash = $1
+`
+
+func (q *Queries) InviteByHash(ctx context.Context, hash string) (OrgInvite, error) {
+	row := q.db.QueryRow(ctx, inviteByHash, hash)
+	var i OrgInvite
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.Role,
+		&i.InvitedBy,
+		&i.WorkspaceID,
+		&i.Level,
+		&i.Hash,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.AcceptedAt,
+		&i.AcceptedBy,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const invitesForOrg = `-- name: InvitesForOrg :many
+select id, org_id, email, role, invited_by, workspace_id, level, hash,
+       created_at, expires_at, accepted_at, accepted_by, revoked_at
+from org.invite where org_id = $1 order by created_at desc
+`
+
+func (q *Queries) InvitesForOrg(ctx context.Context, orgID pgtype.UUID) ([]OrgInvite, error) {
+	rows, err := q.db.Query(ctx, invitesForOrg, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrgInvite{}
+	for rows.Next() {
+		var i OrgInvite
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.Email,
+			&i.Role,
+			&i.InvitedBy,
+			&i.WorkspaceID,
+			&i.Level,
+			&i.Hash,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+			&i.AcceptedAt,
+			&i.AcceptedBy,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const liveInviteFor = `-- name: LiveInviteFor :one
+select id, org_id, email, role, invited_by, workspace_id, level, hash,
+       created_at, expires_at, accepted_at, accepted_by, revoked_at
+from org.invite
+where org_id = $1 and email = $2 and accepted_at is null and revoked_at is null
+`
+
+type LiveInviteForParams struct {
+	OrgID pgtype.UUID
+	Email string
+}
+
+func (q *Queries) LiveInviteFor(ctx context.Context, arg LiveInviteForParams) (OrgInvite, error) {
+	row := q.db.QueryRow(ctx, liveInviteFor, arg.OrgID, arg.Email)
+	var i OrgInvite
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.Email,
+		&i.Role,
+		&i.InvitedBy,
+		&i.WorkspaceID,
+		&i.Level,
+		&i.Hash,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.AcceptedAt,
+		&i.AcceptedBy,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const liveMemberFor = `-- name: LiveMemberFor :one
 select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
 from org.member
@@ -110,6 +401,43 @@ func (q *Queries) LiveMemberFor(ctx context.Context, arg LiveMemberForParams) (O
 	return i, err
 }
 
+const lockLiveOwners = `-- name: LockLiveOwners :many
+select account_id from org.member
+where org_id = $1 and role = 'owner' and status <> 'archived'
+for update
+`
+
+// FOR UPDATE, and counted in Go rather than by count(*) — decisions/0026.
+// Postgres refuses FOR UPDATE with an aggregate, and the lock is the point: a
+// concurrent demotion of a DIFFERENT owner blocks here until this transaction
+// commits, then re-reads and sees one owner rather than two.
+//
+// An unlocked count is a check that is true when it runs and false when it
+// matters: two administrators demoting two owners both read 2, both writes are
+// individually valid, and the org is left with none.
+// ACCOUNT_ID and not id: the caller compares these against the account it is
+// about to demote or remove, and a member id would never match one — a
+// comparison that is always false is a guard that always passes.
+func (q *Queries) LockLiveOwners(ctx context.Context, orgID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockLiveOwners, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var account_id pgtype.UUID
+		if err := rows.Scan(&account_id); err != nil {
+			return nil, err
+		}
+		items = append(items, account_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const memberByID = `-- name: MemberByID :one
 select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
 from org.member where id = $1
@@ -135,10 +463,16 @@ func (q *Queries) MemberByID(ctx context.Context, id pgtype.UUID) (OrgMember, er
 const membersOf = `-- name: MembersOf :many
 select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
 from org.member
-where org_id = $1
+where org_id = $1 and status <> 'archived'
 order by created_at
 `
 
+// LIVE members only. It did not filter until 2026-09-07, so the members
+// endpoint listed people who had been removed — every caller wants the live set
+// and every doc said so, but the query did not.
+//
+// A former-members read, when something needs one, gets its OWN query — the same
+// shape workspace uses for ForOrg and AllForOrg. It does not get a boolean.
 func (q *Queries) MembersOf(ctx context.Context, orgID pgtype.UUID) ([]OrgMember, error) {
 	rows, err := q.db.Query(ctx, membersOf, orgID)
 	if err != nil {
@@ -239,6 +573,78 @@ func (q *Queries) OrgsForAccount(ctx context.Context, accountID pgtype.UUID) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const revokeGrantsFor = `-- name: RevokeGrantsFor :execrows
+delete from org.grant where org_id = $1 and account_id = $2
+`
+
+type RevokeGrantsForParams struct {
+	OrgID     pgtype.UUID
+	AccountID pgtype.UUID
+}
+
+// Every grant a departing member held — decisions/0026. Removal is a departure
+// and deletes them; a DEMOTION does not, so restoring a role restores access.
+func (q *Queries) RevokeGrantsFor(ctx context.Context, arg RevokeGrantsForParams) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeGrantsFor, arg.OrgID, arg.AccountID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const saveInvite = `-- name: SaveInvite :execrows
+update org.invite
+set accepted_at = $2, accepted_by = $3, revoked_at = $4
+where id = $1
+`
+
+type SaveInviteParams struct {
+	ID         pgtype.UUID
+	AcceptedAt pgtype.Timestamptz
+	AcceptedBy pgtype.UUID
+	RevokedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) SaveInvite(ctx context.Context, arg SaveInviteParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveInvite,
+		arg.ID,
+		arg.AcceptedAt,
+		arg.AcceptedBy,
+		arg.RevokedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateGrant = `-- name: UpdateGrant :execrows
+update org.grant set level = $2, version = $3, updated_at = $4
+where id = $1 and version = $5
+`
+
+type UpdateGrantParams struct {
+	ID        pgtype.UUID
+	Level     string
+	Version   int32
+	UpdatedAt pgtype.Timestamptz
+	Version_2 int32
+}
+
+func (q *Queries) UpdateGrant(ctx context.Context, arg UpdateGrantParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateGrant,
+		arg.ID,
+		arg.Level,
+		arg.Version,
+		arg.UpdatedAt,
+		arg.Version_2,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateMember = `-- name: UpdateMember :execrows

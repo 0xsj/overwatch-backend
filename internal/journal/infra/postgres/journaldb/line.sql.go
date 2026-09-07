@@ -12,12 +12,27 @@ import (
 )
 
 const expireLinesBefore = `-- name: ExpireLinesBefore :execrows
-delete from journal.line
-where occurred_at < $1 and decision = false
+delete from journal.line l
+where l.id in (
+    select c.id from journal.line c
+    where c.occurred_at < $1 and c.decision = false
+    limit $2
+)
 `
 
-func (q *Queries) ExpireLinesBefore(ctx context.Context, occurredAt pgtype.Timestamptz) (int64, error) {
-	result, err := q.db.Exec(ctx, expireLinesBefore, occurredAt)
+type ExpireLinesBeforeParams struct {
+	OccurredAt pgtype.Timestamptz
+	Limit      int32
+}
+
+// BATCHED, and the batch is a bound on the transaction rather than a throughput
+// knob — decisions/0022. An unbounded delete against a year of accumulated rows
+// is one transaction holding one very large lock.
+//
+// `decision = false` is the other half of the record: a decision is kept, so a
+// chain older than the window degrades to its skeleton instead of disappearing.
+func (q *Queries) ExpireLinesBefore(ctx context.Context, arg ExpireLinesBeforeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, expireLinesBefore, arg.OccurredAt, arg.Limit)
 	if err != nil {
 		return 0, err
 	}

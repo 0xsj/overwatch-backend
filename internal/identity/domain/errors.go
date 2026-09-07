@@ -29,5 +29,12 @@ var (
 
 	ErrSessionGone = errors.New(errors.NotFound, "session")
 
+	ErrProposedEmailRequired = errors.New(errors.Invalid, "an email change needs the address it proposes")
+	ErrTokenKindUnknown      = errors.New(errors.Invalid, "not a token kind this system knows")
+	ErrTokenGone             = errors.New(errors.NotFound, "token")
+	ErrTokenSpent            = errors.New(errors.Conflict, "that link has already been used")
+	ErrTokenExpired          = errors.New(errors.Conflict, "that link has expired")
+	ErrAlreadyVerified       = errors.New(errors.Conflict, "the account is already verified")
+
 	ErrStaleWrite = errors.New(errors.Conflict, "the record changed since it was read")
 )

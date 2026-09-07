@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ type Store struct {
 	accounts    map[id.ID]domain.Account
 	credentials map[id.ID]domain.Credential
 	sessions    map[id.ID]domain.Session
+	tokens      map[id.ID]domain.Token
 	depth       int
 }
 
@@ -23,6 +25,7 @@ func New() *Store {
 		accounts:    map[id.ID]domain.Account{},
 		credentials: map[id.ID]domain.Credential{},
 		sessions:    map[id.ID]domain.Session{},
+		tokens:      map[id.ID]domain.Token{},
 	}
 }
 
@@ -41,13 +44,14 @@ func (s *Store) InTx(ctx context.Context, fn func(context.Context) error) (err e
 	accounts := clone(s.accounts)
 	credentials := clone(s.credentials)
 	sessions := clone(s.sessions)
+	tokens := clone(s.tokens)
 	s.depth = 1
 	s.mu.Unlock()
 
 	restore := func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.accounts, s.credentials, s.sessions = accounts, credentials, sessions
+		s.accounts, s.credentials, s.sessions, s.tokens = accounts, credentials, sessions, tokens
 		s.depth = 0
 	}
 	commit := func() {
@@ -227,20 +231,120 @@ func (s *Store) EndSession(_ context.Context, want id.ID, at time.Time) error {
 	return nil
 }
 
-func (s *Store) EndSessionsFor(_ context.Context, account id.ID, at time.Time) (int, error) {
+func (s *Store) EndSessionsFor(_ context.Context, account id.ID, at time.Time) ([]id.ID, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	n := 0
+	var revoked []id.ID
 	for k, sn := range s.sessions {
 		if sn.AccountID != account || sn.Revoked() {
 			continue
 		}
 		next, err := sn.Revoke(at)
 		if err != nil {
-			return n, err
+			return revoked, err
 		}
 		s.sessions[k] = next
+		revoked = append(revoked, next.ID)
+	}
+	return revoked, nil
+}
+
+func (s *Store) CreateToken(_ context.Context, t domain.Token) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.tokens {
+		if existing.Hash == t.Hash {
+			return fmt.Errorf("identity: insert token: %w", domain.ErrTokenSpent)
+		}
+	}
+	s.tokens[t.ID] = t
+	return nil
+}
+
+func (s *Store) TokenByHash(_ context.Context, hash string) (domain.Token, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tokens {
+		if t.Hash == hash {
+			return t, nil
+		}
+	}
+	return domain.Token{}, fmt.Errorf("identity: read token: %w", domain.ErrTokenGone)
+}
+
+func (s *Store) ConsumeToken(_ context.Context, want id.ID, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tokens[want]
+	if !ok || t.Consumed() {
+		return fmt.Errorf("identity: consume token: %w", domain.ErrTokenSpent)
+	}
+	next, err := t.Consume(at)
+	if err != nil {
+		return err
+	}
+	s.tokens[want] = next
+	return nil
+}
+
+func (s *Store) ConsumeLiveTokens(_ context.Context, account id.ID, kind domain.TokenKind, at time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for k, t := range s.tokens {
+		if t.AccountID != account || t.Kind != kind || t.Consumed() {
+			continue
+		}
+		next, err := t.Consume(at)
+		if err != nil {
+			continue
+		}
+		s.tokens[k] = next
 		n++
 	}
 	return n, nil
+}
+
+func (s *Store) LiveSessionsFor(_ context.Context, account id.ID, at time.Time) ([]domain.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.Session
+	for _, sn := range s.sessions {
+		if sn.AccountID == account && sn.Live(at) {
+			out = append(out, sn)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].IssuedAt.After(out[j].IssuedAt) })
+	return out, nil
+}
+
+func (s *Store) EndSessionsExcept(_ context.Context, account, keep id.ID, at time.Time) ([]id.ID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var revoked []id.ID
+	for k, sn := range s.sessions {
+		if sn.AccountID != account || sn.ID == keep || sn.Revoked() {
+			continue
+		}
+		next, err := sn.Revoke(at)
+		if err != nil {
+			return revoked, err
+		}
+		s.sessions[k] = next
+		revoked = append(revoked, next.ID)
+	}
+	return revoked, nil
+}
+
+func (s *Store) CredentialsFor(_ context.Context, account id.ID) ([]domain.Credential, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.Credential
+	for _, c := range s.credentials {
+		if c.AccountID == account {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
 }

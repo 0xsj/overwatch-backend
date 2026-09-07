@@ -20,11 +20,18 @@
 // composition root applies. The workspace, which is a container rather than a
 // permission.
 //
-// **Not registration.** decisions/0012 puts it above every domain: one
-// transaction writes an account, a personal org and a workspace, and this
-// package does not know the other two exist. pkg/postgres carries the
-// transaction on the context, so this package's repository composes into a
-// transaction it has never heard of, with no flag and no second method.
+// **Not tenancy.** decisions/0017 makes registration a CHAIN: this package
+// writes an account and publishes a fact, and org and workspace provision
+// themselves from it, each in its own transaction against its own schema. The
+// superseded decisions/0012 had all three in one transaction, which made the
+// three inseparable while the documents claimed decomposition was a pg_dump.
+//
+// **Not the mail server, even for its own verification link.** The link is sent
+// by a subscriber in app/command that listens for identity.account.created —
+// the same shape org and workspace have, for a stronger reason: an SMTP server
+// that is down would otherwise fail a registration that already succeeded, and
+// rolling the account back loses somebody's password to an outage they cannot
+// see. The Registrar does not know a Mailer exists.
 //
 // **Not password hashing.** A Credential holds an opaque Hash string that the
 // domain neither computes nor interprets. That is what lets every type here be
@@ -44,6 +51,7 @@
 //	Account     who somebody is        pending -> active -> archived
 //	Credential  how they prove it      password | api_key
 //	Session     that they proved it    a hash of a token, never the token
+//	Token       a link that was sent   verification | password_reset, single use
 //
 // ## Account
 //
@@ -128,17 +136,55 @@
 // session they do not recognise.** Neither field is trusted, and neither is used
 // for any decision.
 //
+// ## Token
+//
+// A [Token] is a link that was put in an email: a verification link or a
+// password reset. It is the fourth table and it has a different lifecycle from
+// the other three — **single use, short-lived, and delivered out of band.**
+//
+//	verification    24h    proves an address receives mail
+//	password_reset   1h    proves it, and then replaces a credential
+//
+// **Only its hash is stored, never the token** — the same rule as a session, and
+// with the same fast hash for the same reason: 256 random bits have nothing to
+// guess, so a memory-hard KDF on a link click buys nothing and costs a request.
+//
+// **Consuming is a write, not a read.** [Token.Consume] refuses a spent or
+// expired token and returns a new value with ConsumedAt set; the row is UPDATEd
+// with a `consumed_at is null` predicate, so two simultaneous clicks produce one
+// winner and one ErrLinkRejected rather than two activations. The partial unique
+// index `token_live (account_id, kind) where consumed_at is null` is where the
+// "one live link at a time" rule lives — issuing a new link consumes the
+// outstanding ones first, because two live links means the older one still works
+// after somebody asked for a newer, which is exactly what whoever intercepted
+// the first is counting on.
+//
+// A consumed token is kept rather than deleted. "This link was used, at this
+// time" is the answer to "did somebody else open my mail", and a deleted row
+// answers nothing.
+//
 // # Events
 //
-//	identity.account.created     identity.account.archived
-//	identity.credential.changed  identity.session.started
-//	identity.session.ended
+//	identity.account.created     identity.account.activated
+//	identity.account.archived    identity.credential.changed
+//	identity.session.started     identity.session.ended
 //
-// **The first subscribers already exist and are not hypothetical.** A personal
-// org and a workspace are provisioned at registration — decisions/0012 — and
-// sessions are invalidated when a credential changes. Two consumers, neither of
-// them audit, which is the argument decisions/0007 makes for an outbox over a
-// direct port.
+// **The subscribers already exist and are not hypothetical.** A personal org and
+// a workspace are provisioned from account.created — decisions/0017 — this
+// package's own subscriber mails the first verification link from the same
+// event, and audit and the journal record all of it. Four consumers, which is
+// the argument decisions/0007 makes for an outbox over a direct port.
+//
+// **account.created and account.activated are DECISIONS; nothing else here is
+// a decision by default** — decisions/0014. Somebody chose to register, chose
+// to sign in, and proved an address. Provisioning an org is work: it can fail,
+// and an audit trail listing it is listing machinery rather than people.
+//
+// **The activation names the account it just activated.** It arrives on an
+// UNAUTHENTICATED request — a link carries no bearer token — so the actor is set
+// from the account the link proved rather than from the middleware, which would
+// write `anonymous`. Registration deliberately does not do this: at that moment
+// nothing has been proved about anybody.
 //
 // **credential.changed carries no hash and no kind-specific payload.** It says
 // which account's credential changed and when. A subscriber that needs more is
@@ -254,16 +300,6 @@
 // # Deliberately absent
 //
 // **Authorisation.** This answers who somebody is.
-//
-// **Tokens for email verification and password reset.** They are a fourth table
-// with a different lifecycle — single-use, short-lived, delivered out of band —
-// and they need mail, which nothing here has. They arrive with the verification
-// flow, and a `pending` account is what holds the place until then.
-//
-// **Sign-in, sign-out and registration commands.** They need a password hasher
-// and a token minter, and neither is a row in STACK.md yet. The domain layer is
-// complete without them precisely because it takes a hash rather than a
-// password.
 //
 // **Multi-factor, SSO, and account merging.** Each is a real answer to a problem
 // nothing here has. Merging in particular would have to decide what happens to

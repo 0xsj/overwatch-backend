@@ -8,6 +8,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type OrgGrant struct {
+	ID          pgtype.UUID
+	OrgID       pgtype.UUID
+	AccountID   pgtype.UUID
+	WorkspaceID pgtype.UUID
+	Level       string
+	Version     int32
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+type OrgInvite struct {
+	ID          pgtype.UUID
+	OrgID       pgtype.UUID
+	Email       string
+	Role        string
+	InvitedBy   pgtype.UUID
+	WorkspaceID pgtype.UUID
+	Level       pgtype.Text
+	Hash        string
+	CreatedAt   pgtype.Timestamptz
+	ExpiresAt   pgtype.Timestamptz
+	AcceptedAt  pgtype.Timestamptz
+	AcceptedBy  pgtype.UUID
+	RevokedAt   pgtype.Timestamptz
+}
+
 type OrgMember struct {
 	ID         pgtype.UUID
 	OrgID      pgtype.UUID

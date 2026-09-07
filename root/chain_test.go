@@ -271,8 +271,12 @@ func TestAFailedLinkLeavesTheAccountPendingAndTheEventBuried(t *testing.T) {
 	if err := c.pool.DB(ctx).QueryRow(ctx, "select status from identity.account").Scan(&status); err != nil {
 		t.Fatal(err)
 	}
+	// Pending because nothing activated it, NOT because tenancy is missing —
+	// decisions/0018 separated those. Such an account can sign in and is
+	// refused at the workspace gate; what must not happen is a half-provisioned
+	// account that looks finished.
 	if status != "pending" {
-		t.Errorf("status %q — an account with no tenancy must not be able to sign in", status)
+		t.Errorf("status %q — a failed chain left the account looking complete", status)
 	}
 	if n := count(t, c.pool, "select count(*) from outbox where buried_at is not null"); n == 0 {
 		t.Error("nothing was buried, so the failure is invisible")

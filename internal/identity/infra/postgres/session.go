@@ -62,13 +62,54 @@ func (s *Store) EndSession(ctx context.Context, want id.ID, at time.Time) error 
 	return nil
 }
 
-func (s *Store) EndSessionsFor(ctx context.Context, account id.ID, at time.Time) (int, error) {
-	n, err := s.q(ctx).RevokeSessionsForAccount(ctx, identitydb.RevokeSessionsForAccountParams{
+func (s *Store) EndSessionsFor(ctx context.Context, account id.ID, at time.Time) ([]id.ID, error) {
+	rows, err := s.q(ctx).RevokeSessionsForAccount(ctx, identitydb.RevokeSessionsForAccountParams{
 		AccountID: uuid(account),
 		RevokedAt: stamp(at),
 	})
 	if err != nil {
-		return 0, postgres.Translate(ctx, err, "identity: revoke sessions")
+		return nil, postgres.Translate(ctx, err, "identity: revoke sessions")
 	}
-	return int(n), nil
+	out := make([]id.ID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, id.ID(row.Bytes))
+	}
+	return out, nil
+}
+
+// LiveSessionsFor is the read behind "where am I signed in". It excludes revoked
+// and expired rows in SQL rather than in the caller, because a screen that must
+// not show a dead session cannot be relied on to remember.
+func (s *Store) LiveSessionsFor(ctx context.Context, account id.ID, at time.Time) ([]domain.Session, error) {
+	rows, err := s.q(ctx).LiveSessionsFor(ctx, identitydb.LiveSessionsForParams{
+		AccountID: uuid(account),
+		ExpiresAt: stamp(at),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "identity: live sessions")
+	}
+	out := make([]domain.Session, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, session(row))
+	}
+	return out, nil
+}
+
+// EndSessionsExcept keeps one session and revokes the rest — decisions/0021. The
+// kept one is the caller's own: they have just re-authenticated, so they are
+// known, and signing them out would be the product punishing the safe action.
+func (s *Store) EndSessionsExcept(ctx context.Context, account, keep id.ID, at time.Time) ([]id.ID, error) {
+	rows, err := s.q(ctx).RevokeSessionsExcept(ctx, identitydb.RevokeSessionsExceptParams{
+		AccountID: uuid(account),
+		ID:        uuid(keep),
+		RevokedAt: stamp(at),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "identity: revoke sessions except")
+	}
+	out := make([]id.ID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, id.ID(row.Bytes))
+	}
+	return out, nil
 }

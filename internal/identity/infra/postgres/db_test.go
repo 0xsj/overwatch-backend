@@ -249,9 +249,11 @@ func TestASessionIsFoundByItsHashAndEndsForEveryoneAtOnce(t *testing.T) {
 		t.Error("a fresh session reads as not live")
 	}
 
-	n, err := s.EndSessionsFor(ctx, a.ID, at.Add(time.Hour))
-	if err != nil || n != 2 {
-		t.Fatalf("ended %d sessions: %v", n, err)
+	// It answers with the ids, not a count, because the caller has to name each
+	// session in a session.ended event.
+	revoked, err := s.EndSessionsFor(ctx, a.ID, at.Add(time.Hour))
+	if err != nil || len(revoked) != 2 {
+		t.Fatalf("ended %v: %v", revoked, err)
 	}
 	again, err := s.SessionByHash(ctx, "$sha256$a")
 	if err != nil {
@@ -260,7 +262,7 @@ func TestASessionIsFoundByItsHashAndEndsForEveryoneAtOnce(t *testing.T) {
 	if again.Live(at.Add(2 * time.Hour)) {
 		t.Error("an ended session still reads as live")
 	}
-	if n, _ := s.EndSessionsFor(ctx, a.ID, at.Add(2*time.Hour)); n != 0 {
-		t.Errorf("ending twice touched %d rows", n)
+	if again, _ := s.EndSessionsFor(ctx, a.ID, at.Add(2*time.Hour)); len(again) != 0 {
+		t.Errorf("ending twice touched %d rows", len(again))
 	}
 }

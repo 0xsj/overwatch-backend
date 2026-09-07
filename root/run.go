@@ -60,6 +60,16 @@ func Run() error {
 		}
 	}()
 
+	// The sweep is a third lifecycle. It is started rather than merely
+	// constructed, because decisions/0022 names "a sweeper that is constructed
+	// and never started" as the failure that looks exactly like working: a
+	// table that is not shrinking looks like nothing at all.
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		a.sweeper.Run(ctx)
+	}()
+
 	errc := make(chan error, 1)
 	go func() {
 		a.log.InfoContext(a.boot, "listening", "addr", ln.Addr().String())
@@ -88,6 +98,11 @@ func Run() error {
 	// poll loop to notice the cancellation, then empty the table — in that
 	// order, or the drain races the loop for the same rows.
 	<-dispatched
+	// The sweep is NOT drained. It deletes rows nobody is waiting for, and a
+	// pass interrupted mid-batch leaves the rows it already deleted deleted —
+	// the next start recomputes the cutoff and carries on. Waiting for it would
+	// hold shutdown open for a scan that has no deadline of its own.
+	<-swept
 	if err := a.dispatcher.Drain(shutCtx); err != nil {
 		return pkgerrors.Wrap(err, pkgerrors.Unavailable, "the outbox did not drain")
 	}

@@ -41,3 +41,14 @@ type IdentitySession struct {
 	ExpiresAt pgtype.Timestamptz
 	RevokedAt pgtype.Timestamptz
 }
+
+type IdentityToken struct {
+	ID            pgtype.UUID
+	AccountID     pgtype.UUID
+	Kind          string
+	Hash          string
+	CreatedAt     pgtype.Timestamptz
+	ExpiresAt     pgtype.Timestamptz
+	ConsumedAt    pgtype.Timestamptz
+	ProposedEmail pgtype.Text
+}

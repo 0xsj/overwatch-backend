@@ -69,4 +69,86 @@
 // Schema `org`, its own migration sequence, its ledger in that schema.
 // **Version is optimistic concurrency and starts at 1**, on every mutable row,
 // so the rule is uniform rather than remembered.
+
+// # Five roles, four rungs, and one min() — decisions/0019
+//
+// GitHub is the reference and Slack deliberately is not. Slack is
+// public-by-default channels inside one workspace, so a member sees the channel
+// list; GitHub is private-by-default repositories, so a member with no grant
+// cannot see that one exists. A member who can list this product's workspaces
+// can list a consultancy's client list, which is the thing it is under NDA
+// about.
+//
+//	ORG ROLE — who you are in the firm. One per member, per org
+//	  owner    billing, transfer and deletion. Always at least one
+//	  admin    people and tools: invite, remove, change a role
+//	  member   does the work. NO workspace access by default
+//	  guest    external. Time-boxed, named workspaces only
+//	  client   receives deliverables. NOT a rung — see below
+//
+//	WORKSPACE GRANT — what you may do on one engagement. ORDERED
+//	  none     invisible. Absent from the list, never a disabled row
+//	  read     the record, lineage, the invocation log
+//	  write    + judgement, note, accept/reject, passive tools
+//	  admin    + loud tools, edit scope, manage this workspace's grants
+//
+// **[Effective] is the whole rule and it lives in one function:**
+//
+//	min(role.Ceiling(), max(grants))
+//
+// GitHub's union is inside the max, where it is safe — two grants on one
+// workspace take the better. decisions/0005's intersection is the outer min,
+// and that is what stops a forgotten grant surviving a demotion.
+//
+// **An empty grant set is `none`.** The intersection of no grants is not
+// everything. This is the half `0005` left ambiguous and it is the difference
+// between a member seeing one engagement and seeing the whole firm's.
+//
+// **The org owner is the one exemption, and admin is not.** An owner is admin
+// everywhere with no row, because the firm's principal is accountable for every
+// engagement it runs. An admin manages PEOPLE: they invite, remove and change
+// roles, and must be granted an engagement like anybody else. Those are two
+// capabilities and a firm under per-client NDAs must be able to hand them out
+// separately.
+//
+// **`client` is a role and not a rung, because it is off the ladder.** A client
+// may generate a report — a write-shaped act — and may not see the invocation
+// log, which is a read-shaped one. CLAUDE.md lists that pair among the ones that
+// must never collapse. Keeping the oddity in the role leaves the ladder totally
+// ordered, which is what lets the intersection be a min().
+//
+// # The grant table lives here, and the reason is the gate
+//
+// It is `(account_id, workspace_id, level)` with no foreign key leaving the
+// schema — `workspace_id` is an opaque column, the same shape `member.account_id`
+// already has for identity's id. Every authorisation check reads the role and
+// the grant TOGETHER, and decisions/0017 forbids a join across schemas, so
+// splitting the two inputs of one min() across two schemas would make the check
+// two reads now and two network calls the day these become services.
+//
+// **Revoking deletes the row rather than storing `none`.** A stored `none` gives
+// absence two spellings, and the two disagree the first time a query remembers
+// only one of them. The unique index is therefore TOTAL, unlike
+// `member_live_account` — a grant is a live permission, not a claim somebody
+// authored, and nothing in the record points back at it.
+//
+// # The gate refuses with NotFound and never with Forbidden
+//
+// [app/query.ErrNoAccess] is NotFound. A workspace the caller has no grant on, a
+// workspace that does not exist, and an org they do not belong to all answer
+// identically. **A 403 tells an analyst that a client they cannot see exists**,
+// which for the client behind that wall is the leak itself.
+//
+// This is decisions/0018's owed capability gate, made specific by `0019`: resolve
+// the caller's role, resolve their grants, take the min, refuse when the result
+// is `none`. A workspace operation calls it FIRST and uses nothing it returns
+// until it has.
+//
+// # At least one live owner, and no constraint can hold it
+//
+// It is a property of a SET of rows under a predicate, and Postgres has no
+// assertion. It lives in the command that changes a role or archives a member,
+// which counts live owners first, and [domain.ErrLastOwner] is what it raises.
+// Stated here because it is the kind of rule that looks like it should be in the
+// migration and is not.
 package org

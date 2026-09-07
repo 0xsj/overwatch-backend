@@ -39,5 +39,15 @@ order by occurred_at desc
 limit $2;
 
 -- name: ExpireLinesBefore :execrows
-delete from journal.line
-where occurred_at < $1 and decision = false;
+-- BATCHED, and the batch is a bound on the transaction rather than a throughput
+-- knob — decisions/0022. An unbounded delete against a year of accumulated rows
+-- is one transaction holding one very large lock.
+--
+-- `decision = false` is the other half of the record: a decision is kept, so a
+-- chain older than the window degrades to its skeleton instead of disappearing.
+delete from journal.line l
+where l.id in (
+    select c.id from journal.line c
+    where c.occurred_at < $1 and c.decision = false
+    limit $2
+);

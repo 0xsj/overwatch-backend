@@ -87,6 +87,7 @@ func entry(row auditdb.AuditEntry) (domain.Entry, error) {
 		Actor:       row.Actor,
 		OnBehalfOf:  row.OnBehalfOf,
 		WorkspaceID: row.WorkspaceID,
+		OrgID:       row.OrgID,
 		Correlation: ident(row.CorrelationID),
 		Causation:   ident(row.CausationID),
 		Detail:      row.Detail,

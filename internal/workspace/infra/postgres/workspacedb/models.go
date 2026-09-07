@@ -18,4 +18,5 @@ type WorkspaceWorkspace struct {
 	UpdatedAt     pgtype.Timestamptz
 	ArchivedAt    pgtype.Timestamptz
 	SourceEventID pgtype.UUID
+	CreatedBy     pgtype.UUID
 }

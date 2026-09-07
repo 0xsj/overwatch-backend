@@ -195,7 +195,7 @@ func TestTheSweepTakesOldWorkAndNeverADecision(t *testing.T) {
 		}
 	}
 
-	n, err := s.ExpireBefore(ctx, at.Add(-30*24*time.Hour))
+	n, err := s.ExpireBefore(ctx, at.Add(-30*24*time.Hour), 1000)
 	if err != nil {
 		t.Fatal(err)
 	}

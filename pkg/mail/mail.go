@@ -114,6 +114,53 @@ func (m *Mailer) Reset(ctx context.Context, to, token string) error {
 	})
 }
 
+// ConfirmEmail goes to the NEW address. Until this link is used the account is
+// untouched, so a typo costs nothing — decisions/0021.
+// Invite asks somebody to join an organisation. It names the org and the person
+// who asked, because an unexpected invitation from a firm you have never heard
+// of is indistinguishable from a phishing attempt otherwise.
+func (m *Mailer) Invite(ctx context.Context, to, org, from, token string) error {
+	link := m.Link("/invite", map[string]string{"token": token})
+	return m.sender.Send(ctx, Message{
+		To:      to,
+		Subject: from + " invited you to " + org + " on Overwatch",
+		Body: from + " has invited you to join " + org + " on Overwatch.\n\n" +
+			link + "\n\n" +
+			"You will need an Overwatch account for this address to accept. If you " +
+			"do not have one, the link will offer to create it.\n\n" +
+			"If you were not expecting this, ignore the message — nothing happens " +
+			"until the link is used.\n",
+	})
+}
+
+func (m *Mailer) ConfirmEmail(ctx context.Context, to, token string) error {
+	link := m.Link("/email", map[string]string{"token": token})
+	return m.sender.Send(ctx, Message{
+		To:      to,
+		Subject: "Confirm your new Overwatch address",
+		Body: "Somebody asked to move an Overwatch account to this address.\n\n" +
+			"Confirm it to finish:\n\n" + link + "\n\n" +
+			"Until this link is used, nothing changes. If you were not expecting " +
+			"this, ignore the message.\n",
+	})
+}
+
+// EmailChangeRequested goes to the OLD address and carries NO LINK. That is the
+// decision, not an omission — decisions/0021. A "wasn't me" link in a message
+// sent to a possibly-hostile context is itself a takeover primitive, so the
+// notice tells the reader what to do instead of doing it for them.
+func (m *Mailer) EmailChangeRequested(ctx context.Context, to, proposed string) error {
+	return m.sender.Send(ctx, Message{
+		To:      to,
+		Subject: "Someone asked to change your Overwatch address",
+		Body: "A request was made to move your Overwatch account to " + proposed + ".\n\n" +
+			"It has NOT happened yet. It takes effect only when that address is " +
+			"confirmed.\n\n" +
+			"If this was not you, sign in and change your password now — whoever " +
+			"asked has access to a signed-in session.\n",
+	})
+}
+
 // ── smtp ───────────────────────────────────────────────────────────────
 
 type SMTP struct {
@@ -210,6 +257,16 @@ func (m *Memory) Send(_ context.Context, msg Message) error {
 	defer m.mu.Unlock()
 	m.sent = append(m.sent, msg)
 	return nil
+}
+
+// Reset forgets everything sent so far. A test asserting "these two messages
+// went out" needs a known-empty mailbox, and filtering by recipient after the
+// fact cannot tell a message from this step apart from an identical one from
+// the last.
+func (m *Memory) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sent = nil
 }
 
 func (m *Memory) Sent() []Message {

@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/0xsj/overwatch-backend/internal/workspace/domain"
@@ -12,6 +13,13 @@ import (
 )
 
 const OrgCreated = "org.created"
+
+// orgCreated is the one field this package reads out of org's payload, declared
+// here rather than imported. Importing org's type would be a peer import the
+// checks refuse, and copying one field is the cost of that — see doc.go.
+type orgCreated struct {
+	OwnerID string `json:"owner_id"`
+}
 
 type Subscriber struct {
 	service *Service
@@ -37,9 +45,14 @@ func (s *Subscriber) caused(e events.Event) (provenance.Provenance, error) {
 	return e.Provenance.DeriveFrom(s.ids, e.ID)
 }
 
-// Handle decodes NOTHING. The org id is the event's subject and the name is this
-// package's own default, so the only contract it depends on is the envelope —
-// which is what decisions/0013 put the subject there for.
+// Handle reads the subject for the org id and the payload for ONE field.
+//
+// It decoded nothing until decisions/0020, and the change is worth naming: the
+// org id is still the envelope's subject, but `created_by` cannot be computed
+// from anything this package can see. The registration request is
+// unauthenticated, so the actor is `anonymous` and the provenance cannot supply
+// it either — which is exactly the case decisions/0013 describes: what a
+// subscriber cannot compute belongs in the message.
 func (s *Subscriber) Handle(ctx context.Context, e events.Event) error {
 	if e.Name != OrgCreated {
 		return nil
@@ -48,11 +61,19 @@ func (s *Subscriber) Handle(ctx context.Context, e events.Event) error {
 	if err != nil {
 		return fmt.Errorf("workspace: %s has no readable subject %q: %w", e.Name, e.Subject, err)
 	}
+	var payload orgCreated
+	if err := json.Unmarshal(e.Payload, &payload); err != nil {
+		return fmt.Errorf("workspace: decode %s: %w", e.Name, err)
+	}
+	owner, err := id.Parse(payload.OwnerID)
+	if err != nil {
+		return fmt.Errorf("workspace: %s names no owner: %w", e.Name, err)
+	}
 	prov, err := s.caused(e)
 	if err != nil {
 		return err
 	}
-	if _, err := s.service.Provision(provenance.NewContext(ctx, prov), org, "", e.ID); err != nil {
+	if _, err := s.service.Provision(provenance.NewContext(ctx, prov), org, owner, "", e.ID); err != nil {
 		if errors.Is(err, domain.ErrAlreadyProvisioned) {
 			return nil
 		}

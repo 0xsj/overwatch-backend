@@ -22,4 +22,5 @@ type AuditEntry struct {
 	Detail        []byte
 	OccurredAt    pgtype.Timestamptz
 	RecordedAt    pgtype.Timestamptz
+	OrgID         string
 }

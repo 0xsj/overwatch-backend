@@ -5,6 +5,7 @@ const (
 	EventAccountActivated  = "identity.account.activated"
 	EventAccountArchived   = "identity.account.archived"
 	EventCredentialChanged = "identity.credential.changed"
+	EventEmailChanged      = "identity.account.email_changed"
 	EventCredentialRevoked = "identity.credential.revoked"
 	EventSessionStarted    = "identity.session.started"
 	EventSessionEnded      = "identity.session.ended"
@@ -45,4 +46,9 @@ type SessionEnded struct {
 	AccountID string `json:"account_id"`
 	SessionID string `json:"session_id"`
 	Reason    string `json:"reason"`
+}
+
+type EmailChanged struct {
+	AccountID string `json:"account_id"`
+	Email     string `json:"email"`
 }

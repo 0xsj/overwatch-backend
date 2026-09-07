@@ -84,3 +84,38 @@ func session(row identitydb.IdentitySession) domain.Session {
 		RevokedAt: instant(row.RevokedAt),
 	}
 }
+
+func token(row identitydb.IdentityToken) (domain.Token, error) {
+	kind, err := domain.ParseTokenKind(row.Kind)
+	if err != nil {
+		return domain.Token{}, err
+	}
+	// A malformed proposed_email is dropped rather than failing the read. The
+	// column is constrained on the way in, so this can only happen to a
+	// hand-edited row — and a token whose address will not parse must not
+	// authorise a change, which a zero Email guarantees at the call site.
+	var proposed domain.Email
+	if row.ProposedEmail.Valid {
+		proposed, _ = domain.NewEmail(row.ProposedEmail.String)
+	}
+	return domain.Token{
+		ID:            ident(row.ID),
+		AccountID:     ident(row.AccountID),
+		Kind:          kind,
+		Hash:          row.Hash,
+		ProposedEmail: proposed,
+		CreatedAt:     instant(row.CreatedAt),
+		ExpiresAt:     instant(row.ExpiresAt),
+		ConsumedAt:    instant(row.ConsumedAt),
+	}, nil
+}
+
+// text is the pgtype spelling of "a string that may be absent". An empty string
+// becomes NULL rather than ”, because the check constraint on proposed_email
+// refuses the empty string and the two would otherwise be a silent pair.
+func text(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: s, Valid: true}
+}

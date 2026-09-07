@@ -61,10 +61,11 @@ func (q *Queries) RevokeSession(ctx context.Context, arg RevokeSessionParams) (i
 	return result.RowsAffected(), nil
 }
 
-const revokeSessionsForAccount = `-- name: RevokeSessionsForAccount :execrows
+const revokeSessionsForAccount = `-- name: RevokeSessionsForAccount :many
 update identity.session
 set revoked_at = $2
 where account_id = $1 and revoked_at is null
+returning id
 `
 
 type RevokeSessionsForAccountParams struct {
@@ -72,12 +73,24 @@ type RevokeSessionsForAccountParams struct {
 	RevokedAt pgtype.Timestamptz
 }
 
-func (q *Queries) RevokeSessionsForAccount(ctx context.Context, arg RevokeSessionsForAccountParams) (int64, error) {
-	result, err := q.db.Exec(ctx, revokeSessionsForAccount, arg.AccountID, arg.RevokedAt)
+func (q *Queries) RevokeSessionsForAccount(ctx context.Context, arg RevokeSessionsForAccountParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, revokeSessionsForAccount, arg.AccountID, arg.RevokedAt)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const sessionByHash = `-- name: SessionByHash :one

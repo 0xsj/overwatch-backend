@@ -24,7 +24,7 @@ func ids() *id.Sequence { return id.NewSequence(at) }
 
 func made(t *testing.T, s *workspacepg.Store, m *id.Sequence, org id.ID, name string) domain.Workspace {
 	t.Helper()
-	w, err := domain.New(m.NewID(), org, name, at)
+	w, err := domain.New(m.NewID(), org, m.NewID(), name, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestANameIsUniqueWhileLiveAndIsReleasedOnArchive(t *testing.T) {
 	org := m.NewID()
 	first := made(t, s, m, org, "Acme Q3")
 
-	dup, err := domain.New(m.NewID(), org, "Acme Q3", at)
+	dup, err := domain.New(m.NewID(), org, m.NewID(), "Acme Q3", at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestANameIsUniqueWhileLiveAndIsReleasedOnArchive(t *testing.T) {
 
 	// Case-insensitively, because a switcher showing "Acme Q3" and "acme q3" is
 	// the same mistake with extra steps.
-	cased, err := domain.New(m.NewID(), org, "acme q3", at)
+	cased, err := domain.New(m.NewID(), org, m.NewID(), "acme q3", at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestAWorkspaceNamingANonexistentOrgIsAcceptedAndThatIsTheTrade(t *testing.T
 
 func mustNew(t *testing.T, m *id.Sequence, org id.ID, name string) domain.Workspace {
 	t.Helper()
-	w, err := domain.New(m.NewID(), org, name, at)
+	w, err := domain.New(m.NewID(), org, m.NewID(), name, at)
 	if err != nil {
 		t.Fatal(err)
 	}

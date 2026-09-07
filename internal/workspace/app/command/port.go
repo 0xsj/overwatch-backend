@@ -10,6 +10,8 @@ import (
 
 type Repository interface {
 	Create(ctx context.Context, w domain.Workspace) error
+	ByID(ctx context.Context, want id.ID) (domain.Workspace, error)
+	Save(ctx context.Context, w domain.Workspace) error
 }
 
 type Minter interface {

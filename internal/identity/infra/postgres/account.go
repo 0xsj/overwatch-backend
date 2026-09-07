@@ -52,7 +52,12 @@ func (s *Store) AccountByEmail(ctx context.Context, want domain.Email) (domain.A
 
 func (s *Store) SaveAccount(ctx context.Context, a domain.Account) error {
 	n, err := s.q(ctx).UpdateAccount(ctx, identitydb.UpdateAccountParams{
-		ID:        uuid(a.ID),
+		ID: uuid(a.ID),
+		// Every mutable column, and the list must match what the domain can
+		// change. A column omitted here is a transition the domain permits, the
+		// store accepts, and the database silently discards — which is how
+		// ChangeEmail returned a moved account and moved nothing.
+		Email:     a.Email.String(),
 		Name:      a.Name,
 		Status:    a.Status.String(),
 		Version:   int32(a.Version),

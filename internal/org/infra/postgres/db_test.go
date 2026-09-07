@@ -117,23 +117,43 @@ func TestAnAccountCannotJoinTheSameOrgTwiceButMayRejoinAfterLeaving(t *testing.T
 	}
 }
 
-// An org with no owner is an org nobody can administer, and there is no second
-// role to promote somebody into yet.
-func TestAnOrgCannotLoseItsLastOwner(t *testing.T) {
+// The last-owner rule USED TO LIVE HERE and this test asserted it here. It
+// moved to the command on 2026-09-07 — decisions/0026 — because the adapter sees
+// one row and the rule is about a SET: it covered archiving and not demotion,
+// and its count did not lock, so two concurrent demotions of two different
+// owners both passed it.
+//
+// What the store owes the command is the LOCKED READ, and that is what this
+// asserts now. The invariant itself is asserted where it is enforced, in
+// root/members_e2e_test.go.
+func TestTheStoreLendsTheCommandALockedOwnerRead(t *testing.T) {
 	s, _ := store(t)
 	ctx := context.Background()
 	m := ids()
 	_, only, _ := personal(t, s, m, "Solo")
 
+	owners, err := s.LockLiveOwners(ctx, only.OrgID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ACCOUNT ids, not member ids. The command compares these against the
+	// account it is about to demote, and a member id would never match one.
+	if len(owners) != 1 || owners[0] != only.AccountID {
+		t.Fatalf("owners: %v, want the founding account %s", owners, only.AccountID)
+	}
+
+	// The store no longer refuses. That is deliberate and is the whole content
+	// of the move: an adapter that guards is an adapter every other write path
+	// has to remember to go through.
 	archived, err := only.Archive(at.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveMember(ctx, archived); !errors.Is(err, domain.ErrLastOwner) {
-		t.Fatalf("archiving the last owner gave %v, want ErrLastOwner", err)
+	if err := s.SaveMember(ctx, archived); err != nil {
+		t.Fatalf("the store refused a write the command is responsible for: %v", err)
 	}
-	if got, err := s.LiveMemberFor(ctx, only.OrgID, only.AccountID); err != nil || got.Archived() {
-		t.Errorf("the refusal did not leave the member alone: %+v %v", got, err)
+	if owners, err = s.LockLiveOwners(ctx, only.OrgID); err != nil || len(owners) != 0 {
+		t.Errorf("after archiving: %v %v", owners, err)
 	}
 }
 

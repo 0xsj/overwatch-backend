@@ -101,3 +101,20 @@ func member(row orgdb.OrgMember) (domain.Member, error) {
 		ArchivedAt: instant(row.ArchivedAt),
 	}, nil
 }
+
+func grant(row orgdb.OrgGrant) (domain.Grant, error) {
+	level, err := domain.ParseLevel(row.Level)
+	if err != nil {
+		return domain.Grant{}, err
+	}
+	return domain.Grant{
+		ID:          ident(row.ID),
+		OrgID:       ident(row.OrgID),
+		AccountID:   ident(row.AccountID),
+		WorkspaceID: ident(row.WorkspaceID),
+		Level:       level,
+		Version:     int(row.Version),
+		CreatedAt:   instant(row.CreatedAt),
+		UpdatedAt:   instant(row.UpdatedAt),
+	}, nil
+}

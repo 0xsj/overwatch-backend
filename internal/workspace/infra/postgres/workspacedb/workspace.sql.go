@@ -11,10 +11,52 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const allWorkspacesForOrg = `-- name: AllWorkspacesForOrg :many
+select id, org_id, name, status, version, created_at, updated_at, archived_at,
+       source_event_id, created_by
+from workspace.workspace
+where org_id = $1
+order by created_at
+`
+
+// CLOSED ONES INCLUDED — decisions/0027. WorkspacesForOrg excludes them, which
+// is right for the switcher and leaves a closed engagement unreachable.
+func (q *Queries) AllWorkspacesForOrg(ctx context.Context, orgID pgtype.UUID) ([]WorkspaceWorkspace, error) {
+	rows, err := q.db.Query(ctx, allWorkspacesForOrg, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkspaceWorkspace{}
+	for rows.Next() {
+		var i WorkspaceWorkspace
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.Name,
+			&i.Status,
+			&i.Version,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ArchivedAt,
+			&i.SourceEventID,
+			&i.CreatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertWorkspace = `-- name: InsertWorkspace :exec
 insert into workspace.workspace (
-    id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    id, org_id, name, status, version, created_at, updated_at, archived_at,
+    source_event_id, created_by
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type InsertWorkspaceParams struct {
@@ -27,6 +69,7 @@ type InsertWorkspaceParams struct {
 	UpdatedAt     pgtype.Timestamptz
 	ArchivedAt    pgtype.Timestamptz
 	SourceEventID pgtype.UUID
+	CreatedBy     pgtype.UUID
 }
 
 func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams) error {
@@ -40,6 +83,7 @@ func (q *Queries) InsertWorkspace(ctx context.Context, arg InsertWorkspaceParams
 		arg.UpdatedAt,
 		arg.ArchivedAt,
 		arg.SourceEventID,
+		arg.CreatedBy,
 	)
 	return err
 }
@@ -77,7 +121,8 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 }
 
 const workspaceByID = `-- name: WorkspaceByID :one
-select id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
+select id, org_id, name, status, version, created_at, updated_at, archived_at,
+       source_event_id, created_by
 from workspace.workspace where id = $1
 `
 
@@ -94,12 +139,14 @@ func (q *Queries) WorkspaceByID(ctx context.Context, id pgtype.UUID) (WorkspaceW
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.SourceEventID,
+		&i.CreatedBy,
 	)
 	return i, err
 }
 
 const workspaceBySourceEvent = `-- name: WorkspaceBySourceEvent :one
-select id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
+select id, org_id, name, status, version, created_at, updated_at, archived_at,
+       source_event_id, created_by
 from workspace.workspace where source_event_id = $1
 `
 
@@ -116,12 +163,14 @@ func (q *Queries) WorkspaceBySourceEvent(ctx context.Context, sourceEventID pgty
 		&i.UpdatedAt,
 		&i.ArchivedAt,
 		&i.SourceEventID,
+		&i.CreatedBy,
 	)
 	return i, err
 }
 
 const workspacesForOrg = `-- name: WorkspacesForOrg :many
-select id, org_id, name, status, version, created_at, updated_at, archived_at, source_event_id
+select id, org_id, name, status, version, created_at, updated_at, archived_at,
+       source_event_id, created_by
 from workspace.workspace
 where org_id = $1 and status <> 'archived'
 order by created_at
@@ -146,6 +195,7 @@ func (q *Queries) WorkspacesForOrg(ctx context.Context, orgID pgtype.UUID) ([]Wo
 			&i.UpdatedAt,
 			&i.ArchivedAt,
 			&i.SourceEventID,
+			&i.CreatedBy,
 		); err != nil {
 			return nil, err
 		}

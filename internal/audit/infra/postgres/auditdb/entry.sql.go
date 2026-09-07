@@ -13,7 +13,7 @@ import (
 
 const entriesForActor = `-- name: EntriesForActor :many
 select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
-       correlation_id, causation_id, detail, occurred_at, recorded_at
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
 from audit.entry
 where actor = $1
 order by occurred_at desc
@@ -48,6 +48,64 @@ func (q *Queries) EntriesForActor(ctx context.Context, arg EntriesForActorParams
 			&i.Detail,
 			&i.OccurredAt,
 			&i.RecordedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const entriesForOrgPage = `-- name: EntriesForOrgPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where org_id = $1
+  and ($2::timestamptz is null or (occurred_at, id) < ($2::timestamptz, $3::uuid))
+order by occurred_at desc, id desc
+limit $4
+`
+
+type EntriesForOrgPageParams struct {
+	OrgID   string
+	Column2 pgtype.Timestamptz
+	Column3 pgtype.UUID
+	Limit   int32
+}
+
+func (q *Queries) EntriesForOrgPage(ctx context.Context, arg EntriesForOrgPageParams) ([]AuditEntry, error) {
+	rows, err := q.db.Query(ctx, entriesForOrgPage,
+		arg.OrgID,
+		arg.Column2,
+		arg.Column3,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditEntry{}
+	for rows.Next() {
+		var i AuditEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Scope,
+			&i.Action,
+			&i.Subject,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+			&i.OrgID,
 		); err != nil {
 			return nil, err
 		}
@@ -61,7 +119,7 @@ func (q *Queries) EntriesForActor(ctx context.Context, arg EntriesForActorParams
 
 const entriesForSubject = `-- name: EntriesForSubject :many
 select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
-       correlation_id, causation_id, detail, occurred_at, recorded_at
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
 from audit.entry
 where subject = $1
 order by occurred_at desc
@@ -96,6 +154,124 @@ func (q *Queries) EntriesForSubject(ctx context.Context, arg EntriesForSubjectPa
 			&i.Detail,
 			&i.OccurredAt,
 			&i.RecordedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const entriesForSubjectFacetPage = `-- name: EntriesForSubjectFacetPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where subject = $1
+  and split_part(action, '.', 1) = $2
+  and ($3::timestamptz is null or (occurred_at, id) < ($3::timestamptz, $4::uuid))
+order by occurred_at desc, id desc
+limit $5
+`
+
+type EntriesForSubjectFacetPageParams struct {
+	Subject string
+	Action  string
+	Column3 pgtype.Timestamptz
+	Column4 pgtype.UUID
+	Limit   int32
+}
+
+func (q *Queries) EntriesForSubjectFacetPage(ctx context.Context, arg EntriesForSubjectFacetPageParams) ([]AuditEntry, error) {
+	rows, err := q.db.Query(ctx, entriesForSubjectFacetPage,
+		arg.Subject,
+		arg.Action,
+		arg.Column3,
+		arg.Column4,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditEntry{}
+	for rows.Next() {
+		var i AuditEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Scope,
+			&i.Action,
+			&i.Subject,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const entriesForSubjectPage = `-- name: EntriesForSubjectPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where subject = $1
+  and ($2::timestamptz is null or (occurred_at, id) < ($2::timestamptz, $3::uuid))
+order by occurred_at desc, id desc
+limit $4
+`
+
+type EntriesForSubjectPageParams struct {
+	Subject string
+	Column2 pgtype.Timestamptz
+	Column3 pgtype.UUID
+	Limit   int32
+}
+
+func (q *Queries) EntriesForSubjectPage(ctx context.Context, arg EntriesForSubjectPageParams) ([]AuditEntry, error) {
+	rows, err := q.db.Query(ctx, entriesForSubjectPage,
+		arg.Subject,
+		arg.Column2,
+		arg.Column3,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditEntry{}
+	for rows.Next() {
+		var i AuditEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Scope,
+			&i.Action,
+			&i.Subject,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+			&i.OrgID,
 		); err != nil {
 			return nil, err
 		}
@@ -109,7 +285,7 @@ func (q *Queries) EntriesForSubject(ctx context.Context, arg EntriesForSubjectPa
 
 const entriesForWorkspace = `-- name: EntriesForWorkspace :many
 select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
-       correlation_id, causation_id, detail, occurred_at, recorded_at
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
 from audit.entry
 where workspace_id = $1
 order by occurred_at desc
@@ -144,6 +320,124 @@ func (q *Queries) EntriesForWorkspace(ctx context.Context, arg EntriesForWorkspa
 			&i.Detail,
 			&i.OccurredAt,
 			&i.RecordedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const entriesForWorkspaceFacetPage = `-- name: EntriesForWorkspaceFacetPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where workspace_id = $1
+  and split_part(action, '.', 1) = $2
+  and ($3::timestamptz is null or (occurred_at, id) < ($3::timestamptz, $4::uuid))
+order by occurred_at desc, id desc
+limit $5
+`
+
+type EntriesForWorkspaceFacetPageParams struct {
+	WorkspaceID string
+	Action      string
+	Column3     pgtype.Timestamptz
+	Column4     pgtype.UUID
+	Limit       int32
+}
+
+func (q *Queries) EntriesForWorkspaceFacetPage(ctx context.Context, arg EntriesForWorkspaceFacetPageParams) ([]AuditEntry, error) {
+	rows, err := q.db.Query(ctx, entriesForWorkspaceFacetPage,
+		arg.WorkspaceID,
+		arg.Action,
+		arg.Column3,
+		arg.Column4,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditEntry{}
+	for rows.Next() {
+		var i AuditEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Scope,
+			&i.Action,
+			&i.Subject,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const entriesForWorkspacePage = `-- name: EntriesForWorkspacePage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where workspace_id = $1
+  and ($2::timestamptz is null or (occurred_at, id) < ($2::timestamptz, $3::uuid))
+order by occurred_at desc, id desc
+limit $4
+`
+
+type EntriesForWorkspacePageParams struct {
+	WorkspaceID string
+	Column2     pgtype.Timestamptz
+	Column3     pgtype.UUID
+	Limit       int32
+}
+
+func (q *Queries) EntriesForWorkspacePage(ctx context.Context, arg EntriesForWorkspacePageParams) ([]AuditEntry, error) {
+	rows, err := q.db.Query(ctx, entriesForWorkspacePage,
+		arg.WorkspaceID,
+		arg.Column2,
+		arg.Column3,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditEntry{}
+	for rows.Next() {
+		var i AuditEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Scope,
+			&i.Action,
+			&i.Subject,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+			&i.OrgID,
 		); err != nil {
 			return nil, err
 		}
@@ -157,7 +451,7 @@ func (q *Queries) EntriesForWorkspace(ctx context.Context, arg EntriesForWorkspa
 
 const entryByID = `-- name: EntryByID :one
 select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
-       correlation_id, causation_id, detail, occurred_at, recorded_at
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
 from audit.entry
 where id = $1
 `
@@ -179,15 +473,119 @@ func (q *Queries) EntryByID(ctx context.Context, id pgtype.UUID) (AuditEntry, er
 		&i.Detail,
 		&i.OccurredAt,
 		&i.RecordedAt,
+		&i.OrgID,
 	)
 	return i, err
+}
+
+const facetsForOrg = `-- name: FacetsForOrg :many
+select split_part(action, '.', 1) as facet, count(*) as total
+from audit.entry
+where org_id = $1
+group by 1
+order by 2 desc, 1
+`
+
+type FacetsForOrgRow struct {
+	Facet string
+	Total int64
+}
+
+func (q *Queries) FacetsForOrg(ctx context.Context, orgID string) ([]FacetsForOrgRow, error) {
+	rows, err := q.db.Query(ctx, facetsForOrg, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FacetsForOrgRow{}
+	for rows.Next() {
+		var i FacetsForOrgRow
+		if err := rows.Scan(&i.Facet, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const facetsForSubject = `-- name: FacetsForSubject :many
+select split_part(action, '.', 1) as facet, count(*) as total
+from audit.entry
+where subject = $1
+group by 1
+order by 2 desc, 1
+`
+
+type FacetsForSubjectRow struct {
+	Facet string
+	Total int64
+}
+
+// The action's FIRST SEGMENT, which is what the mock's facet row counts. It is
+// computed rather than stored because the action is the fact and the facet is a
+// reading of it: a stored column would be a second spelling that drifts the
+// first time an action is renamed.
+func (q *Queries) FacetsForSubject(ctx context.Context, subject string) ([]FacetsForSubjectRow, error) {
+	rows, err := q.db.Query(ctx, facetsForSubject, subject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FacetsForSubjectRow{}
+	for rows.Next() {
+		var i FacetsForSubjectRow
+		if err := rows.Scan(&i.Facet, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const facetsForWorkspace = `-- name: FacetsForWorkspace :many
+select split_part(action, '.', 1) as facet, count(*) as total
+from audit.entry
+where workspace_id = $1
+group by 1
+order by 2 desc, 1
+`
+
+type FacetsForWorkspaceRow struct {
+	Facet string
+	Total int64
+}
+
+func (q *Queries) FacetsForWorkspace(ctx context.Context, workspaceID string) ([]FacetsForWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, facetsForWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FacetsForWorkspaceRow{}
+	for rows.Next() {
+		var i FacetsForWorkspaceRow
+		if err := rows.Scan(&i.Facet, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const insertEntry = `-- name: InsertEntry :execrows
 insert into audit.entry (
     id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
-    correlation_id, causation_id, detail, occurred_at, recorded_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 on conflict (event_id) do nothing
 `
 
@@ -205,6 +603,7 @@ type InsertEntryParams struct {
 	Detail        []byte
 	OccurredAt    pgtype.Timestamptz
 	RecordedAt    pgtype.Timestamptz
+	OrgID         string
 }
 
 func (q *Queries) InsertEntry(ctx context.Context, arg InsertEntryParams) (int64, error) {
@@ -222,6 +621,7 @@ func (q *Queries) InsertEntry(ctx context.Context, arg InsertEntryParams) (int64
 		arg.Detail,
 		arg.OccurredAt,
 		arg.RecordedAt,
+		arg.OrgID,
 	)
 	if err != nil {
 		return 0, err

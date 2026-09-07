@@ -9,6 +9,7 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/crypto"
 	"github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/events"
+	"github.com/0xsj/overwatch-backend/pkg/id"
 	"github.com/0xsj/overwatch-backend/pkg/provenance"
 	"github.com/0xsj/overwatch-backend/pkg/secret"
 )
@@ -150,6 +151,27 @@ func (a *Authenticator) SignOut(ctx context.Context, presented string) error {
 	return a.emit(ctx, domain.EventSessionEnded, session.AccountID, session.ID,
 		domain.SessionEnded{AccountID: session.AccountID.String(),
 			SessionID: session.ID.String(), Reason: "signed out"})
+}
+
+// EndSessionByID revokes a session the caller has already been shown to own.
+//
+// **It takes an account id and checks nothing about ownership**, because the
+// transport has: a session id is rendered on the session list, so it is not a
+// secret, and an endpoint that revokes any id handed to it would sign out
+// anybody whose id could be read or guessed. The check belongs where the
+// caller's own list is available, and this method's contract is that it has
+// already happened.
+func (a *Authenticator) EndSessionByID(ctx context.Context, account, session id.ID) error {
+	at := a.clock.Now()
+	if err := a.repo.EndSession(ctx, session, at); err != nil {
+		if errors.Is(err, domain.ErrSessionGone) {
+			return nil
+		}
+		return fmt.Errorf("identity: end session: %w", err)
+	}
+	return a.emit(ctx, domain.EventSessionEnded, account, session,
+		domain.SessionEnded{AccountID: account.String(),
+			SessionID: session.String(), Reason: ReasonSignedOutRemotely})
 }
 
 // burn spends the same work a real verification would. Without it, "no such

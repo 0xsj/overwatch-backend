@@ -53,6 +53,43 @@ func (q *Queries) AccountByID(ctx context.Context, id pgtype.UUID) (IdentityAcco
 	return i, err
 }
 
+const consumeLiveTokens = `-- name: ConsumeLiveTokens :execrows
+update identity.token set consumed_at = $3
+where account_id = $1 and kind = $2 and consumed_at is null
+`
+
+type ConsumeLiveTokensParams struct {
+	AccountID  pgtype.UUID
+	Kind       string
+	ConsumedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ConsumeLiveTokens(ctx context.Context, arg ConsumeLiveTokensParams) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeLiveTokens, arg.AccountID, arg.Kind, arg.ConsumedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const consumeToken = `-- name: ConsumeToken :execrows
+update identity.token set consumed_at = $2
+where id = $1 and consumed_at is null
+`
+
+type ConsumeTokenParams struct {
+	ID         pgtype.UUID
+	ConsumedAt pgtype.Timestamptz
+}
+
+func (q *Queries) ConsumeToken(ctx context.Context, arg ConsumeTokenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeToken, arg.ID, arg.ConsumedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertAccount = `-- name: InsertAccount :exec
 insert into identity.account (id, email, name, status, version, created_at, updated_at)
 values ($1, $2, $3, $4, $5, $6, $7)
@@ -81,14 +118,141 @@ func (q *Queries) InsertAccount(ctx context.Context, arg InsertAccountParams) er
 	return err
 }
 
+const insertToken = `-- name: InsertToken :exec
+insert into identity.token (
+    id, account_id, kind, hash, created_at, expires_at, consumed_at, proposed_email
+) values ($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type InsertTokenParams struct {
+	ID            pgtype.UUID
+	AccountID     pgtype.UUID
+	Kind          string
+	Hash          string
+	CreatedAt     pgtype.Timestamptz
+	ExpiresAt     pgtype.Timestamptz
+	ConsumedAt    pgtype.Timestamptz
+	ProposedEmail pgtype.Text
+}
+
+func (q *Queries) InsertToken(ctx context.Context, arg InsertTokenParams) error {
+	_, err := q.db.Exec(ctx, insertToken,
+		arg.ID,
+		arg.AccountID,
+		arg.Kind,
+		arg.Hash,
+		arg.CreatedAt,
+		arg.ExpiresAt,
+		arg.ConsumedAt,
+		arg.ProposedEmail,
+	)
+	return err
+}
+
+const liveSessionsFor = `-- name: LiveSessionsFor :many
+select id, account_id, hash, user_agent, address, issued_at, expires_at, revoked_at
+from identity.session
+where account_id = $1 and revoked_at is null and expires_at > $2
+order by issued_at desc
+`
+
+type LiveSessionsForParams struct {
+	AccountID pgtype.UUID
+	ExpiresAt pgtype.Timestamptz
+}
+
+func (q *Queries) LiveSessionsFor(ctx context.Context, arg LiveSessionsForParams) ([]IdentitySession, error) {
+	rows, err := q.db.Query(ctx, liveSessionsFor, arg.AccountID, arg.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IdentitySession{}
+	for rows.Next() {
+		var i IdentitySession
+		if err := rows.Scan(
+			&i.ID,
+			&i.AccountID,
+			&i.Hash,
+			&i.UserAgent,
+			&i.Address,
+			&i.IssuedAt,
+			&i.ExpiresAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeSessionsExcept = `-- name: RevokeSessionsExcept :many
+update identity.session
+set revoked_at = $3
+where account_id = $1 and id <> $2 and revoked_at is null
+returning id
+`
+
+type RevokeSessionsExceptParams struct {
+	AccountID pgtype.UUID
+	ID        pgtype.UUID
+	RevokedAt pgtype.Timestamptz
+}
+
+func (q *Queries) RevokeSessionsExcept(ctx context.Context, arg RevokeSessionsExceptParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, revokeSessionsExcept, arg.AccountID, arg.ID, arg.RevokedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const tokenByHash = `-- name: TokenByHash :one
+select id, account_id, kind, hash, created_at, expires_at, consumed_at, proposed_email
+from identity.token where hash = $1
+`
+
+func (q *Queries) TokenByHash(ctx context.Context, hash string) (IdentityToken, error) {
+	row := q.db.QueryRow(ctx, tokenByHash, hash)
+	var i IdentityToken
+	err := row.Scan(
+		&i.ID,
+		&i.AccountID,
+		&i.Kind,
+		&i.Hash,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+		&i.ConsumedAt,
+		&i.ProposedEmail,
+	)
+	return i, err
+}
+
 const updateAccount = `-- name: UpdateAccount :execrows
 update identity.account
-set name = $2, status = $3, version = $4, updated_at = $5
-where id = $1 and version = $6
+set email = $2, name = $3, status = $4, version = $5, updated_at = $6
+where id = $1 and version = $7
 `
 
 type UpdateAccountParams struct {
 	ID        pgtype.UUID
+	Email     string
 	Name      string
 	Status    string
 	Version   int32
@@ -99,6 +263,7 @@ type UpdateAccountParams struct {
 func (q *Queries) UpdateAccount(ctx context.Context, arg UpdateAccountParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateAccount,
 		arg.ID,
+		arg.Email,
 		arg.Name,
 		arg.Status,
 		arg.Version,

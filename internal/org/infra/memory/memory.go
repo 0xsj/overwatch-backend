@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/0xsj/overwatch-backend/internal/org/domain"
@@ -13,11 +14,16 @@ type Store struct {
 	mu      sync.Mutex
 	orgs    map[id.ID]domain.Org
 	members map[id.ID]domain.Member
+	grants  map[id.ID]domain.Grant
 	depth   int
 }
 
 func New() *Store {
-	return &Store{orgs: map[id.ID]domain.Org{}, members: map[id.ID]domain.Member{}}
+	return &Store{
+		orgs:    map[id.ID]domain.Org{},
+		members: map[id.ID]domain.Member{},
+		grants:  map[id.ID]domain.Grant{},
+	}
 }
 
 func (s *Store) InTx(ctx context.Context, fn func(context.Context) error) (err error) {
@@ -32,14 +38,14 @@ func (s *Store) InTx(ctx context.Context, fn func(context.Context) error) (err e
 		}()
 		return fn(ctx)
 	}
-	orgs, members := clone(s.orgs), clone(s.members)
+	orgs, members, grants := clone(s.orgs), clone(s.members), clone(s.grants)
 	s.depth = 1
 	s.mu.Unlock()
 
 	restore := func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.orgs, s.members, s.depth = orgs, members, 0
+		s.orgs, s.members, s.grants, s.depth = orgs, members, grants, 0
 	}
 	defer func() {
 		switch p := recover(); {
@@ -133,4 +139,90 @@ func (s *Store) SaveMember(_ context.Context, m domain.Member) error {
 	}
 	s.members[m.ID] = m
 	return nil
+}
+
+func (s *Store) AddGrant(_ context.Context, g domain.Grant) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, held := range s.grants {
+		if held.OrgID == g.OrgID && held.AccountID == g.AccountID && held.WorkspaceID == g.WorkspaceID {
+			return domain.ErrGrantExists
+		}
+	}
+	s.grants[g.ID] = g
+	return nil
+}
+
+func (s *Store) GrantFor(_ context.Context, org, account, workspace id.ID) (domain.Grant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, g := range s.grants {
+		if g.OrgID == org && g.AccountID == account && g.WorkspaceID == workspace {
+			return g, nil
+		}
+	}
+	return domain.Grant{}, domain.ErrGrantNotFound
+}
+
+func (s *Store) GrantsForAccount(_ context.Context, account, org id.ID) ([]domain.Grant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.Grant
+	for _, g := range s.grants {
+		if g.AccountID == account && g.OrgID == org {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) GrantsOnWorkspace(_ context.Context, workspace id.ID) ([]domain.Grant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.Grant
+	for _, g := range s.grants {
+		if g.WorkspaceID == workspace {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) SaveGrant(_ context.Context, g domain.Grant) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	held, ok := s.grants[g.ID]
+	if !ok {
+		return domain.ErrGrantNotFound
+	}
+	if held.Version != g.Version-1 {
+		return domain.ErrStaleWrite
+	}
+	s.grants[g.ID] = g
+	return nil
+}
+
+func (s *Store) RevokeGrant(_ context.Context, org, account, workspace id.ID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, g := range s.grants {
+		if g.OrgID == org && g.AccountID == account && g.WorkspaceID == workspace {
+			delete(s.grants, k)
+			return nil
+		}
+	}
+	return domain.ErrGrantNotFound
+}
+
+func (s *Store) MembersOf(_ context.Context, org id.ID) ([]domain.Member, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []domain.Member
+	for _, m := range s.members {
+		if m.OrgID == org && !m.Archived() {
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
 }

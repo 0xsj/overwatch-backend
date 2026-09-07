@@ -88,6 +88,7 @@ func workspace(row workspacedb.WorkspaceWorkspace) (domain.Workspace, error) {
 		UpdatedAt:   instant(row.UpdatedAt),
 		ArchivedAt:  instant(row.ArchivedAt),
 		SourceEvent: ident(row.SourceEventID),
+		CreatedBy:   ident(row.CreatedBy),
 	}, nil
 }
 
@@ -102,6 +103,7 @@ func (s *Store) Create(ctx context.Context, w domain.Workspace) error {
 		UpdatedAt:     stamp(w.UpdatedAt),
 		ArchivedAt:    stamp(w.ArchivedAt),
 		SourceEventID: maybe(w.SourceEvent),
+		CreatedBy:     maybe(w.CreatedBy),
 	})
 	if err == nil {
 		return nil
@@ -168,4 +170,21 @@ func (s *Store) Save(ctx context.Context, w domain.Workspace) error {
 		return fmt.Errorf("workspace: update: %w", domain.ErrStaleWrite)
 	}
 	return nil
+}
+
+// AllForOrg includes closed engagements — decisions/0027.
+func (s *Store) AllForOrg(ctx context.Context, orgID id.ID) ([]domain.Workspace, error) {
+	rows, err := s.q(ctx).AllWorkspacesForOrg(ctx, uuid(orgID))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "workspace: all for org")
+	}
+	out := make([]domain.Workspace, 0, len(rows))
+	for _, row := range rows {
+		w, err := workspace(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, nil
 }

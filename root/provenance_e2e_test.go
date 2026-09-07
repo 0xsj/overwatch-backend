@@ -9,15 +9,21 @@ import (
 	"strings"
 	"testing"
 
+	auditapp "github.com/0xsj/overwatch-backend/internal/audit/app"
+	auditquery "github.com/0xsj/overwatch-backend/internal/audit/app/query"
+	auditpg "github.com/0xsj/overwatch-backend/internal/audit/infra/postgres"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
 	identityhttp "github.com/0xsj/overwatch-backend/internal/identity/transport/http"
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
+	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
 	journalpg "github.com/0xsj/overwatch-backend/internal/journal/infra/postgres"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
+	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
 	workspacecmd "github.com/0xsj/overwatch-backend/internal/workspace/app/command"
+	workspacequery "github.com/0xsj/overwatch-backend/internal/workspace/app/query"
 	workspacepg "github.com/0xsj/overwatch-backend/internal/workspace/infra/postgres"
 	"github.com/0xsj/overwatch-backend/pkg/clock"
 	"github.com/0xsj/overwatch-backend/pkg/crypto"
@@ -25,6 +31,7 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 	"github.com/0xsj/overwatch-backend/pkg/logger"
+	"github.com/0xsj/overwatch-backend/pkg/mail"
 	"github.com/0xsj/overwatch-backend/pkg/outbox"
 	"github.com/0xsj/overwatch-backend/pkg/postgres"
 	"github.com/0xsj/overwatch-backend/pkg/testx"
@@ -38,6 +45,10 @@ type traced struct {
 	handler http.Handler
 	pump    *outbox.Dispatcher
 	pool    *postgres.Pool
+	// sent is the mailbox. A memory Sender is the ONE fake here, because the
+	// alternative is a test that needs an SMTP server to assert what a link
+	// says.
+	sent *mail.Memory
 }
 
 func tracedSystem(t *testing.T) traced {
@@ -48,6 +59,7 @@ func tracedSystem(t *testing.T) traced {
 		testx.Schema{Name: orgpg.Schema, Migrations: orgpg.Migrations},
 		testx.Schema{Name: workspacepg.Schema, Migrations: workspacepg.Migrations},
 		testx.Schema{Name: journalpg.Schema, Migrations: journalpg.Migrations},
+		testx.Schema{Name: auditpg.Schema, Migrations: auditpg.Migrations},
 	)
 
 	clk := clock.System{}
@@ -60,10 +72,37 @@ func tracedSystem(t *testing.T) traced {
 		crypto.NewMinter(rand.Reader), ids, clk, 0)
 	sessions := identityquery.NewSessions(accounts, clk)
 
+	orgStore := orgpg.NewStore(p)
+	workspaceService := workspacecmd.NewService(workspacepg.NewStore(p), publisher, ids, clk)
+
+	sent := mail.NewMemory()
+	mailer, err := mail.Wrap(sent, "Overwatch <no-reply@overwatch.test>", "http://localhost:7010")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := identitycmd.NewVerifier(accounts, mailer, publisher, hasher,
+		crypto.NewMinter(rand.Reader), ids, clk)
+
+	settings := identitycmd.NewSettings(accounts, mailer, publisher, hasher,
+		crypto.NewMinter(rand.Reader), ids, clk)
 	mux := http.NewServeMux()
+	newMe(sessions, settings,
+		identityquery.NewDirectory(accounts),
+		orgquery.NewOrgs(orgStore),
+		orgquery.NewAccess(orgStore),
+		workspacequery.NewWorkspaces(workspacepg.NewStore(p)),
+		workspaceService,
+		orgcmd.NewGrants(orgStore, orgquery.NewAccess(orgStore), publisher, ids, clk),
+		orgcmd.NewInvites(orgStore, directory{people: identityquery.NewDirectory(accounts)},
+			orgquery.NewAccess(orgStore), mailer, crypto.NewMinter(rand.Reader),
+			publisher, p, ids, clk),
+		orgcmd.NewMembers(orgStore, publisher, p, ids, clk),
+		auditquery.NewLedger(auditpg.NewStore(p)),
+		journalquery.NewTrail(journalpg.NewStore(p)),
+		logger.Nop()).register(mux)
 	identityhttp.NewAPI(
 		identitycmd.NewRegistrar(accounts, p, publisher, hasher, ids, clk),
-		auth, logger.Nop()).Routes(mux)
+		auth, verifier, settings, sessions, nil, logger.Nop()).Routes(mux)
 
 	return traced{
 		// The real middleware with the real Identifier. A registration carries
@@ -73,19 +112,24 @@ func tracedSystem(t *testing.T) traced {
 		pump: outbox.New(outbox.Config{
 			Store: outbox.NewPostgres(p), Clock: clk, Log: logger.Nop(),
 			Handlers: []events.Handler{
-				orgcmd.NewSubscriber(orgcmd.NewService(orgpg.NewStore(p), publisher, ids, clk), ids).Handle,
-				workspacecmd.NewSubscriber(workspacecmd.NewService(workspacepg.NewStore(p), publisher, ids, clk), ids).Handle,
+				orgcmd.NewSubscriber(orgcmd.NewService(orgStore, publisher, ids, clk), ids).Handle,
+				workspacecmd.NewSubscriber(workspaceService, ids).Handle,
+				orgcmd.NewGranter(orgStore, ids, clk).Handle,
+				orgcmd.NewDepartures(orgStore, orgStore, ids, clk).Handle,
+				identitycmd.NewSubscriber(verifier, ids).Handle,
+				auditapp.NewSubscriber(auditpg.NewStore(p), ids, clk).Handle,
 				journalapp.NewSubscriber(journalpg.NewStore(p), ids, clk).Handle,
 			},
 		}),
 		pool: p,
+		sent: sent,
 	}
 }
 
 func (s traced) register(t *testing.T, email string, headers map[string]string) *http.Response {
 	t.Helper()
 	body := `{"email":"` + email + `","password":"a passphrase nobody guesses","name":"Sam Lee"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/register", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/accounts", strings.NewReader(body))
 	req.Header.Set("content-type", "application/json")
 	for k, v := range headers {
 		req.Header.Set(k, v)
