@@ -27,6 +27,7 @@ func (s *Store) CreateInvite(ctx context.Context, i domain.Invite) error {
 		AcceptedAt:  stamp(i.AcceptedAt),
 		AcceptedBy:  maybe(i.AcceptedBy),
 		RevokedAt:   stamp(i.RevokedAt),
+		SeatUntil:   stamp(i.SeatUntil),
 	})
 	if err == nil {
 		return nil
@@ -124,6 +125,7 @@ func invite(row orgdb.OrgInvite) (domain.Invite, error) {
 		AcceptedAt:  instant(row.AcceptedAt),
 		AcceptedBy:  ident(row.AcceptedBy),
 		RevokedAt:   instant(row.RevokedAt),
+		SeatUntil:   instant(row.SeatUntil),
 	}
 	if row.Level.Valid {
 		lv, err := domain.ParseLevel(row.Level.String)

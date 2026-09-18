@@ -43,12 +43,13 @@
 // filesystems slow. Two bytes of the hash gives 65,536 buckets, which is enough
 // for corpora far past anything this product will hold on one disk.
 //
-// # Deliberately absent
+// # The deletion boundary
 //
-// **Delete.** Retention is a policy about the RECORD — the mock's own table says
-// artifacts are kept for the life of an engagement — and deleting bytes another
-// row still cites turns a citation into a lie. Sweeping unreferenced blobs is a
-// job that needs to know what references them, which this package cannot see.
+// Retention is a policy about the RECORD, and deleting bytes another row still
+// cites turns a citation into a lie. [Store.Remove] therefore exists only as a
+// narrow primitive for the reference-aware cleanup service, which inventories
+// every known citation family before calling it. Ordinary domain code has no
+// delete path.
 //
 // **Compression and encryption at rest.** Both are real and neither is free to
 // add later behind the same port: a compressed blob's name is still the hash of

@@ -8,16 +8,25 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	cleanuppg "github.com/0xsj/overwatch-backend/internal/artifactcleanup/infra/postgres"
+	assistpg "github.com/0xsj/overwatch-backend/internal/assistance/infra/postgres"
 	auditapp "github.com/0xsj/overwatch-backend/internal/audit/app"
 	auditquery "github.com/0xsj/overwatch-backend/internal/audit/app/query"
 	auditpg "github.com/0xsj/overwatch-backend/internal/audit/infra/postgres"
+	briefpg "github.com/0xsj/overwatch-backend/internal/brief/infra/postgres"
 	checkcmd "github.com/0xsj/overwatch-backend/internal/check/app/command"
 	checkquery "github.com/0xsj/overwatch-backend/internal/check/app/query"
 	checkpg "github.com/0xsj/overwatch-backend/internal/check/infra/postgres"
 	entcmd "github.com/0xsj/overwatch-backend/internal/entity/app/command"
 	entquery "github.com/0xsj/overwatch-backend/internal/entity/app/query"
 	entpg "github.com/0xsj/overwatch-backend/internal/entity/infra/postgres"
+	eventpg "github.com/0xsj/overwatch-backend/internal/event/infra/postgres"
+	findingcmd "github.com/0xsj/overwatch-backend/internal/finding/app/command"
+	findingquery "github.com/0xsj/overwatch-backend/internal/finding/app/query"
+	findingpg "github.com/0xsj/overwatch-backend/internal/finding/infra/postgres"
+	healthquery "github.com/0xsj/overwatch-backend/internal/health/app/query"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
@@ -25,17 +34,30 @@ import (
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
 	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
 	journalpg "github.com/0xsj/overwatch-backend/internal/journal/infra/postgres"
+	leadpg "github.com/0xsj/overwatch-backend/internal/lead/infra/postgres"
+	notecmd "github.com/0xsj/overwatch-backend/internal/note/app/command"
+	notequery "github.com/0xsj/overwatch-backend/internal/note/app/query"
+	notepg "github.com/0xsj/overwatch-backend/internal/note/infra/postgres"
+	obscmd "github.com/0xsj/overwatch-backend/internal/observation/app/command"
 	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	obspg "github.com/0xsj/overwatch-backend/internal/observation/infra/postgres"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
 	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
+	reportcmd "github.com/0xsj/overwatch-backend/internal/report/app/command"
+	reportquery "github.com/0xsj/overwatch-backend/internal/report/app/query"
+	reportpg "github.com/0xsj/overwatch-backend/internal/report/infra/postgres"
+	reviewpg "github.com/0xsj/overwatch-backend/internal/review/infra/postgres"
 	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
 	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
 	runpg "github.com/0xsj/overwatch-backend/internal/run/infra/postgres"
 	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
 	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
 	scopepg "github.com/0xsj/overwatch-backend/internal/scope/infra/postgres"
+	sourcedomain "github.com/0xsj/overwatch-backend/internal/source/domain"
+	extractioncmd "github.com/0xsj/overwatch-backend/internal/source/extraction/app/command"
+	extractionpg "github.com/0xsj/overwatch-backend/internal/source/extraction/infra/postgres"
+	sourcepg "github.com/0xsj/overwatch-backend/internal/source/infra/postgres"
 	targetcmd "github.com/0xsj/overwatch-backend/internal/target/app/command"
 	targetquery "github.com/0xsj/overwatch-backend/internal/target/app/query"
 	targetpg "github.com/0xsj/overwatch-backend/internal/target/infra/postgres"
@@ -48,9 +70,12 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/blob"
 	"github.com/0xsj/overwatch-backend/pkg/clock"
 	"github.com/0xsj/overwatch-backend/pkg/crypto"
+	"github.com/0xsj/overwatch-backend/pkg/egress"
 	"github.com/0xsj/overwatch-backend/pkg/events"
+	"github.com/0xsj/overwatch-backend/pkg/execx"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
+	"github.com/0xsj/overwatch-backend/pkg/limit"
 	"github.com/0xsj/overwatch-backend/pkg/logger"
 	"github.com/0xsj/overwatch-backend/pkg/mail"
 	"github.com/0xsj/overwatch-backend/pkg/outbox"
@@ -66,14 +91,45 @@ type traced struct {
 	handler http.Handler
 	pump    *outbox.Dispatcher
 	pool    *postgres.Pool
+	// executor is driven by hand, one [runcmd.Executor.Tick] at a time. A
+	// background loop would make every assertion a race.
+	executor *runcmd.Executor
 	// sent is the mailbox. A memory Sender is the ONE fake here, because the
 	// alternative is a test that needs an SMTP server to assert what a link
 	// says.
 	sent *mail.Memory
 }
 
+// guessBudget lets ONE test give the sign-in limiter a real budget. Every other
+// caller gets nil, which permits everything — these suites sign in far more than
+// ten times, and a rate limit firing mid-suite would fail a test about something
+// else entirely.
+var guessBudget *limit.Limiter
+
 func tracedSystem(t *testing.T) traced {
+	return tracedSystemWithFetcher(t, egress.New(egress.Config{
+		Guard:   egress.NewGuard(egress.Policy{AllowLoopback: true}),
+		MaxBody: sourcedomain.MaxBinaryCaptureBytes,
+	}))
+}
+
+func tracedSystemWithFetcher(t *testing.T, fetcher referenceFetcher) traced {
+	return tracedSystemWithFetcherAndOCR(t, fetcher, extractioncmd.UnsupportedImageOCR{})
+}
+
+func tracedSystemWithOCR(t *testing.T, ocr extractioncmd.ImageOCR) traced {
+	return tracedSystemWithFetcherAndOCR(t, egress.New(egress.Config{
+		Guard:   egress.NewGuard(egress.Policy{AllowLoopback: true}),
+		MaxBody: sourcedomain.MaxBinaryCaptureBytes,
+	}), ocr)
+}
+
+func tracedSystemWithFetcherAndOCR(t *testing.T, fetcher referenceFetcher, ocr extractioncmd.ImageOCR) traced {
 	t.Helper()
+	// Reset between tests: a package-level knob that leaks into the next test is
+	// the reason most of them are refused, and this one is justified only
+	// because it is cleaned up here.
+	t.Cleanup(func() { guessBudget = nil })
 	p := testx.Postgres(t,
 		testx.Schema{Name: "outbox", Migrations: outbox.Migrations, Unqualified: true},
 		testx.Schema{Name: identitypg.Schema, Migrations: identitypg.Migrations},
@@ -86,8 +142,19 @@ func tracedSystem(t *testing.T) traced {
 		testx.Schema{Name: toolpg.Schema, Migrations: toolpg.Migrations},
 		testx.Schema{Name: checkpg.Schema, Migrations: checkpg.Migrations},
 		testx.Schema{Name: runpg.Schema, Migrations: runpg.Migrations},
+		testx.Schema{Name: sourcepg.Schema, Migrations: sourcepg.Migrations},
+		testx.Schema{Name: extractionpg.Schema, Migrations: extractionpg.Migrations},
 		testx.Schema{Name: obspg.Schema, Migrations: obspg.Migrations},
+		testx.Schema{Name: eventpg.Schema, Migrations: eventpg.Migrations},
 		testx.Schema{Name: entpg.Schema, Migrations: entpg.Migrations},
+		testx.Schema{Name: findingpg.Schema, Migrations: findingpg.Migrations},
+		testx.Schema{Name: reportpg.Schema, Migrations: reportpg.Migrations},
+		testx.Schema{Name: notepg.Schema, Migrations: notepg.Migrations},
+		testx.Schema{Name: reviewpg.Schema, Migrations: reviewpg.Migrations},
+		testx.Schema{Name: leadpg.Schema, Migrations: leadpg.Migrations},
+		testx.Schema{Name: briefpg.Schema, Migrations: briefpg.Migrations},
+		testx.Schema{Name: assistpg.Schema, Migrations: assistpg.Migrations},
+		testx.Schema{Name: cleanuppg.Schema, Migrations: cleanuppg.Migrations},
 	)
 
 	clk := clock.System{}
@@ -126,16 +193,51 @@ func tracedSystem(t *testing.T) traced {
 	}
 	runReads := runquery.NewRuns(runpg.NewStore(p), blobs{store: bytes})
 
+	// One observation reader for the graph's two ports, built once rather than
+	// three times inline.
+	obsReadsForGraph := obsquery.NewObservations(obspg.NewStore(p),
+		mappingStep{tools: toolReads},
+		runSteps{runs: runReads},
+		ruleStep{rules: scopequery.NewRules(scopepg.NewStore(p))},
+		orgOf{reads: workspaceReads})
+
+	// THE EXECUTOR. It was absent from this harness until 2026-09-08, which is
+	// exactly how long the extraction half went unexercised: every run test
+	// asserted what was PLANNED, and nothing had ever spawned a process, stored
+	// an artifact, read it under a mapping and let the graph subscriber see the
+	// result. `Tick` has said "it is exported so a test can drive exactly one
+	// pass" since it was written, and no test called it.
+	//
+	// One instance of `Runs`, shared with the HTTP handler below. Two would each
+	// hold their own — harmless today and the sort of thing that stops being
+	// harmless the moment either grows a cache.
+	runsCmd := runcmd.NewRuns(runpg.NewStore(p),
+		chains{checks: checkReads, tools: toolReads, workspaces: workspaceReads},
+		targets{targets: targetquery.NewTargets(targetpg.NewStore(p))},
+		spawns{rules: scopequery.NewRules(scopepg.NewStore(p))},
+		p, publisher, ids, clk)
+	extractor := obscmd.NewExtractor(obspg.NewStore(p),
+		liveMappings{tools: toolReads},
+		sightings{findings: findingcmd.NewFindings(findingpg.NewStore(p),
+			findingFragments{fragments: entpg.NewStore(p)}, p, publisher, ids, clk)},
+		publisher, ids, clk)
+	executor := runcmd.NewExecutor(runpg.NewStore(p), runsCmd, kit,
+		orgOf{reads: workspaceReads}, execxSpawner{}, blobs{store: bytes},
+		extracts{extractor: extractor},
+		observedSubjects{observed: obsReadsForGraph}, p, publisher, ids, clk,
+		execx.Policy{Timeout: 30 * time.Second, MaxOutput: 4 << 20},
+		4, time.Second, logger.Nop())
+
 	mux := http.NewServeMux()
 	newMe(sessions, settings,
 		identityquery.NewDirectory(accounts),
 		orgquery.NewOrgs(orgStore),
-		orgquery.NewAccess(orgStore),
+		orgquery.NewAccess(orgStore, clk),
 		workspaceReads,
 		workspaceService,
-		orgcmd.NewGrants(orgStore, orgquery.NewAccess(orgStore), publisher, ids, clk),
+		orgcmd.NewGrants(orgStore, orgquery.NewAccess(orgStore, clk), publisher, ids, clk),
 		orgcmd.NewInvites(orgStore, directory{people: identityquery.NewDirectory(accounts)},
-			orgquery.NewAccess(orgStore), mailer, crypto.NewMinter(rand.Reader),
+			orgquery.NewAccess(orgStore, clk), mailer, crypto.NewMinter(rand.Reader),
 			publisher, p, ids, clk),
 		orgcmd.NewMembers(orgStore, publisher, p, ids, clk),
 		targetquery.NewTargets(targetpg.NewStore(p)),
@@ -150,26 +252,59 @@ func tracedSystem(t *testing.T) traced {
 		runReads,
 		// The REAL adapters, not stubs. They are the only thing that proves the
 		// five ports `run` borrows are wired to what they claim.
-		runcmd.NewRuns(runpg.NewStore(p),
-			chains{checks: checkReads, tools: toolReads, workspaces: workspaceReads},
-			targets{targets: targetquery.NewTargets(targetpg.NewStore(p))},
-			spawns{rules: scopequery.NewRules(scopepg.NewStore(p))},
-			p, publisher, ids, clk),
+		runsCmd,
 		obsquery.NewObservations(obspg.NewStore(p),
 			mappingStep{tools: toolReads},
 			runSteps{runs: runReads},
 			ruleStep{rules: scopequery.NewRules(scopepg.NewStore(p))},
 			orgOf{reads: workspaceReads}),
 		entquery.NewGraph(entpg.NewStore(p),
+			spawnPermits{rules: scopequery.NewRules(scopepg.NewStore(p))},
 			coverageChecks{checks: checkReads, workspaces: workspaceReads},
 			coverageChecked{runs: runReads, observed: obsquery.NewObservations(obspg.NewStore(p), mappingStep{tools: toolReads}, runSteps{runs: runReads}, ruleStep{rules: scopequery.NewRules(scopepg.NewStore(p))}, orgOf{reads: workspaceReads})}),
 		entcmd.NewRulings(entpg.NewStore(p), publisher, ids, clk),
+		findingquery.NewFindings(findingpg.NewStore(p)),
+		findingcmd.NewFindings(findingpg.NewStore(p),
+			findingFragments{fragments: entpg.NewStore(p)},
+			p, publisher, ids, clk),
+		reportquery.NewReports(reportpg.NewStore(p), blobs{store: bytes}),
+		reportcmd.NewReports(reportpg.NewStore(p),
+			sections{
+				rules: scopequery.NewRules(scopepg.NewStore(p)),
+				graph: entquery.NewGraph(entpg.NewStore(p),
+					spawnPermits{rules: scopequery.NewRules(scopepg.NewStore(p))},
+					coverageChecks{checks: checkReads, workspaces: workspaceReads},
+					coverageChecked{runs: runReads, observed: obsquery.NewObservations(
+						obspg.NewStore(p), mappingStep{tools: toolReads},
+						runSteps{runs: runReads},
+						ruleStep{rules: scopequery.NewRules(scopepg.NewStore(p))},
+						orgOf{reads: workspaceReads})}),
+				findings:        findingquery.NewFindings(findingpg.NewStore(p)),
+				runs:            runReads,
+				clock:           clk,
+				engagementNotes: engagementNotes{notes: notequery.NewNotes(notepg.NewStore(p))},
+			},
+			blobs{store: bytes}, p, publisher, ids, clk),
+		healthquery.NewDoctor(probes{
+			runs: runpg.NewStore(p), tools: toolpg.NewStore(p),
+			checks: checkpg.NewStore(p), observed: obspg.NewStore(p),
+			events: outbox.NewPostgres(p), workspaces: workspaceReads,
+		}, clk),
+		notequery.NewNotes(notepg.NewStore(p)),
+		notecmd.NewNotes(notepg.NewStore(p), knownKinds{}, publisher, ids, clk),
+		newResearchWithFetcherAndOCR(p, bytes, publisher, ids, clk, fetcher, ocr),
 		auditquery.NewLedger(auditpg.NewStore(p)),
 		journalquery.NewTrail(journalpg.NewStore(p)),
 		logger.Nop()).register(mux)
 	identityhttp.NewAPI(
 		identitycmd.NewRegistrar(accounts, p, publisher, hasher, ids, clk),
-		auth, verifier, settings, sessions, nil, logger.Nop()).Routes(mux)
+		// BOTH LIMITERS NIL. A nil limiter permits everything, which is what
+		// these tests need — they sign in far more than ten times, and a
+		// rate limit firing mid-suite would fail a test about something else.
+		// `identity`'s own tests are where the budget is exercised.
+		// The mail limiter is nil — permits everything. The GUESS limiter is
+		// whatever the test asked for, and nil for all but one.
+		auth, verifier, settings, sessions, nil, guessBudget, logger.Nop()).Routes(mux)
 
 	return traced{
 		// The real middleware with the real Identifier. A registration carries
@@ -184,12 +319,48 @@ func tracedSystem(t *testing.T) traced {
 				orgcmd.NewGranter(orgStore, ids, clk).Handle,
 				orgcmd.NewDepartures(orgStore, orgStore, ids, clk).Handle,
 				identitycmd.NewSubscriber(verifier, ids).Handle,
+				// THE GRAPH — decisions/0036's two subscribers. They were
+				// missing from this harness until 0044 needed a root entity:
+				// both were built on 2026-09-08 and neither had ever run
+				// end-to-end, so "a target gets a root entity" was a unit test
+				// and an assumption.
+				entcmd.NewSubscriber(entcmd.NewAssembler(entpg.NewStore(p),
+					subjects{observed: obsReadsForGraph},
+					provenances{observed: obsReadsForGraph, runs: runReads,
+						tools: toolReads, spaces: workspaceReads},
+					targetOfRun{runs: runReads},
+					claims{rules: scopequery.NewRules(scopepg.NewStore(p))},
+					publisher, ids, clk), ids).Handle,
+				targetcmd.NewRootSubscriber(targetpg.NewStore(p)).Handle,
 				auditapp.NewSubscriber(auditpg.NewStore(p), ids, clk).Handle,
 				journalapp.NewSubscriber(journalpg.NewStore(p), ids, clk).Handle,
 			},
 		}),
-		pool: p,
-		sent: sent,
+		pool:     p,
+		sent:     sent,
+		executor: executor,
+	}
+}
+
+// work drives the pipeline to a standstill: spawn, extract, then deliver the
+// events that extraction published, then spawn again for anything those
+// deliveries planned.
+//
+// **The two have to alternate.** The graph is assembled by a subscriber on
+// `extract.observation.created`, so a tick with no drain after it leaves the
+// fragments unwritten and a drain with no tick after it leaves a scheduled run
+// unspawned — and a test that did one of them would assert on a half-built
+// world and pass for the wrong reason.
+func (s traced) work(t *testing.T, rounds int) {
+	t.Helper()
+	ctx := context.Background()
+	for range rounds {
+		if err := s.executor.Tick(ctx); err != nil {
+			t.Fatalf("executor tick: %v", err)
+		}
+		if err := s.pump.Drain(ctx); err != nil {
+			t.Fatalf("drain: %v", err)
+		}
 	}
 }
 

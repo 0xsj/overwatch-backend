@@ -118,31 +118,34 @@ func TestATemplateWithNoFieldsIsRefused(t *testing.T) {
 }
 
 // Every non-source step is skipped, with a reason naming what did not arrive.
-func TestOnlySourceStepsAreRunnableToday(t *testing.T) {
+// 0039 §2 and §3: a SOURCE step has exactly one candidate, the target, and it
+// is known at plan time. A downstream step has none yet — its candidates are
+// what its feeders observe, and nothing has run.
+func TestASourceStepHasOneCandidateAndADownstreamStepHasNoneYet(t *testing.T) {
 	slots, err := domain.Outline([]domain.Step{
 		{StepID: nonZero(1), ToolID: nonZero(10), Template: "subfinder -d {{target}}", Source: true},
 		{StepID: nonZero(2), ToolID: nonZero(11), Template: "httpx -u {{host}}"},
 		{StepID: nonZero(3), ToolID: nonZero(12), Template: "nuclei -u {{url}}"},
-	}, "acme.test")
+	}, "ACME.test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(slots) != 3 {
 		t.Fatalf("every step gets a slot, got %d", len(slots))
 	}
-	if slots[0].Skip != "" {
-		t.Fatalf("a source step runs, got skip %q", slots[0].Skip)
+	if len(slots[0].Values) != 1 || slots[0].Values[0] != "acme.test" {
+		t.Fatalf("a source step is aimed at the folded target, got %q", slots[0].Values)
 	}
 	for _, slot := range slots[1:] {
-		if slot.Skip != domain.SkipNoObservations {
-			t.Fatalf("a downstream step is skipped with a reason, got %q", slot.Skip)
+		if len(slot.Values) != 0 {
+			t.Fatalf("a downstream step has no candidates at plan time, got %q", slot.Values)
 		}
 	}
 }
 
-// A skipped step still carries the argv it WOULD have run — that is what a
-// person reviews, and a refusal with no argv is a scope proof nobody can read.
-func TestASkippedSlotStillCarriesItsArgv(t *testing.T) {
+// 0039 §4: a planned downstream argv holds the SPLIT, UNSUBSTITUTED template,
+// so a step that has not run is visibly unresolved and the argv is never empty.
+func TestADownstreamStepIsPlannedWithItsTemplateUnsubstituted(t *testing.T) {
 	slots, err := domain.Outline([]domain.Step{
 		{StepID: nonZero(1), ToolID: nonZero(10), Template: "subfinder -d {{target}}", Source: true},
 		{StepID: nonZero(2), ToolID: nonZero(11), Template: "httpx -json -u {{host}}"},
@@ -150,8 +153,92 @@ func TestASkippedSlotStillCarriesItsArgv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(slots[1].Argv) != 4 {
-		t.Fatalf("want the resolved argv, got %q", slots[1].Argv)
+	want := []string{"httpx", "-json", "-u", "{{host}}"}
+	got := slots[1].Argv
+	if len(got) != len(want) {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("want %q, got %q", want, got)
+		}
+	}
+	if slots[0].Argv[2] != "acme.test" {
+		t.Fatalf("a source step IS resolved at plan time, got %q", slots[0].Argv)
+	}
+}
+
+// 0039 §2: many candidates, one command line. A value is ONE argv element
+// whatever is in it — the safety property of the single-value case, generalised.
+func TestManyValuesEachBecomeTheirOwnArgvElement(t *testing.T) {
+	got, err := domain.Argv("httpx -json -u {{host}}",
+		"a.acme.test", "b; rm -rf /", "c.acme.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"httpx", "-json", "-u", "a.acme.test", "b; rm -rf /", "c.acme.test"}
+	if len(got) != len(want) {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("want %q, got %q", want, got)
+		}
+	}
+	// A field with no placeholder is carried through ONCE however many values
+	// there are. Repeating the flags would be a different command.
+	if got[0] != "httpx" || got[1] != "-json" || got[2] != "-u" {
+		t.Fatalf("the fixed fields were repeated: %q", got)
+	}
+}
+
+// 0039 §4: Resolve overwrites the planned template with what ran, and REFUSES
+// an empty argv rather than clearing it. Nothing can reach it with one today —
+// the only caller passes a non-empty Fill of a non-empty template — so this is
+// the guard tested directly rather than left as a line nothing can fire.
+func TestResolvingWithNoArgvIsRefusedRatherThanClearingTheTemplate(t *testing.T) {
+	planned, err := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
+		0, []string{"httpx", "-u", "{{host}}"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planned.Resolve(nil); !errors.Is(err, domain.ErrArgvEmpty) {
+		t.Fatalf("want ErrArgvEmpty, got %v", err)
+	}
+	if _, err := planned.Resolve([]string{}); !errors.Is(err, domain.ErrArgvEmpty) {
+		t.Fatalf("want ErrArgvEmpty for an empty slice, got %v", err)
+	}
+	got, err := planned.Resolve([]string{"httpx", "-u", "a.acme.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Argv[2] != "a.acme.test" {
+		t.Fatalf("want the resolved argv, got %q", got.Argv)
+	}
+	if planned.Argv[2] != "{{host}}" {
+		t.Fatal("Resolve mutated the receiver — every other constructor copies")
+	}
+}
+
+// Fill is the same walk on already-split fields, so the planned argv and the
+// run one cannot be built by two different pieces of code — 0039 §4.
+func TestFillResolvesAPlannedTemplateIntoWhatRan(t *testing.T) {
+	planned, err := domain.Argv("httpx -u {{host}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned[2] != "{{host}}" {
+		t.Fatalf("no values means no substitution, got %q", planned)
+	}
+	got := domain.Fill(planned, []string{"a.acme.test", "b.acme.test"})
+	want := []string{"httpx", "-u", "a.acme.test", "b.acme.test"}
+	if len(got) != len(want) {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("want %q, got %q", want, got)
+		}
 	}
 }
 
@@ -171,7 +258,7 @@ func TestOutlineRefusesAnEmptyChainAndAnEmptyTarget(t *testing.T) {
 // would make `refused` and `failed` the same row.
 func TestARefusalHasNoExitCode(t *testing.T) {
 	planned, err := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"nmap", "acme.test"}, "host", "acme.test")
+		0, []string{"nmap", "acme.test"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +287,7 @@ func TestARefusalHasNoExitCode(t *testing.T) {
 // must not survive into a row whose phase says no process existed.
 func TestRefusingSomethingThatRanClearsItsExitCode(t *testing.T) {
 	planned, _ := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"nmap"}, "host", "acme.test")
+		0, []string{"nmap"}, nil)
 	running, _ := planned.Start(at)
 	ended, err := running.Ended(nil, "/usr/bin/nmap", 7, false, "", at, time.Second)
 	if err != nil {
@@ -226,7 +313,7 @@ func TestRefusingSomethingThatRanClearsItsExitCode(t *testing.T) {
 // from "a rule excluded it" — 0010's default.
 func TestNotInScopeIsARefusalWithNoRule(t *testing.T) {
 	planned, _ := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"nmap"}, "host", "acme.test")
+		0, []string{"nmap"}, nil)
 	out, err := planned.NotInScope("no rule permits a host here", at)
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +332,7 @@ func TestNotInScopeIsARefusalWithNoRule(t *testing.T) {
 // The tool decides, not this package: nuclei exits 1 when it finds nothing.
 func TestSuccessIsTheToolsAnswerNotTheExitCode(t *testing.T) {
 	planned, _ := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"nuclei"}, "host", "acme.test")
+		0, []string{"nuclei"}, nil)
 	running, err := planned.Start(at)
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +362,7 @@ func TestSuccessIsTheToolsAnswerNotTheExitCode(t *testing.T) {
 // silence.
 func TestAToolThatCouldNotStartIsFailedWithNoExitCode(t *testing.T) {
 	planned, _ := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"nope"}, "host", "acme.test")
+		0, []string{"nope"}, nil)
 	running, _ := planned.Start(at)
 	broke, err := running.Broke("executable file not found in $PATH", "", at, time.Second)
 	if err != nil {
@@ -294,7 +381,7 @@ func TestAToolThatCouldNotStartIsFailedWithNoExitCode(t *testing.T) {
 
 func TestAPendingInvocationIsTheOnlyOneThatCanStart(t *testing.T) {
 	planned, _ := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"x"}, "host", "acme.test")
+		0, []string{"x"}, nil)
 	running, err := planned.Start(at)
 	if err != nil {
 		t.Fatal(err)
@@ -306,11 +393,11 @@ func TestAPendingInvocationIsTheOnlyOneThatCanStart(t *testing.T) {
 
 func TestASkipNamesWhatDidNotArrive(t *testing.T) {
 	planned, _ := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"x"}, "host", "acme.test")
+		0, []string{"x"}, nil)
 	if _, err := planned.Skip("", at); !errors.Is(err, domain.ErrReasonRequired) {
 		t.Fatalf("want ErrReasonRequired, got %v", err)
 	}
-	skipped, err := planned.Skip(domain.SkipNoObservations, at)
+	skipped, err := planned.Skip(domain.SkipNothingUpstream, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,38 +459,152 @@ func TestARunFinishesOnceAndOnlyOnce(t *testing.T) {
 	}
 }
 
-// decisions/0037: an invocation records WHAT IT WAS AIMED AT, and the value is
-// FOLDED to match `entity.fragment.value`. 0037 names the fold mismatch as its
-// own quiet failure — unfolded, every coverage cell reads `never` and every row
-// is otherwise correct.
-func TestAnInvocationRecordsItsFoldedSubject(t *testing.T) {
-	got, err := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-		0, []string{"httpx"}, "host", "  ACME.Test  ")
+// decisions/0039: a candidate's value is FOLDED, matching `entity.fragment.value`
+// and `observation.subject_value`. 0037 named the fold mismatch as its own quiet
+// failure and this is the join it was about — unfolded, every coverage cell
+// reads `never` and every row is otherwise correct.
+func TestACandidateFoldsItsValue(t *testing.T) {
+	got, err := domain.NewCandidate(nonZero(1), nonZero(2), nonZero(3), nonZero(4),
+		"host", "  ACME.Test  ", at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SubjectKind != "host" || got.SubjectValue != "acme.test" {
-		t.Fatalf("want host/acme.test, got %s/%q", got.SubjectKind, got.SubjectValue)
+	if got.Kind != "host" || got.Value != "acme.test" {
+		t.Fatalf("want host/acme.test, got %s/%q", got.Kind, got.Value)
 	}
 }
 
-// The pair moves together, so a half-set subject is impossible — the schema's
-// constraint stated in Go. A step the gate could not be asked about carries
-// neither.
-func TestASubjectIsBothHalvesOrNeither(t *testing.T) {
+// A candidate is a kind AND a value. Neither half alone is something the gate
+// can be asked about, and a half-set one would fail closed silently rather than
+// naming the planner's bug.
+func TestACandidateIsBothHalvesOrNothing(t *testing.T) {
 	for _, tc := range []struct{ kind, value string }{
 		{"", "acme.test"},
 		{"host", ""},
+		{"host", "   "},
 		{"", ""},
 	} {
-		got, err := domain.Plan(nonZero(1), nonZero(2), nonZero(3), nonZero(4), nonZero(5),
-			0, []string{"x"}, tc.kind, tc.value)
+		_, err := domain.NewCandidate(nonZero(1), nonZero(2), nonZero(3), nonZero(4),
+			tc.kind, tc.value, at)
+		if !errors.Is(err, domain.ErrCandidateEmpty) {
+			t.Fatalf("%q/%q: want ErrCandidateEmpty, got %v", tc.kind, tc.value, err)
+		}
+	}
+}
+
+// A candidate is born NEITHER permitted nor refused, so one the gate was never
+// asked about cannot read as permitted. decisions/0010 — nothing is in scope
+// until a rule says so — is a default, and this is that default in a struct.
+func TestAnUnaskedCandidateIsNotPermitted(t *testing.T) {
+	got, err := domain.NewCandidate(nonZero(1), nonZero(2), nonZero(3), nonZero(4),
+		"host", "acme.test", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Permitted {
+		t.Fatal("nobody asked the gate, so nothing permitted it")
+	}
+	if len(domain.PermittedValues([]domain.Candidate{got})) != 0 {
+		t.Fatal("an unasked candidate must never reach an argv")
+	}
+}
+
+// 0010 keeps them apart: a rule EXCLUDED this, versus NOTHING permitted it. The
+// second cites no rule, and a report that cited one would be citing something
+// nobody wrote.
+func TestARefusalWithNoRuleIsADifferentFactFromAnExclusion(t *testing.T) {
+	base, err := domain.NewCandidate(nonZero(1), nonZero(2), nonZero(3), nonZero(4),
+		"host", "acme.test", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded, err := base.Refuse(nonZero(9), "rule *.acme.test excludes it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if excluded.RefusalRule != nonZero(9) || excluded.Permitted {
+		t.Fatalf("an exclusion cites its rule: %+v", excluded)
+	}
+	unmatched, err := base.NotInScope("nothing in this target's scope permits it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unmatched.RefusalRule.IsZero() || unmatched.Permitted {
+		t.Fatalf("nothing permitted it, so there is no rule to cite: %+v", unmatched)
+	}
+	if unmatched.RefusalReason == "" {
+		t.Fatal("a refusal always says why, rule or no rule")
+	}
+	if _, err := base.Refuse(id.ID{}, "why"); !errors.Is(err, domain.ErrRuleRequired) {
+		t.Fatalf("want ErrRuleRequired, got %v", err)
+	}
+	if _, err := base.NotInScope("  "); !errors.Is(err, domain.ErrReasonRequired) {
+		t.Fatalf("want ErrReasonRequired, got %v", err)
+	}
+}
+
+// Permitting after a refusal must leave NO trace of the refusal, or a row reads
+// as both permitted and excluded — which is the invariant the schema also holds.
+func TestPermittingClearsARefusal(t *testing.T) {
+	base, _ := domain.NewCandidate(nonZero(1), nonZero(2), nonZero(3), nonZero(4),
+		"host", "acme.test", at)
+	refused, _ := base.Refuse(nonZero(9), "no")
+	got := refused.Permit()
+	if !got.Permitted || !got.RefusalRule.IsZero() || got.RefusalReason != "" {
+		t.Fatalf("a permitted candidate carries no refusal: %+v", got)
+	}
+}
+
+// 0039 §2: the argv carries the PERMITTED subset, in order, and a refused
+// candidate is absent from it. That absence is the whole point of the table.
+func TestOnlyPermittedCandidatesReachTheArgv(t *testing.T) {
+	mk := func(n byte, value string, permitted bool) domain.Candidate {
+		c, err := domain.NewCandidate(nonZero(n), nonZero(2), nonZero(3), nonZero(4),
+			"host", value, at)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.SubjectKind != "" || got.SubjectValue != "" {
-			t.Fatalf("%q/%q left a half-set subject: %q/%q",
-				tc.kind, tc.value, got.SubjectKind, got.SubjectValue)
+		if permitted {
+			return c.Permit()
+		}
+		refused, err := c.Refuse(nonZero(9), "excluded")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return refused
+	}
+	cs := []domain.Candidate{
+		mk(1, "a.acme.test", true),
+		mk(2, "b.acme.test", false),
+		mk(3, "c.acme.test", true),
+	}
+	got := domain.PermittedValues(cs)
+	if len(got) != 2 || got[0] != "a.acme.test" || got[1] != "c.acme.test" {
+		t.Fatalf("want the two permitted values in order, got %q", got)
+	}
+	first, ok := domain.FirstRefusal(cs)
+	if !ok || first.Value != "b.acme.test" {
+		t.Fatalf("want the first refusal, got %+v (%v)", first, ok)
+	}
+	if _, ok := domain.FirstRefusal(cs[:1]); ok {
+		t.Fatal("nothing was refused, so there is no refusal to cite")
+	}
+}
+
+// 0039 §3: several feeders UNION, and the result is folded and ordered so an
+// argv is a function of what was FOUND rather than of the order two feeders
+// happened to finish in.
+func TestFeederSubjectsUnionFoldAndOrder(t *testing.T) {
+	got := domain.DistinctValues([]string{
+		"B.acme.test", "a.acme.test", "  b.acme.test  ", "", "   ", "a.acme.test",
+	})
+	want := []string{"a.acme.test", "b.acme.test"}
+	if len(got) != len(want) {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("want %q, got %q", want, got)
 		}
 	}
 }

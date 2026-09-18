@@ -46,6 +46,15 @@ type Observation struct {
 	// observations of one field wants the number without a second read.
 	MappingVersion int
 
+	// Role is what the mapping was FOR when this ran — decisions/0040. Captured
+	// for the same reason MappingVersion is: a version is immutable, but the
+	// tool's next version may give the same field a different role, and what
+	// this row IS is what the role was at the time.
+	//
+	// `derived_from` is the one that matters downstream — it is how the entity
+	// assembler finds a record's provenance without asking `tool`.
+	Role Role
+
 	// ObservedAt is when the TOOL RAN, not when extraction happened. Re-reading
 	// a three-month-old artifact under a corrected mapping must not make it
 	// look fresh.
@@ -57,7 +66,8 @@ type Observation struct {
 }
 
 func New(newID, workspace, invocation, artifact, mapping id.ID, version int,
-	subjectKind, subjectValue, field, value string, observedAt, recordedAt time.Time) (Observation, error) {
+	subjectKind, subjectValue, field, value string, role Role,
+	observedAt, recordedAt time.Time) (Observation, error) {
 	if newID.IsZero() || invocation.IsZero() || artifact.IsZero() || mapping.IsZero() {
 		return Observation{}, ErrIDRequired
 	}
@@ -88,9 +98,45 @@ func New(newID, workspace, invocation, artifact, mapping id.ID, version int,
 		SubjectKind: subjectKind, SubjectValue: subjectValue,
 		Field: field, Value: value,
 		InvocationID: invocation, ArtifactID: artifact,
-		MappingID: mapping, MappingVersion: version,
+		MappingID: mapping, MappingVersion: version, Role: role,
 		ObservedAt: observedAt, RecordedAt: recordedAt,
 	}, nil
+}
+
+// UnmappedPath is one leaf path nobody claimed, across a whole engagement —
+// `health`'s view of what `0035` records per invocation.
+type UnmappedPath struct {
+	Path        string
+	Seen        int
+	Invocations int
+	Since       time.Time
+}
+
+// Provenance is one record's answer to *"what was this read out of"* —
+// decisions/0040. It is a projection over observations whose mapping declared
+// the `derived_from` role, and it is what the entity assembler turns into an
+// edge.
+//
+// **The FROM value carries no kind**, and that is not an omission: a fragment is
+// `(workspace, kind, value)` and the kind of an input is the TOOL's `consumes`,
+// which this package cannot see. The composition root supplies it — 0040 §3 —
+// and reading it off the value's shape would be the observation/fact error one
+// level down.
+type Provenance struct {
+	// SubjectKind and SubjectValue name the fragment the edge points TO — the
+	// thing that was read OUT of something else.
+	SubjectKind  string
+	SubjectValue string
+
+	// FromValue is what it was read out of, verbatim as the tool wrote it.
+	FromValue string
+
+	// Label is the mapping's field name, which 0003 requires an edge to carry
+	// as the name of the act.
+	Label string
+
+	MappingID  id.ID
+	ArtifactID id.ID
 }
 
 // Unmapped is a leaf path the source emitted that no live mapping claimed.

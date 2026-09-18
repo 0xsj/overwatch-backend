@@ -1,12 +1,13 @@
-// Package observation holds what ONE SOURCE SAID, per field, with lineage to the
-// bytes it was read out of.
+// Package observation holds what a source said, with lineage to retained bytes.
+// Tool observations are per-field readings; manual observations cite an exact
+// passage in a source capture without inventing a tool invocation.
 //
 // **An observation, never a fact.** `PRODUCT.md` calls that the load-bearing
 // word: every other tool treats its records as facts, and calling ours a fact
 // commits the same error in the vocabulary. A source said something. That is all
 // that is ever held.
 //
-// # Per field — decisions/0035
+// # Tool observations: per field — decisions/0035
 //
 // Six fields read out of one httpx record is SIX rows, not one row with six
 // columns. That is what makes lineage a per-VALUE link, and what lets a
@@ -17,11 +18,16 @@
 //	invocation · artifact · mapping the lineage
 //	observed_at                     when the TOOL ran
 //
-// The subject is carried INLINE rather than as a `fragment` reference.
-// `fragment` is UNBUILT, and an observation is complete without one — *a source
-// said this host has this server header* is a whole statement. A fragment is a
-// dedup over those two columns and adds a column here rather than changing what
-// a row means.
+// The subject is carried inline. The entity domain deduplicates identifiers
+// into fragments, while each observation keeps its own original lineage.
+//
+// # Manual observations: source citations
+//
+// Manual observations pair a source statement with an exact quotation and
+// Unicode code-point range in an immutable capture. Source/capture ownership
+// is checked through a port composed in root. They have their own origin type
+// and table so existing tool constructor guarantees remain intact.
+// Analyst interpretation stays in editable working notes.
 //
 // # A field nobody mapped is RECORDED, never guessed
 //
@@ -52,5 +58,5 @@
 //
 // # These are the engagement's rows — 0031
 //
-// `workspace_id`, non-null. An observation is a claim about a client.
+// Every observation belongs to one workspace, which remains the access boundary.
 package observation

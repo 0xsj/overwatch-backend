@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/org/app/query"
 	"github.com/0xsj/overwatch-backend/internal/org/domain"
@@ -86,6 +87,11 @@ type Invitation struct {
 	Role        domain.Role
 	WorkspaceID id.ID
 	Level       domain.Level
+
+	// SeatUntil is the TIME BOX the resulting membership carries — owed item D.
+	// Required for a `guest` or a `client` and refused for anybody else, which
+	// is `0019`'s definition of those two roles finally being a rule.
+	SeatUntil time.Time
 }
 
 // Send mints an invitation and mails it.
@@ -160,7 +166,8 @@ func (i *Invites) Send(ctx context.Context, caller, org id.ID, in Invitation) (d
 	if err != nil {
 		return domain.Invite{}, fmt.Errorf("org: invite: %w", err)
 	}
-	fresh, err := domain.NewInvite(i.ids.NewID(), org, caller, email, in.Role, minted.Hash, at)
+	fresh, err := domain.NewInvite(i.ids.NewID(), org, caller, email, in.Role,
+		in.SeatUntil, minted.Hash, at)
 	if err != nil {
 		return domain.Invite{}, fmt.Errorf("org: invite: %w", err)
 	}
@@ -219,7 +226,12 @@ func (i *Invites) Accept(ctx context.Context, caller id.ID, callerEmail, present
 		if err := i.repo.SaveInvite(ctx, taken); err != nil {
 			return err
 		}
-		member, err = domain.NewMember(i.ids.NewID(), held.OrgID, caller, held.Role, at)
+		// THE INVITATION'S SEAT DATE becomes the membership's. It is carried
+		// rather than recomputed, because "ninety days from acceptance" and
+		// "until the thirtieth" are different promises and the invitation made
+		// the second one.
+		member, err = domain.NewMember(i.ids.NewID(), held.OrgID, caller,
+			held.Role, held.SeatUntil, at)
 		if err != nil {
 			return err
 		}

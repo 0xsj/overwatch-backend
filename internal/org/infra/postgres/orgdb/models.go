@@ -33,6 +33,7 @@ type OrgInvite struct {
 	AcceptedAt  pgtype.Timestamptz
 	AcceptedBy  pgtype.UUID
 	RevokedAt   pgtype.Timestamptz
+	SeatUntil   pgtype.Timestamptz
 }
 
 type OrgMember struct {
@@ -45,6 +46,7 @@ type OrgMember struct {
 	CreatedAt  pgtype.Timestamptz
 	UpdatedAt  pgtype.Timestamptz
 	ArchivedAt pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
 }
 
 type OrgOrg struct {

@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/entity/domain"
 	"github.com/0xsj/overwatch-backend/pkg/events"
@@ -13,25 +14,28 @@ import (
 // Assembler is the two subscribers that make the graph exist — decisions/0036.
 //
 //	target.added                 -> the ROOT ENTITY
-//	extract.observation.created  -> fragments, and attributions for what is covered
+//	extract.observation.created  -> fragments, attributions for what is covered,
+//	                                and DERIVATIONS for what a record was read
+//	                                out of — 0003's second edge kind, 0040
 type Assembler struct {
-	repo      Repository
-	subjects  Subjects
-	runs      Runs
-	claims    Claims
-	publisher events.Publisher
-	ids       Minter
-	clock     Clock
+	repo        Repository
+	subjects    Subjects
+	provenances Provenances
+	runs        Runs
+	claims      Claims
+	publisher   events.Publisher
+	ids         Minter
+	clock       Clock
 }
 
-func NewAssembler(repo Repository, subjects Subjects, runs Runs, claims Claims,
-	publisher events.Publisher, ids Minter, clock Clock) *Assembler {
-	if repo == nil || subjects == nil || runs == nil || claims == nil ||
-		publisher == nil || ids == nil || clock == nil {
+func NewAssembler(repo Repository, subjects Subjects, provenances Provenances,
+	runs Runs, claims Claims, publisher events.Publisher, ids Minter, clock Clock) *Assembler {
+	if repo == nil || subjects == nil || provenances == nil || runs == nil ||
+		claims == nil || publisher == nil || ids == nil || clock == nil {
 		panic("entity: NewAssembler with a nil dependency")
 	}
-	return &Assembler{repo: repo, subjects: subjects, runs: runs, claims: claims,
-		publisher: publisher, ids: ids, clock: clock}
+	return &Assembler{repo: repo, subjects: subjects, provenances: provenances,
+		runs: runs, claims: claims, publisher: publisher, ids: ids, clock: clock}
 }
 
 // RootFor creates a target's root entity — decisions/0029's column finally has
@@ -79,6 +83,12 @@ type Assembled struct {
 	Fragments  int
 	New        int
 	Attributed int
+
+	// Derivations and Unresolved are `0003`'s second edge kind and the
+	// provenances nothing could be found for — 0040. They are counted apart
+	// because "we drew 35 edges" and "and 2 we could not" are two facts.
+	Derivations int
+	Unresolved  int
 }
 
 // Observed is the second subscriber: fragments from what the tools said, and an
@@ -150,10 +160,94 @@ func (a *Assembler) Observed(ctx context.Context, workspace, invocation id.ID) (
 		out.Attributed++
 	}
 
-	return out, a.emit(ctx, domain.EventFragmentSeen, workspace, domain.FragmentSeen{
+	// THE EDGES, after the fragments — a derivation names two of them, and both
+	// have to exist before one can point at them. Same delivery, same
+	// transaction as the caller's, so a crash leaves neither rather than a
+	// graph half-drawn.
+	drawn, unresolved, err := a.derive(ctx, workspace, invocation, now)
+	if err != nil {
+		return Assembled{}, err
+	}
+	out.Derivations = drawn
+	out.Unresolved = unresolved
+
+	if err := a.emit(ctx, domain.EventFragmentSeen, workspace, domain.FragmentSeen{
 		WorkspaceID: workspace.String(), Fragments: out.Fragments,
 		New: out.New, Attributed: out.Attributed,
+	}); err != nil {
+		return Assembled{}, err
+	}
+	if drawn == 0 && unresolved == 0 {
+		// Most tools declare no provenance mapping. A silent event saying
+		// nothing happened would be noise on every extraction in the system.
+		return out, nil
+	}
+	// A SEPARATE event, for the same reason `field.unmapped` is separate from
+	// `observations.created`: "37 cited, 2 did not resolve" is the sentence
+	// somebody wants, and burying it inside a fragment count is how it goes
+	// unnoticed.
+	return out, a.emit(ctx, domain.EventDerivationDrawn, workspace, domain.Drawn{
+		WorkspaceID: workspace.String(), InvocationID: invocation.String(),
+		Drawn: drawn, Unresolved: unresolved,
 	})
+}
+
+// derive turns this delivery's provenance readings into `0003`'s second edge
+// kind — decisions/0040.
+//
+// **Both fragments must already exist.** The `to` side does by construction:
+// it is a subject of this same delivery, which the loop above just upserted.
+// The `from` side is looked up, and a miss is RECORDED rather than dropped or
+// invented — 0040 §5. The two ordinary reasons are a candidate the scope gate
+// refused (0039) and a fold mismatch, and both are worth a countable row.
+func (a *Assembler) derive(ctx context.Context, workspace, invocation id.ID,
+	now time.Time) (drawn, unresolved int, err error) {
+	found, err := a.provenances.ForInvocation(ctx, workspace, invocation)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, p := range found {
+		to, ok, err := a.repo.FragmentFor(ctx, workspace, p.SubjectKind, p.SubjectValue)
+		if err != nil {
+			return 0, 0, err
+		}
+		if !ok {
+			// The thing the edge would point AT is missing. That is not the
+			// case 0040 §5 is about — it means the subject itself was skipped
+			// above, which only happens for a value this package cannot
+			// represent. There is nothing to hang an unresolved row off.
+			continue
+		}
+		from, ok, err := a.repo.FragmentFor(ctx, workspace, p.FromKind, p.FromValue)
+		if err != nil {
+			return 0, 0, err
+		}
+		if !ok {
+			missed, err := domain.NewUnresolved(a.ids.NewID(), workspace, invocation,
+				p.MappingID, to.ID, p.FromKind, p.FromValue, p.Label, now)
+			if err != nil {
+				continue
+			}
+			if err := a.repo.RecordUnresolved(ctx, missed); err != nil {
+				return 0, 0, err
+			}
+			unresolved++
+			continue
+		}
+		edge, err := domain.NewDerivation(a.ids.NewID(), workspace, from.ID, to.ID,
+			p.Label, invocation, p.ArtifactID, p.MappingID, now)
+		if err != nil {
+			// A self-edge, or a label this package cannot hold. Skipped rather
+			// than fatal: the rest of the delivery is still true, and a mapping
+			// pointed at its own subject would otherwise fail every extraction.
+			continue
+		}
+		if err := a.repo.Draw(ctx, edge); err != nil {
+			return 0, 0, err
+		}
+		drawn++
+	}
+	return drawn, unresolved, nil
 }
 
 // emit publishes WORK — decisions/0014. Assembling the graph has an outcome and

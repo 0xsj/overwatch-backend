@@ -10,13 +10,20 @@ import (
 	checkquery "github.com/0xsj/overwatch-backend/internal/check/app/query"
 	entcmd "github.com/0xsj/overwatch-backend/internal/entity/app/command"
 	entquery "github.com/0xsj/overwatch-backend/internal/entity/app/query"
+	findingcmd "github.com/0xsj/overwatch-backend/internal/finding/app/command"
+	findingquery "github.com/0xsj/overwatch-backend/internal/finding/app/query"
+	healthquery "github.com/0xsj/overwatch-backend/internal/health/app/query"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identityhttp "github.com/0xsj/overwatch-backend/internal/identity/transport/http"
 	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
+	notecmd "github.com/0xsj/overwatch-backend/internal/note/app/command"
+	notequery "github.com/0xsj/overwatch-backend/internal/note/app/query"
 	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
 	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
+	reportcmd "github.com/0xsj/overwatch-backend/internal/report/app/command"
+	reportquery "github.com/0xsj/overwatch-backend/internal/report/app/query"
 	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
 	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
 	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
@@ -57,6 +64,14 @@ type me struct {
 	observed    *obsquery.Observations
 	graph       *entquery.Graph
 	rulings     *entcmd.Rulings
+	findings    *findingquery.Findings
+	findingsCmd *findingcmd.Findings
+	reports     *reportquery.Reports
+	reportsCmd  *reportcmd.Reports
+	health      *healthquery.Doctor
+	notes       *notequery.Notes
+	notesCmd    *notecmd.Notes
+	research    *research
 	tools       *toolquery.Tools
 	toolsCmd    *toolcmd.Tools
 	mappingsCmd *toolcmd.Mappings
@@ -76,6 +91,11 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 	checks *checkquery.Checks, checksCmd *checkcmd.Checks,
 	runs *runquery.Runs, runsCmd *runcmd.Runs, observed *obsquery.Observations,
 	graph *entquery.Graph, rulings *entcmd.Rulings,
+	findings *findingquery.Findings, findingsCmd *findingcmd.Findings,
+	reports *reportquery.Reports, reportsCmd *reportcmd.Reports,
+	health *healthquery.Doctor,
+	notes *notequery.Notes, notesCmd *notecmd.Notes,
+	research *research,
 	ledger *auditquery.Ledger, trail *journalquery.Trail,
 	log *slog.Logger) *me {
 	if sessions == nil || settings == nil || people == nil || orgs == nil || access == nil ||
@@ -85,7 +105,9 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 		tools == nil || toolsCmd == nil || mappingsCmd == nil ||
 		checks == nil || checksCmd == nil ||
 		runs == nil || runsCmd == nil || observed == nil ||
-		graph == nil || rulings == nil ||
+		graph == nil || rulings == nil || findings == nil || findingsCmd == nil ||
+		reports == nil || reportsCmd == nil || health == nil ||
+		notes == nil || notesCmd == nil || research == nil ||
 		ledger == nil || trail == nil {
 		panic("root: newMe with a nil dependency")
 	}
@@ -101,6 +123,9 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 		checks: checks, checksCmd: checksCmd,
 		runs: runs, runsCmd: runsCmd, observed: observed,
 		graph: graph, rulings: rulings,
+		findings: findings, findingsCmd: findingsCmd,
+		reports: reports, reportsCmd: reportsCmd, health: health,
+		notes: notes, notesCmd: notesCmd, research: research,
 		ledger: ledger, trail: trail, log: log}
 }
 
@@ -152,6 +177,14 @@ type meWorkspace struct {
 // rather than a string it chose itself — a test asserting /v1/me while the
 // server serves /v1/whoami passes and proves nothing.
 func (m *me) register(mux *http.ServeMux) {
+	m.registerResearch(mux)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence", m.listEvidence)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/{observation}", m.readEvidence)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/relations", m.listEvidenceRelations)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/evidence/relations", m.setEvidenceRelation)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/syntheses", m.listEvidenceSyntheses)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/syntheses/{synthesis}", m.readEvidenceSynthesis)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/evidence/syntheses", m.createEvidenceSynthesis)
 	mux.HandleFunc("GET /v1/me", m.handle)
 	mux.HandleFunc("GET /v1/orgs/{org}/members", m.members)
 	mux.HandleFunc("POST /v1/orgs/{org}/workspaces", m.openWorkspace)
@@ -272,6 +305,39 @@ func (m *me) register(mux *http.ServeMux) {
 	// A human READ, which is not a judgement: 0011 says READ BY YOU is what
 	// keeps `never read` and `no judgement` separable.
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/fragments/{fragment}/read", m.markRead)
+
+	// FINDINGS — decisions/0041. The board is a RECORD read; ruling on one is a
+	// `write`, and there is deliberately no route that closes a finding without
+	// a person behind it.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/findings", m.listFindings)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/findings/{finding}", m.readFinding)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/findings/{finding}/state", m.decideFinding)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/findings/{finding}/severity", m.reassessFinding)
+
+	// REPORTS — decisions/0042, and the ONLY routes a `client` reaches. Every
+	// other route in this file goes through a gate that refuses one, which is
+	// the fail-closed direction: a route added tomorrow excludes clients
+	// without anybody remembering to think about it.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/reports", m.listReports)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/reports", m.openReport)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/reports/{report}", m.readReport)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/reports/{report}/sections/{section}", m.toggleSection)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/reports/{report}/preview", m.previewReport)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/reports/{report}/revisions", m.issueReport)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/revisions/{revision}", m.readRevision)
+
+	// HEALTH — `CLAUDE.md`'s "is the MACHINERY well — a tool off PATH looks
+	// like silence". A RECORD read, because a closed engagement's machinery is
+	// exactly as worth asking about as an open one's.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/health", m.readHealth)
+
+	// NOTES — decisions/0043. A person's own text, and the only input this
+	// system has that nothing else produces.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/notes", m.listNotes)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/notes/{note}", m.readNote)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/notes", m.writeNote)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/notes/{note}", m.editNote)
+	mux.HandleFunc("DELETE /v1/workspaces/{workspace}/notes/{note}", m.eraseNote)
 }
 
 func (m *me) handle(w http.ResponseWriter, r *http.Request) {

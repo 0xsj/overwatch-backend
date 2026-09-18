@@ -19,8 +19,10 @@ var (
 			"`domain`, because a domain is a host")
 	ErrStatusUnknown = errors.New(errors.Invalid, "not a status this system knows")
 
-	ErrFieldRequired      = errors.New(errors.Invalid, "a mapping names the field it produces")
-	ErrExpressionRequired = errors.New(errors.Invalid, "a mapping needs an expression")
+	ErrFieldRequired        = errors.New(errors.Invalid, "a mapping names the field it produces")
+	ErrExpressionRequired   = errors.New(errors.Invalid, "a mapping needs an expression")
+	ErrRoleUnknown          = errors.New(errors.Invalid, "not a mapping role this system knows")
+	ErrSourceToolHasNoInput = errors.New(errors.Invalid, "this tool consumes nothing, so it has no input to have read a value out of")
 
 	ErrNotFound    = errors.New(errors.NotFound, "tool")
 	ErrMappingGone = errors.New(errors.NotFound, "mapping version")

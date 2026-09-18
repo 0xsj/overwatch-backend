@@ -3,6 +3,13 @@ package domain
 import "github.com/0xsj/overwatch-backend/pkg/errors"
 
 var (
+	// The TIME BOX — decisions/0019 and 0025, built when 0042 gave `client`
+	// real access. A guest or a client without an end date is a rule enforced
+	// nowhere; anybody else WITH one is a promise nothing keeps.
+	ErrTimeBoxRequired  = errors.New(errors.Invalid, "a guest or a client is time-boxed and needs an end date")
+	ErrTimeBoxForbidden = errors.New(errors.Invalid, "only a guest or a client carries an end date")
+	ErrTimeBoxPast      = errors.New(errors.Invalid, "that end date has already passed — remove them instead")
+
 	ErrIDRequired   = errors.New(errors.Invalid, "an identifier is required")
 	ErrTimeRequired = errors.New(errors.Invalid, "an instant is required")
 

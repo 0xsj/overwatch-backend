@@ -133,6 +133,39 @@ sql:
         emit_empty_slices: true
         emit_pointers_for_null_types: false
   - engine: postgresql
+    schema: internal/note/infra/postgres/migrations
+    queries: internal/note/infra/postgres/queries
+    gen:
+      go:
+        package: notedb
+        out: internal/note/infra/postgres/notedb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/report/infra/postgres/migrations
+    queries: internal/report/infra/postgres/queries
+    gen:
+      go:
+        package: reportdb
+        out: internal/report/infra/postgres/reportdb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
+    schema: internal/finding/infra/postgres/migrations
+    queries: internal/finding/infra/postgres/queries
+    gen:
+      go:
+        package: findingdb
+        out: internal/finding/infra/postgres/findingdb
+        sql_package: pgx/v5
+        emit_empty_slices: true
+        emit_pointers_for_null_types: false
+
+  - engine: postgresql
     schema: internal/entity/infra/postgres/migrations
     queries: internal/entity/infra/postgres/queries
     gen:

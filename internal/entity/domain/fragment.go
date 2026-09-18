@@ -107,6 +107,12 @@ func (f Fragment) Read(by id.ID, at time.Time) (Fragment, error) {
 // a boolean and the timestamp beside it is for the screen.
 func (f Fragment) HasBeenRead() bool { return !f.ReadAt.IsZero() }
 
+// Fold is the ONE place a fragment's value is normalised. A derivation resolves
+// its `from` by looking a value up in this table, so the lookup and the row must
+// agree about what "the same host" means — 0037 named the fold mismatch as its
+// own quiet failure and this is another join that would suffer it.
+func Fold(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
 func NewFragment(newID, workspace id.ID, kind, value string, origin Origin, at time.Time) (Fragment, error) {
 	if newID.IsZero() {
 		return Fragment{}, ErrIDRequired
@@ -124,7 +130,7 @@ func NewFragment(newID, workspace id.ID, kind, value string, origin Origin, at t
 	// The value is FOLDED to lower case, because `ACME.test` and `acme.test` are
 	// one host and a fragment that admitted both would put the same asset on the
 	// list twice. The Postgres unique index folds identically.
-	value = strings.ToLower(strings.TrimSpace(value))
+	value = Fold(value)
 	if value == "" || len(value) > MaxValueLength {
 		return Fragment{}, ErrValueRequired
 	}

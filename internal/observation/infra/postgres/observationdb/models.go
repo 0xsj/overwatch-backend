@@ -8,6 +8,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type ObservationManual struct {
+	ID          pgtype.UUID
+	WorkspaceID pgtype.UUID
+	SourceID    pgtype.UUID
+	CaptureID   pgtype.UUID
+	Statement   string
+	Quote       []byte
+	QuoteStart  int32
+	QuoteEnd    int32
+	Locator     string
+	Author      pgtype.UUID
+	RecordedAt  pgtype.Timestamptz
+}
+
 type ObservationObservation struct {
 	ID             pgtype.UUID
 	WorkspaceID    pgtype.UUID
@@ -21,6 +35,7 @@ type ObservationObservation struct {
 	MappingVersion int32
 	ObservedAt     pgtype.Timestamptz
 	RecordedAt     pgtype.Timestamptz
+	Role           string
 }
 
 type ObservationUnmapped struct {

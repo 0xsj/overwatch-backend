@@ -30,6 +30,15 @@ type Invite struct {
 	WorkspaceID id.ID
 	Level       Level
 
+	// SeatUntil is the TIME BOX the resulting MEMBERSHIP will carry — owed item
+	// D, and `0025` said the column arrives with the invite.
+	//
+	// **It is not `ExpiresAt`, and confusing the two is the mistake this field
+	// name exists to prevent.** `ExpiresAt` is how long the LINK is good for —
+	// seven days, so an unread invitation stops working. `SeatUntil` is how long
+	// the PERSON is on the engagement, which is a term somebody negotiated.
+	SeatUntil time.Time
+
 	Hash       string
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
@@ -38,7 +47,12 @@ type Invite struct {
 	RevokedAt  time.Time
 }
 
-func NewInvite(newID, org, invitedBy id.ID, email string, role Role, hash string, at time.Time) (Invite, error) {
+// NewInvite mints an invitation. `seatUntil` is REQUIRED when the role is
+// time-boxed and forbidden otherwise, which is the same rule [Member.Box] holds
+// one table over — stated in both places so an invitation cannot create a
+// membership the membership rule would have refused.
+func NewInvite(newID, org, invitedBy id.ID, email string, role Role, seatUntil time.Time,
+	hash string, at time.Time) (Invite, error) {
 	if newID.IsZero() || org.IsZero() || invitedBy.IsZero() {
 		return Invite{}, ErrIDRequired
 	}
@@ -52,9 +66,20 @@ func NewInvite(newID, org, invitedBy id.ID, email string, role Role, hash string
 	if err != nil {
 		return Invite{}, err
 	}
+	if role.TimeBoxed() {
+		if seatUntil.IsZero() {
+			return Invite{}, ErrTimeBoxRequired
+		}
+		if !seatUntil.After(at) {
+			return Invite{}, ErrTimeBoxPast
+		}
+	} else if !seatUntil.IsZero() {
+		return Invite{}, ErrTimeBoxForbidden
+	}
 	return Invite{
 		ID: newID, OrgID: org, Email: folded, Role: role, InvitedBy: invitedBy,
-		Hash: hash, CreatedAt: at, ExpiresAt: at.Add(InviteTTL),
+		SeatUntil: seatUntil,
+		Hash:      hash, CreatedAt: at, ExpiresAt: at.Add(InviteTTL),
 	}, nil
 }
 

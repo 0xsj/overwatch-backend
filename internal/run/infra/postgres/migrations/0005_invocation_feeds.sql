@@ -1,0 +1,23 @@
+-- WHAT FEEDS A STEP, as the chain said AT PLAN TIME — decisions/0039.
+--
+-- SPLIT OUT OF 0004 ON 2026-09-08, and the split is the record worth keeping.
+-- This stanza was appended to `0004_candidate.sql` after that migration had
+-- already run, so the column existed in the file and in no database. The runner
+-- refused to boot and was right to: a forward-only runner never re-applies an
+-- applied step, so an edited one changes what a FRESH database gets and changes
+-- nothing about an existing one, and the two diverge permanently while the diff
+-- that caused it looks like an ordinary addition.
+--
+-- `0004` is byte-for-byte what it was when it ran — verified against the
+-- checksum in `run.schema_migrations` rather than by eye — and the addition
+-- lives here, where it can actually be applied.
+--
+-- The executor needs it to find which invocations of this run produced the
+-- observations this step consumes. Re-reading the chain at execution would be
+-- one fewer column and would let a mid-run edit redirect a step's input — the
+-- same drift `step_id` and `tool_id` are stored to prevent (0032).
+--
+-- Empty on a SOURCE step, which is also what `run.candidate` having exactly one
+-- row says. Two facts, neither derived from the other, because a source step
+-- with a refused candidate has no candidates permitted and still fed nothing.
+alter table run.invocation add column feeds uuid[] not null default '{}';

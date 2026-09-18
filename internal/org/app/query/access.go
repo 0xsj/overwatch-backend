@@ -3,6 +3,7 @@ package query
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/org/domain"
 	"github.com/0xsj/overwatch-backend/pkg/errors"
@@ -75,13 +76,22 @@ func (r Reach) Allows(workspace id.ID, want domain.Level) bool {
 	return r.On(workspace).AtLeast(want)
 }
 
-type Access struct{ reader AccessReader }
+// Clock is here because the gate has to know the time. A time-boxed membership
+// stops granting anything the moment it lapses — owed item D — and asking a
+// sweep instead would leave a window between two ticks in which an expired
+// guest holds everything they held.
+type Clock interface{ Now() time.Time }
 
-func NewAccess(reader AccessReader) *Access {
-	if reader == nil {
-		panic("org: NewAccess with a nil reader")
+type Access struct {
+	reader AccessReader
+	clock  Clock
+}
+
+func NewAccess(reader AccessReader, clock Clock) *Access {
+	if reader == nil || clock == nil {
+		panic("org: NewAccess with a nil dependency")
 	}
-	return &Access{reader: reader}
+	return &Access{reader: reader, clock: clock}
 }
 
 // In resolves a caller's standing in one org. A caller who is not a live member
@@ -96,6 +106,18 @@ func (a *Access) In(ctx context.Context, account, org id.ID) (Reach, error) {
 			return Reach{}, ErrNoAccess
 		}
 		return Reach{}, fmt.Errorf("org: reach: %w", err)
+	}
+
+	// **AN EXPIRED MEMBERSHIP IS AS INVISIBLE AS NO MEMBERSHIP** — owed item D,
+	// and `0019`'s rule about `none` says why it is this error and not another:
+	// telling a lapsed client that the org still exists tells them the
+	// engagement did, which for the client behind that wall is the leak.
+	//
+	// The row is NOT archived here. It stays, with its date, so a members screen
+	// can say "expired 3 Jul" and somebody can extend it — deleting access and
+	// deleting the record are different acts.
+	if member.Expired(a.clock.Now()) {
+		return Reach{}, ErrNoAccess
 	}
 
 	// An owner is admin everywhere with no row — decisions/0019. Reading their

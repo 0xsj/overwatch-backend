@@ -16,6 +16,13 @@ var (
 	ErrStateUnknown    = errors.New(errors.Invalid, "not a state this system knows")
 	ErrBasisRequired   = errors.New(errors.Invalid, "an attribution says on what basis")
 
+	// decisions/0003, held in the domain as well as by two not-null columns.
+	// An edge without an invocation and an artifact is a similarity edge
+	// wearing a costume, and CLAUDE.md bans those outright.
+	ErrUnsourced        = errors.New(errors.Invalid, "a derivation names the invocation and the artifact it was read from")
+	ErrDerivationToSelf = errors.New(errors.Invalid, "a fragment is not read out of itself")
+	ErrSubjectRequired  = errors.New(errors.Invalid, "an unresolved provenance is a kind and a value")
+
 	// ErrConfidenceOnRule is decisions/0003's disjointness, enforced. A rule's
 	// assignment is a category and not a probability, and storing 1.0 destroys
 	// the distinction permanently.

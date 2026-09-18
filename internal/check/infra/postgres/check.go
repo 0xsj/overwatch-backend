@@ -38,6 +38,33 @@ func (s *Store) Create(ctx context.Context, c domain.Check) error {
 	return nil
 }
 
+// Unrunnable is a check that is enabled, on a clock, and CHAINLESS — skipped
+// every tick forever. `0038` stopped one of these holding the head of the queue;
+// it still never runs, and a coverage grid counts its column as never attempted
+// without saying why.
+func (s *Store) Unrunnable(ctx context.Context, org id.ID) ([]domain.Stalled, error) {
+	rows, err := s.q(ctx).ChecksThatCannotRun(ctx, uuid(org))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "check: checks that cannot run")
+	}
+	out := make([]domain.Stalled, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Stalled{
+			ID: ident(row.ID), Name: row.Name,
+			IntervalSeconds: int(row.IntervalSeconds.Int32),
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) CountChecks(ctx context.Context, org id.ID) (int, error) {
+	n, err := s.q(ctx).ChecksConsidered(ctx, uuid(org))
+	if err != nil {
+		return 0, postgres.Translate(ctx, err, "check: checks considered")
+	}
+	return int(n), nil
+}
+
 func (s *Store) ByID(ctx context.Context, org, want id.ID) (domain.Check, error) {
 	row, err := s.q(ctx).CheckByID(ctx, checkdb.CheckByIDParams{ID: uuid(want), OrgID: uuid(org)})
 	if err != nil {

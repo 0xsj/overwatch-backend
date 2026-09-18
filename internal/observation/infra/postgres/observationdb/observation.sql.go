@@ -65,8 +65,8 @@ const insertObservation = `-- name: InsertObservation :exec
 insert into observation.observation (
     id, workspace_id, subject_kind, subject_value, field, value,
     invocation_id, artifact_id, mapping_id, mapping_version,
-    observed_at, recorded_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    observed_at, recorded_at, role
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 `
 
 type InsertObservationParams struct {
@@ -82,6 +82,7 @@ type InsertObservationParams struct {
 	MappingVersion int32
 	ObservedAt     pgtype.Timestamptz
 	RecordedAt     pgtype.Timestamptz
+	Role           string
 }
 
 func (q *Queries) InsertObservation(ctx context.Context, arg InsertObservationParams) error {
@@ -98,6 +99,7 @@ func (q *Queries) InsertObservation(ctx context.Context, arg InsertObservationPa
 		arg.MappingVersion,
 		arg.ObservedAt,
 		arg.RecordedAt,
+		arg.Role,
 	)
 	return err
 }
@@ -141,7 +143,7 @@ func (q *Queries) InsertUnmapped(ctx context.Context, arg InsertUnmappedParams) 
 const observationByID = `-- name: ObservationByID :one
 select id, workspace_id, subject_kind, subject_value, field, value,
        invocation_id, artifact_id, mapping_id, mapping_version,
-       observed_at, recorded_at
+       observed_at, recorded_at, role
 from observation.observation where id = $1 and workspace_id = $2
 `
 
@@ -166,6 +168,7 @@ func (q *Queries) ObservationByID(ctx context.Context, arg ObservationByIDParams
 		&i.MappingVersion,
 		&i.ObservedAt,
 		&i.RecordedAt,
+		&i.Role,
 	)
 	return i, err
 }
@@ -173,7 +176,7 @@ func (q *Queries) ObservationByID(ctx context.Context, arg ObservationByIDParams
 const observationsForInvocation = `-- name: ObservationsForInvocation :many
 select id, workspace_id, subject_kind, subject_value, field, value,
        invocation_id, artifact_id, mapping_id, mapping_version,
-       observed_at, recorded_at
+       observed_at, recorded_at, role
 from observation.observation
 where invocation_id = $1 and workspace_id = $2
 order by subject_value, field, observed_at desc
@@ -208,6 +211,7 @@ func (q *Queries) ObservationsForInvocation(ctx context.Context, arg Observation
 			&i.MappingVersion,
 			&i.ObservedAt,
 			&i.RecordedAt,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
@@ -222,7 +226,7 @@ func (q *Queries) ObservationsForInvocation(ctx context.Context, arg Observation
 const observationsForSubject = `-- name: ObservationsForSubject :many
 select id, workspace_id, subject_kind, subject_value, field, value,
        invocation_id, artifact_id, mapping_id, mapping_version,
-       observed_at, recorded_at
+       observed_at, recorded_at, role
 from observation.observation
 where workspace_id = $1 and subject_kind = $2 and subject_value = $3
 order by field, observed_at desc
@@ -267,10 +271,165 @@ func (q *Queries) ObservationsForSubject(ctx context.Context, arg ObservationsFo
 			&i.MappingVersion,
 			&i.ObservedAt,
 			&i.RecordedAt,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const pathsNobodyMapped = `-- name: PathsNobodyMapped :many
+select path, sum(seen)::int as seen, count(*)::int as invocations,
+       min(recorded_at)::timestamptz as since
+from observation.unmapped
+where workspace_id = $1
+group by path
+order by seen desc
+limit $2::int
+`
+
+type PathsNobodyMappedParams struct {
+	WorkspaceID pgtype.UUID
+	Page        int32
+}
+
+type PathsNobodyMappedRow struct {
+	Path        string
+	Seen        int32
+	Invocations int32
+	Since       pgtype.Timestamptz
+}
+
+// A tool saying something nobody has taught this system to read — usually one
+// that grew fields after an upgrade. `0035` RECORDS these rather than guessing
+// at them, and until `health` nothing surfaced them outside one invocation.
+//
+// Grouped by PATH, because "`.tech[]` is unmapped across 400 records" is one
+// fact and 400 rows are not.
+func (q *Queries) PathsNobodyMapped(ctx context.Context, arg PathsNobodyMappedParams) ([]PathsNobodyMappedRow, error) {
+	rows, err := q.db.Query(ctx, pathsNobodyMapped, arg.WorkspaceID, arg.Page)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PathsNobodyMappedRow{}
+	for rows.Next() {
+		var i PathsNobodyMappedRow
+		if err := rows.Scan(
+			&i.Path,
+			&i.Seen,
+			&i.Invocations,
+			&i.Since,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const provenanceForInvocation = `-- name: ProvenanceForInvocation :many
+select subject_kind, subject_value, value as from_value, field as label,
+       mapping_id, artifact_id
+from observation.observation
+where workspace_id = $1 and invocation_id = $2 and role = 'derived_from'
+order by subject_value
+`
+
+type ProvenanceForInvocationParams struct {
+	WorkspaceID  pgtype.UUID
+	InvocationID pgtype.UUID
+}
+
+type ProvenanceForInvocationRow struct {
+	SubjectKind  string
+	SubjectValue string
+	FromValue    string
+	Label        string
+	MappingID    pgtype.UUID
+	ArtifactID   pgtype.UUID
+}
+
+// WHAT EACH RECORD WAS READ OUT OF — decisions/0040 §4. One invocation's
+// provenance readings: the subject a value is about, and the value it came from.
+//
+// `role = 'derived_from'` and not a field name, because the role is what the
+// mapping DECLARED and a field may be called whatever reads best. The partial
+// index `observation_provenance` is exactly this predicate.
+//
+// The FROM value's KIND is deliberately absent: it is the tool's `consumes`,
+// which this schema does not hold and the composition root resolves — 0040 §3.
+func (q *Queries) ProvenanceForInvocation(ctx context.Context, arg ProvenanceForInvocationParams) ([]ProvenanceForInvocationRow, error) {
+	rows, err := q.db.Query(ctx, provenanceForInvocation, arg.WorkspaceID, arg.InvocationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProvenanceForInvocationRow{}
+	for rows.Next() {
+		var i ProvenanceForInvocationRow
+		if err := rows.Scan(
+			&i.SubjectKind,
+			&i.SubjectValue,
+			&i.FromValue,
+			&i.Label,
+			&i.MappingID,
+			&i.ArtifactID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const subjectsForInvocations = `-- name: SubjectsForInvocations :many
+select distinct subject_value
+from observation.observation
+where workspace_id = $1
+  and invocation_id = any($2::uuid[])
+  and subject_kind = $3::text
+order by subject_value
+`
+
+type SubjectsForInvocationsParams struct {
+	WorkspaceID pgtype.UUID
+	Invocations []pgtype.UUID
+	Kind        string
+}
+
+// What a DOWNSTREAM step is fed — decisions/0039 Section 3. The distinct
+// subjects these invocations observed, of one kind.
+//
+// DISTINCT in the database and not in Go, because several feeders of one step
+// routinely see the same host and pulling every field read out of every artifact
+// to fold them here would move the group-by out of the database. The `run`
+// domain folds and orders what comes back anyway, because it may not assume a
+// store did.
+func (q *Queries) SubjectsForInvocations(ctx context.Context, arg SubjectsForInvocationsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, subjectsForInvocations, arg.WorkspaceID, arg.Invocations, arg.Kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var subject_value string
+		if err := rows.Scan(&subject_value); err != nil {
+			return nil, err
+		}
+		items = append(items, subject_value)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -378,6 +537,17 @@ func (q *Queries) SubjectsPerInvocation(ctx context.Context, workspaceID pgtype.
 		return nil, err
 	}
 	return items, nil
+}
+
+const unmappedConsidered = `-- name: UnmappedConsidered :one
+select count(*)::int from observation.unmapped where workspace_id = $1
+`
+
+func (q *Queries) UnmappedConsidered(ctx context.Context, workspaceID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, unmappedConsidered, workspaceID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const unmappedForInvocation = `-- name: UnmappedForInvocation :many

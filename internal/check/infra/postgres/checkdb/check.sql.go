@@ -45,6 +45,17 @@ func (q *Queries) CheckByID(ctx context.Context, arg CheckByIDParams) (ChecksChe
 	return i, err
 }
 
+const checksConsidered = `-- name: ChecksConsidered :one
+select count(*)::int from checks.check where org_id = $1 and status <> 'archived'
+`
+
+func (q *Queries) ChecksConsidered(ctx context.Context, orgID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, checksConsidered, orgID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const checksForOrg = `-- name: ChecksForOrg :many
 select id, org_id, name, question, applies_to, interval_seconds, enabled,
        status, version, created_by, created_at, updated_at, archived_at, human
@@ -83,6 +94,52 @@ func (q *Queries) ChecksForOrg(ctx context.Context, arg ChecksForOrgParams) ([]C
 			&i.ArchivedAt,
 			&i.Human,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const checksThatCannotRun = `-- name: ChecksThatCannotRun :many
+select c.id, c.name, c.interval_seconds
+from checks.check c
+where c.org_id = $1
+  and c.status <> 'archived'
+  and c.enabled
+  and not c.human
+  and c.interval_seconds > 0
+  and not exists (select 1 from checks.step s where s.check_id = c.id)
+order by c.name
+`
+
+type ChecksThatCannotRunRow struct {
+	ID              pgtype.UUID
+	Name            string
+	IntervalSeconds pgtype.Int4
+}
+
+// Enabled, on a clock, and CHAINLESS — so the scheduler skips it every tick,
+// forever. `0038` stopped one of these holding the head of the queue; it still
+// never runs, and a coverage grid counts its column as `never attempted`
+// without ever saying why.
+//
+// `human` is EXCLUDED: `READ BY YOU` is the check with no chain by design, and
+// reporting the one intentionally chainless check as broken would train a reader
+// to ignore this list — 0037 §3 made `human` a flag for exactly this reason.
+func (q *Queries) ChecksThatCannotRun(ctx context.Context, orgID pgtype.UUID) ([]ChecksThatCannotRunRow, error) {
+	rows, err := q.db.Query(ctx, checksThatCannotRun, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChecksThatCannotRunRow{}
+	for rows.Next() {
+		var i ChecksThatCannotRunRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.IntervalSeconds); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

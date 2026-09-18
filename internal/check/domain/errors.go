@@ -24,7 +24,15 @@ var (
 	ErrStepUnknown   = errors.New(errors.Invalid, "a flow names a step this check does not have")
 	ErrFlowToSelf    = errors.New(errors.Invalid, "a step cannot feed itself")
 	ErrFlowDuplicate = errors.New(errors.Invalid, "that flow is already in the chain")
-	ErrChainCyclic   = errors.New(errors.Invalid, "the chain has a cycle")
+
+	// The three ways an edge cannot carry anything — decisions/0032's deferred
+	// rule, made urgent by 0039. The messages name the SHAPE of the mistake
+	// rather than the ids, because the fix is the reader's and an id is not a
+	// sentence.
+	ErrEdgeProducesNothing = errors.New(errors.Invalid, "that step's tool produces nothing, so it cannot feed another")
+	ErrEdgeConsumesNothing = errors.New(errors.Invalid, "that step's tool is seeded from the target and cannot be fed by another")
+	ErrEdgeMismatched      = errors.New(errors.Invalid, "that connection carries nothing: the two tools do not deal in the same kind")
+	ErrChainCyclic         = errors.New(errors.Invalid, "the chain has a cycle")
 
 	ErrNotFound   = errors.New(errors.NotFound, "check")
 	ErrNameTaken  = errors.New(errors.Conflict, "that name is already used in this organisation")

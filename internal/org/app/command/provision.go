@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/org/domain"
 	"github.com/0xsj/overwatch-backend/pkg/events"
@@ -38,7 +39,10 @@ func (s *Service) Provision(ctx context.Context, owner id.ID, name string, cause
 	if err != nil {
 		return Provisioned{}, fmt.Errorf("org: provision: %w", err)
 	}
-	member, err := domain.NewMember(s.ids.NewID(), org.ID, owner, domain.RoleOwner, at)
+	// NO TIME BOX. An owner is the firm and has no end date — 0019's ceiling
+	// and this rule are the two halves of what a role means.
+	member, err := domain.NewMember(s.ids.NewID(), org.ID, owner, domain.RoleOwner,
+		time.Time{}, at)
 	if err != nil {
 		return Provisioned{}, fmt.Errorf("org: provision: %w", err)
 	}

@@ -11,11 +11,57 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const findingToolsWithNoSignature = `-- name: FindingToolsWithNoSignature :many
+select t.id, t.name, t.created_at
+from tool.tool t
+where t.org_id = $1 and t.status <> 'archived' and t.produces = 'finding'
+  and exists (
+      select 1 from tool.mapping m where m.tool_id = t.id and m.state = 'live'
+  )
+  and not exists (
+      select 1 from tool.mapping m
+      where m.tool_id = t.id and m.state = 'live' and m.role = 'signature'
+  )
+order by t.created_at
+`
+
+type FindingToolsWithNoSignatureRow struct {
+	ID        pgtype.UUID
+	Name      string
+	CreatedAt pgtype.Timestamptz
+}
+
+// decisions/0041 §2's quiet failure: a tool declaring `produces: finding` and no
+// `signature` mapping extracts NOTHING, and a scan that produces no findings
+// looks exactly like a clean one.
+//
+// It requires at least one live mapping, because a tool with none at all is the
+// symptom above and reporting it twice would double-count one problem.
+func (q *Queries) FindingToolsWithNoSignature(ctx context.Context, orgID pgtype.UUID) ([]FindingToolsWithNoSignatureRow, error) {
+	rows, err := q.db.Query(ctx, findingToolsWithNoSignature, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FindingToolsWithNoSignatureRow{}
+	for rows.Next() {
+		var i FindingToolsWithNoSignatureRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertMapping = `-- name: InsertMapping :exec
 insert into tool.mapping (
-    id, org_id, tool_id, field, expression, version, state,
+    id, org_id, tool_id, field, expression, version, state, role,
     created_by, created_at, promoted_at, retired_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 `
 
 type InsertMappingParams struct {
@@ -26,6 +72,7 @@ type InsertMappingParams struct {
 	Expression string
 	Version    int32
 	State      string
+	Role       string
 	CreatedBy  pgtype.UUID
 	CreatedAt  pgtype.Timestamptz
 	PromotedAt pgtype.Timestamptz
@@ -41,6 +88,7 @@ func (q *Queries) InsertMapping(ctx context.Context, arg InsertMappingParams) er
 		arg.Expression,
 		arg.Version,
 		arg.State,
+		arg.Role,
 		arg.CreatedBy,
 		arg.CreatedAt,
 		arg.PromotedAt,
@@ -96,7 +144,7 @@ func (q *Queries) InsertTool(ctx context.Context, arg InsertToolParams) error {
 
 const liveMappingFor = `-- name: LiveMappingFor :one
 select id, org_id, tool_id, field, expression, version, state,
-       created_by, created_at, promoted_at, retired_at
+       created_by, created_at, promoted_at, retired_at, role
 from tool.mapping where tool_id = $1 and field = $2 and state = 'live'
 `
 
@@ -120,13 +168,61 @@ func (q *Queries) LiveMappingFor(ctx context.Context, arg LiveMappingForParams) 
 		&i.CreatedAt,
 		&i.PromotedAt,
 		&i.RetiredAt,
+		&i.Role,
 	)
 	return i, err
 }
 
+const liveMappingsForToolByRole = `-- name: LiveMappingsForToolByRole :many
+select id, org_id, tool_id, field, expression, version, state,
+       created_by, created_at, promoted_at, retired_at, role
+from tool.mapping
+where tool_id = $1 and state = 'live' and role <> 'attribute'
+order by role
+`
+
+// What EXTRACTION resolves a record's subject and its provenance from —
+// decisions/0040 §1. By ROLE and never by field name.
+//
+// Two rows at most, and the partial unique indexes are what say so; this query
+// does not assume it, because a query that returns one row where the index
+// allows two is a silent truncation.
+func (q *Queries) LiveMappingsForToolByRole(ctx context.Context, toolID pgtype.UUID) ([]ToolMapping, error) {
+	rows, err := q.db.Query(ctx, liveMappingsForToolByRole, toolID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolMapping{}
+	for rows.Next() {
+		var i ToolMapping
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.ToolID,
+			&i.Field,
+			&i.Expression,
+			&i.Version,
+			&i.State,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.PromotedAt,
+			&i.RetiredAt,
+			&i.Role,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const mappingByID = `-- name: MappingByID :one
 select id, org_id, tool_id, field, expression, version, state,
-       created_by, created_at, promoted_at, retired_at
+       created_by, created_at, promoted_at, retired_at, role
 from tool.mapping where id = $1 and org_id = $2
 `
 
@@ -150,13 +246,14 @@ func (q *Queries) MappingByID(ctx context.Context, arg MappingByIDParams) (ToolM
 		&i.CreatedAt,
 		&i.PromotedAt,
 		&i.RetiredAt,
+		&i.Role,
 	)
 	return i, err
 }
 
 const mappingsForTool = `-- name: MappingsForTool :many
 select id, org_id, tool_id, field, expression, version, state,
-       created_by, created_at, promoted_at, retired_at
+       created_by, created_at, promoted_at, retired_at, role
 from tool.mapping where tool_id = $1 and org_id = $2
 order by field, version desc
 `
@@ -187,6 +284,7 @@ func (q *Queries) MappingsForTool(ctx context.Context, arg MappingsForToolParams
 			&i.CreatedAt,
 			&i.PromotedAt,
 			&i.RetiredAt,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
@@ -283,6 +381,17 @@ func (q *Queries) ToolByID(ctx context.Context, arg ToolByIDParams) (ToolTool, e
 	return i, err
 }
 
+const toolsConsidered = `-- name: ToolsConsidered :one
+select count(*)::int from tool.tool where org_id = $1 and status <> 'archived'
+`
+
+func (q *Queries) ToolsConsidered(ctx context.Context, orgID pgtype.UUID) (int32, error) {
+	row := q.db.QueryRow(ctx, toolsConsidered, orgID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const toolsForOrg = `-- name: ToolsForOrg :many
 select id, org_id, name, argv, intensity, status, version,
        created_by, created_at, updated_at, archived_at, consumes, produces,
@@ -321,6 +430,54 @@ func (q *Queries) ToolsForOrg(ctx context.Context, arg ToolsForOrgParams) ([]Too
 			&i.Consumes,
 			&i.Produces,
 			&i.SuccessExitCodes,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const toolsNobodyReads = `-- name: ToolsNobodyReads :many
+select t.id, t.name, t.produces, t.created_at
+from tool.tool t
+where t.org_id = $1 and t.status <> 'archived'
+  and not exists (
+      select 1 from tool.mapping m
+      where m.tool_id = t.id and m.state = 'live'
+  )
+order by t.created_at
+`
+
+type ToolsNobodyReadsRow struct {
+	ID        pgtype.UUID
+	Name      string
+	Produces  pgtype.Text
+	CreatedAt pgtype.Timestamptz
+}
+
+// A tool with NO LIVE MAPPING. It spawns, its bytes are stored and citable, and
+// nothing is read out of them — a true and ordinary state for a tool nobody has
+// taught this system yet, and indistinguishable from one that found nothing.
+//
+// LIVE tools only: an archived one producing nothing is not a symptom.
+func (q *Queries) ToolsNobodyReads(ctx context.Context, orgID pgtype.UUID) ([]ToolsNobodyReadsRow, error) {
+	rows, err := q.db.Query(ctx, toolsNobodyReads, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolsNobodyReadsRow{}
+	for rows.Next() {
+		var i ToolsNobodyReadsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Produces,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
@@ -17,6 +18,8 @@ type Reader interface {
 	Artifacts(ctx context.Context, invocation id.ID) ([]domain.Artifact, error)
 	ArtifactByID(ctx context.Context, workspace, want id.ID) (domain.Artifact, error)
 	Refusals(ctx context.Context, workspace, rule id.ID, limit int) ([]domain.Invocation, error)
+	Candidates(ctx context.Context, run id.ID) ([]domain.Candidate, error)
+	RefusedCandidates(ctx context.Context, workspace, rule id.ID, limit int) ([]domain.Candidate, error)
 	LatestCheckedPerSubject(ctx context.Context, workspace, target id.ID) ([]domain.Checked, error)
 	InvocationChecks(ctx context.Context, workspace, target id.ID) ([]domain.InvocationCheck, error)
 }
@@ -70,6 +73,31 @@ func (r *Runs) Page(ctx context.Context, workspace, target id.ID,
 	return r.reader.Page(ctx, workspace, target, before, beforeID, limit)
 }
 
+// All exhausts the keyset pages for deliverables. Callers needing a stable
+// view across pages must hold a repeatable-read transaction.
+func (r *Runs) All(ctx context.Context, workspace, target id.ID) ([]domain.Run, error) {
+	out := []domain.Run{}
+	var before time.Time
+	var beforeID id.ID
+	for {
+		rows, err := r.Page(ctx, workspace, target, before, beforeID, MaxPage)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rows...)
+		if len(rows) < MaxPage {
+			return out, nil
+		}
+		last := rows[len(rows)-1]
+		if last.StartedAt.IsZero() || last.ID.IsZero() ||
+			(!before.IsZero() && (last.StartedAt.After(before) ||
+				(last.StartedAt.Equal(before) && last.ID.String() >= beforeID.String()))) {
+			return nil, fmt.Errorf("run: pagination cursor did not advance")
+		}
+		before, beforeID = last.StartedAt, last.ID
+	}
+}
+
 // Detail is one run and everything inside it. It is one call because the
 // Executions view draws the whole graph at once, and three round trips to fill
 // one screen is three chances for the parts to disagree.
@@ -77,6 +105,12 @@ type Detail struct {
 	Run         domain.Run
 	Invocations []domain.Invocation
 	Artifacts   map[id.ID][]domain.Artifact
+
+	// Candidates is what each invocation was aimed at, permitted and refused
+	// together — decisions/0039. Keyed by invocation because that is how the
+	// Executions view draws it: a step, and under it the things it touched and
+	// the things a rule kept it off.
+	Candidates map[id.ID][]domain.Candidate
 }
 
 func (r *Runs) Detail(ctx context.Context, workspace, want id.ID) (Detail, error) {
@@ -88,7 +122,11 @@ func (r *Runs) Detail(ctx context.Context, workspace, want id.ID) (Detail, error
 	if err != nil {
 		return Detail{}, err
 	}
-	out := Detail{Run: found, Invocations: invocations, Artifacts: map[id.ID][]domain.Artifact{}}
+	out := Detail{
+		Run: found, Invocations: invocations,
+		Artifacts:  map[id.ID][]domain.Artifact{},
+		Candidates: map[id.ID][]domain.Candidate{},
+	}
 	for _, i := range invocations {
 		artifacts, err := r.reader.Artifacts(ctx, i.ID)
 		if err != nil {
@@ -97,6 +135,16 @@ func (r *Runs) Detail(ctx context.Context, workspace, want id.ID) (Detail, error
 		if len(artifacts) > 0 {
 			out.Artifacts[i.ID] = artifacts
 		}
+	}
+	// ONE read for the whole run rather than one per step. The Executions view
+	// draws the graph at once, and n round trips to fill one screen is n chances
+	// for the parts to disagree.
+	candidates, err := r.reader.Candidates(ctx, found.ID)
+	if err != nil {
+		return Detail{}, err
+	}
+	for _, c := range candidates {
+		out.Candidates[c.InvocationID] = append(out.Candidates[c.InvocationID], c)
 	}
 	return out, nil
 }
@@ -131,6 +179,23 @@ func (r *Runs) Refusals(ctx context.Context, workspace, rule id.ID, limit int) (
 		limit = MaxPage
 	}
 	return r.reader.Refusals(ctx, workspace, rule, limit)
+}
+
+// RefusedCandidates is the per-candidate half of the same proof. `Refusals`
+// answers which whole STEPS a rule refused; this answers which THINGS it refused
+// inside steps that ran anyway, which is a case that exists only because
+// decisions/0039 made a step touch many things.
+func (r *Runs) RefusedCandidates(ctx context.Context, workspace, rule id.ID, limit int) ([]domain.Candidate, error) {
+	if workspace.IsZero() || rule.IsZero() {
+		return nil, domain.ErrIDRequired
+	}
+	if limit <= 0 {
+		limit = DefaultPage
+	}
+	if limit > MaxPage {
+		limit = MaxPage
+	}
+	return r.reader.RefusedCandidates(ctx, workspace, rule, limit)
 }
 
 // Invocation and Artifact are point lookups for LINEAGE. Both take the

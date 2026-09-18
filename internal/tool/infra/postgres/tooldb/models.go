@@ -20,6 +20,7 @@ type ToolMapping struct {
 	CreatedAt  pgtype.Timestamptz
 	PromotedAt pgtype.Timestamptz
 	RetiredAt  pgtype.Timestamptz
+	Role       string
 }
 
 type ToolTool struct {

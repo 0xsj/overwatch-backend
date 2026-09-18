@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"context"
 	"fmt"
 
@@ -106,6 +108,148 @@ func (s *Store) Upsert(ctx context.Context, f domain.Fragment) (domain.Fragment,
 		ReadAt: row.ReadAt, ReadBy: row.ReadBy,
 	})
 	return got, row.Inserted, err
+}
+
+// FragmentFor is the lookup a derivation's `from` resolves through —
+// decisions/0040 §5. NOT FOUND is an ordinary answer and not an error: the two
+// reasons it happens are a candidate the scope gate refused and a fold
+// mismatch, and both are things the caller records rather than fails on.
+func (s *Store) FragmentFor(ctx context.Context, workspace id.ID, kind, value string) (domain.Fragment, bool, error) {
+	row, err := s.q(ctx).FragmentForValue(ctx, entitydb.FragmentForValueParams{
+		WorkspaceID: uuid(workspace), Kind: kind, Value: domain.Fold(value),
+	})
+	if err != nil {
+		translated := postgres.Translate(ctx, err, "entity: fragment for value")
+		if errors.IsKind(translated, errors.NotFound) {
+			return domain.Fragment{}, false, nil
+		}
+		return domain.Fragment{}, false, translated
+	}
+	got, err := fragmentOf(row)
+	return got, err == nil, err
+}
+
+// Draw writes one of `0003`'s second edge kind. Idempotent on redelivery.
+func (s *Store) Draw(ctx context.Context, d domain.Derivation) error {
+	err := s.q(ctx).InsertDerivation(ctx, entitydb.InsertDerivationParams{
+		ID: uuid(d.ID), WorkspaceID: uuid(d.WorkspaceID),
+		FromFragmentID: uuid(d.From), ToFragmentID: uuid(d.To), Label: d.Label,
+		InvocationID: uuid(d.Invocation), ArtifactID: uuid(d.Artifact),
+		MappingID: uuid(d.Mapping), CreatedAt: stamp(d.CreatedAt),
+	})
+	if err != nil {
+		return postgres.Translate(ctx, err, "entity: draw derivation")
+	}
+	return nil
+}
+
+// RecordUnresolved keeps a provenance nothing could be found for — 0040 §5.
+func (s *Store) RecordUnresolved(ctx context.Context, u domain.Unresolved) error {
+	err := s.q(ctx).InsertUnresolved(ctx, entitydb.InsertUnresolvedParams{
+		ID: uuid(u.ID), WorkspaceID: uuid(u.WorkspaceID),
+		InvocationID: uuid(u.Invocation), MappingID: uuid(u.Mapping),
+		ToFragmentID: uuid(u.To), FromKind: u.FromKind, FromValue: u.FromValue,
+		FromRaw: u.FromRaw, Label: u.Label, CreatedAt: stamp(u.CreatedAt),
+	})
+	if err != nil {
+		return postgres.Translate(ctx, err, "entity: record unresolved provenance")
+	}
+	return nil
+}
+
+// RootsPerFragment is `0044` §2's `seen elsewhere`, batched: one query for the
+// whole canvas rather than one per node.
+func (s *Store) RootsPerFragment(ctx context.Context, workspace id.ID, fragments []id.ID) (map[id.ID]int, error) {
+	if len(fragments) == 0 {
+		return map[id.ID]int{}, nil
+	}
+	ids := make([]pgtype.UUID, 0, len(fragments))
+	for _, one := range fragments {
+		ids = append(ids, uuid(one))
+	}
+	rows, err := s.q(ctx).RootsPerFragment(ctx, entitydb.RootsPerFragmentParams{
+		WorkspaceID: uuid(workspace), Fragments: ids,
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "entity: roots per fragment")
+	}
+	out := make(map[id.ID]int, len(rows))
+	for _, row := range rows {
+		out[ident(row.FragmentID)] = int(row.Roots)
+	}
+	return out, nil
+}
+
+// DerivationsAmong is every edge with BOTH ends on the canvas — 0044 §1.
+func (s *Store) DerivationsAmong(ctx context.Context, workspace id.ID, fragments []id.ID) ([]domain.Derivation, error) {
+	if len(fragments) == 0 {
+		return nil, nil
+	}
+	ids := make([]pgtype.UUID, 0, len(fragments))
+	for _, one := range fragments {
+		ids = append(ids, uuid(one))
+	}
+	rows, err := s.q(ctx).DerivationsAmong(ctx, entitydb.DerivationsAmongParams{
+		WorkspaceID: uuid(workspace), Fragments: ids,
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "entity: derivations among")
+	}
+	out := make([]domain.Derivation, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Derivation{
+			ID: ident(row.ID), WorkspaceID: ident(row.WorkspaceID),
+			From: ident(row.FromFragmentID), To: ident(row.ToFragmentID),
+			Label: row.Label, Invocation: ident(row.InvocationID),
+			Artifact: ident(row.ArtifactID), Mapping: ident(row.MappingID),
+			CreatedAt: instant(row.CreatedAt),
+		})
+	}
+	return out, nil
+}
+
+// Derivations answers BOTH DIRECTIONS — the canvas draws outward from a
+// fragment and does not care which end it is on.
+func (s *Store) Derivations(ctx context.Context, workspace, fragment id.ID, limit int) ([]domain.Derivation, error) {
+	rows, err := s.q(ctx).DerivationsForFragment(ctx, entitydb.DerivationsForFragmentParams{
+		WorkspaceID: uuid(workspace), FromFragmentID: uuid(fragment), Page: int32(limit),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "entity: derivations")
+	}
+	out := make([]domain.Derivation, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Derivation{
+			ID: ident(row.ID), WorkspaceID: ident(row.WorkspaceID),
+			From: ident(row.FromFragmentID), To: ident(row.ToFragmentID),
+			Label: row.Label, Invocation: ident(row.InvocationID),
+			Artifact: ident(row.ArtifactID), Mapping: ident(row.MappingID),
+			CreatedAt: instant(row.CreatedAt),
+		})
+	}
+	return out, nil
+}
+
+// Unresolved is the other half of the same read — what a rule refused, or what
+// a fold missed, seen from the invocation that cited it.
+func (s *Store) Unresolved(ctx context.Context, workspace, invocation id.ID) ([]domain.Unresolved, error) {
+	rows, err := s.q(ctx).UnresolvedForInvocation(ctx, entitydb.UnresolvedForInvocationParams{
+		WorkspaceID: uuid(workspace), InvocationID: uuid(invocation),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "entity: unresolved provenance")
+	}
+	out := make([]domain.Unresolved, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Unresolved{
+			ID: ident(row.ID), WorkspaceID: ident(row.WorkspaceID),
+			Invocation: ident(row.InvocationID), Mapping: ident(row.MappingID),
+			To: ident(row.ToFragmentID), FromKind: row.FromKind,
+			FromValue: row.FromValue, FromRaw: row.FromRaw, Label: row.Label,
+			CreatedAt: instant(row.CreatedAt),
+		})
+	}
+	return out, nil
 }
 
 func (s *Store) FragmentByID(ctx context.Context, workspace, want id.ID) (domain.Fragment, error) {
@@ -220,6 +364,34 @@ func (s *Store) Assets(ctx context.Context, workspace, target id.ID, limit int) 
 	if err != nil {
 		return nil, postgres.Translate(ctx, err, "entity: assets")
 	}
+	return assets(rows)
+}
+
+func (s *Store) AllAssets(ctx context.Context, workspace, target id.ID) ([]domain.Asset, error) {
+	rows, err := s.q(ctx).AllAssets(ctx, entitydb.AllAssetsParams{
+		WorkspaceID: uuid(workspace), Target: maybe(target),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "entity: all assets")
+	}
+	return assets(rows)
+}
+
+func (s *Store) AcceptedFragmentsForTarget(ctx context.Context, workspace, target id.ID) ([]id.ID, error) {
+	rows, err := s.q(ctx).AcceptedFragmentsForTarget(ctx, entitydb.AcceptedFragmentsForTargetParams{
+		WorkspaceID: uuid(workspace), TargetID: uuid(target),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "entity: target fragments")
+	}
+	out := make([]id.ID, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ident(row))
+	}
+	return out, nil
+}
+
+func assets(rows []entitydb.EntityAsset) ([]domain.Asset, error) {
 	out := make([]domain.Asset, 0, len(rows))
 	for _, row := range rows {
 		f, err := fragmentOf(entitydb.EntityFragment{

@@ -29,12 +29,72 @@ type signInResponse struct {
 	ExpiresAt string `json:"expires_at"`
 }
 
+// signIn is the one unauthenticated endpoint that takes a PASSWORD, which makes
+// it the one worth hammering: credential stuffing against a leaked address list
+// costs an attacker one request per guess and costs this server nothing to
+// refuse.
+//
+// **The budget is spent on FAILURE, not on every attempt.** Charging successes
+// would lock out somebody signing in on four devices after a password change,
+// and what is being limited is guessing rather than using. The check-then-charge
+// pair is not atomic and does not need to be: the worst a race buys is a
+// handful of extra guesses inside one window, against a budget measured in
+// tens.
+//
+// **Two keys, and either can refuse.** By address alone, an attacker walking a
+// list from one host is limited but a shared office NAT locks everybody out
+// together. By email alone, the same attacker moves to the next address for
+// free. Charging both is what makes neither cheap.
+// signInKeys is the pair a sign-in is charged against. The email is FOLDED here
+// rather than parsed, because a rate limit must not depend on an address being
+// valid: `A@x.test` and `a@x.test ` are the same guess whatever the domain layer
+// later decides about them.
+func (a *API) signInKeys(email string, r *http.Request) []string {
+	return []string{
+		"signin-ip:" + clientAddress(r),
+		"signin-id:" + strings.ToLower(strings.TrimSpace(email)),
+	}
+}
+
+// mayTry answers whether either budget is exhausted, WITHOUT spending. A nil
+// limiter permits everything, which is how the test harness and any caller that
+// has not configured one behave.
+func (a *API) mayTry(keys []string) bool {
+	if a.guesses == nil {
+		return true
+	}
+	for _, k := range keys {
+		if a.guesses.Tokens(k) < 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// chargeAttempt spends one token on each key. It is called only when a sign-in
+// FAILED — see the note on [API.signIn].
+func (a *API) chargeAttempt(keys []string) {
+	if a.guesses == nil {
+		return
+	}
+	for _, k := range keys {
+		a.guesses.Allow(k)
+	}
+}
+
 func (a *API) signIn(w http.ResponseWriter, r *http.Request) {
 	var in signInRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
 		httpx.WriteError(w, r, errors.Wrap(err, errors.Invalid, "the request body could not be read"))
+		return
+	}
+
+	keys := a.signInKeys(in.Email, r)
+	if !a.mayTry(keys) {
+		httpx.WriteError(w, r, errors.New(errors.RateLimited,
+			"too many sign-in attempts — try again shortly"))
 		return
 	}
 
@@ -47,6 +107,7 @@ func (a *API) signIn(w http.ResponseWriter, r *http.Request) {
 		Address:   clientAddress(r),
 	})
 	if err != nil {
+		a.chargeAttempt(keys)
 		httpx.Fail(a.log, w, r, err)
 		return
 	}

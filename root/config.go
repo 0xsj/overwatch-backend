@@ -46,6 +46,28 @@ type Config struct {
 	// after the fact a length and a limit look identical.
 	RunMaxOutput int64
 
+	// OCRBinary is optional. When set, image extraction invokes this exact
+	// executable through the bounded, shell-free OCR adapter; empty keeps OCR
+	// explicitly unsupported until an operator installs and selects an engine.
+	OCRBinary    string
+	OCRTimeout   time.Duration
+	OCRMaxOutput int64
+
+	// AssistanceBinary is optional. When set, bounded assistance invokes this
+	// exact executable with a JSON input file and expects exact passage drafts
+	// as JSON. Empty keeps the deterministic local provider active.
+	AssistanceBinary    string
+	AssistanceTimeout   time.Duration
+	AssistanceMaxOutput int64
+
+	// SynthesisBinary is optional. When set, selected-observation synthesis
+	// invokes this exact executable with a JSON input file and expects one
+	// grounded synthesis object as JSON. Empty keeps the deterministic local
+	// synthesis provider active.
+	SynthesisBinary    string
+	SynthesisTimeout   time.Duration
+	SynthesisMaxOutput int64
+
 	// SchedulerEvery is how often the fifth lifecycle looks for due checks —
 	// decisions/0038. It is NOT a check's interval: this is the resolution at
 	// which intervals are honoured, so a six-hour check with a one-minute tick
@@ -75,6 +97,15 @@ func (c Config) LogValue() slog.Value {
 		slog.String("artifact_root", c.ArtifactRoot),
 		slog.Duration("run_timeout", c.RunTimeout),
 		slog.Int64("run_max_output", c.RunMaxOutput),
+		slog.String("ocr_binary", c.OCRBinary),
+		slog.Duration("ocr_timeout", c.OCRTimeout),
+		slog.Int64("ocr_max_output", c.OCRMaxOutput),
+		slog.String("assistance_binary", c.AssistanceBinary),
+		slog.Duration("assistance_timeout", c.AssistanceTimeout),
+		slog.Int64("assistance_max_output", c.AssistanceMaxOutput),
+		slog.String("synthesis_binary", c.SynthesisBinary),
+		slog.Duration("synthesis_timeout", c.SynthesisTimeout),
+		slog.Int64("synthesis_max_output", c.SynthesisMaxOutput),
 		slog.Duration("scheduler_every", c.SchedulerEvery),
 		slog.Int("scheduler_batch", c.SchedulerBatch),
 	)
@@ -97,8 +128,17 @@ func loadConfig(lookup env.Lookup) (Config, []env.Var, error) {
 		ArtifactRoot: r.Required("ARTIFACT_ROOT"),
 		// Seconds and megabytes, for the reason the retention is days: an
 		// operator writing `600` cannot mean 600 nanoseconds.
-		RunTimeout:   time.Duration(r.Int("RUN_TIMEOUT_SECONDS", 600)) * time.Second,
-		RunMaxOutput: int64(r.Int("RUN_MAX_OUTPUT_MB", 64)) << 20,
+		RunTimeout:          time.Duration(r.Int("RUN_TIMEOUT_SECONDS", 600)) * time.Second,
+		RunMaxOutput:        int64(r.Int("RUN_MAX_OUTPUT_MB", 64)) << 20,
+		OCRBinary:           r.String("OCR_BINARY", ""),
+		OCRTimeout:          time.Duration(r.Int("OCR_TIMEOUT_SECONDS", 120)) * time.Second,
+		OCRMaxOutput:        int64(r.Int("OCR_MAX_OUTPUT_MB", 8)) << 20,
+		AssistanceBinary:    r.String("ASSISTANCE_BINARY", ""),
+		AssistanceTimeout:   time.Duration(r.Int("ASSISTANCE_TIMEOUT_SECONDS", 120)) * time.Second,
+		AssistanceMaxOutput: int64(r.Int("ASSISTANCE_MAX_OUTPUT_MB", 8)) << 20,
+		SynthesisBinary:     r.String("SYNTHESIS_BINARY", ""),
+		SynthesisTimeout:    time.Duration(r.Int("SYNTHESIS_TIMEOUT_SECONDS", 120)) * time.Second,
+		SynthesisMaxOutput:  int64(r.Int("SYNTHESIS_MAX_OUTPUT_MB", 8)) << 20,
 
 		SchedulerEvery: time.Duration(r.Int("SCHEDULER_EVERY_SECONDS", 60)) * time.Second,
 		SchedulerBatch: r.Int("SCHEDULER_BATCH", 8),

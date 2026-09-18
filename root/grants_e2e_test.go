@@ -249,9 +249,15 @@ func TestAGrantIsCappedWhenTheRoleIsLoweredUnderIt(t *testing.T) {
 	}
 
 	// Demote to client, whose ceiling is read. Nothing revokes the grant.
+	//
+	// **The time box moves with the role** — owed item D. This writes SQL
+	// directly, so it also has to satisfy `member_time_box_matches_role`, which
+	// is the constraint catching exactly what the domain rule would have: a
+	// client with no end date.
 	ctx := t.Context()
 	if _, err := s.pool.DB(ctx).Exec(ctx,
-		`update org.member set role = 'client' where org_id = $1 and account_id = $2`,
+		`update org.member set role = 'client', expires_at = now() + interval '90 days'
+		 where org_id = $1 and account_id = $2`,
 		org.String(), kit.String()); err != nil {
 		t.Fatal(err)
 	}

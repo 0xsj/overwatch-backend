@@ -225,15 +225,64 @@ func (m *me) readFragment(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
+	// BOTH EDGE KINDS on one read — decisions/0003 draws two and until 0040
+	// this endpoint could only answer one. They stay SEPARATE arrays rather
+	// than a merged list with a `kind` discriminator, because the two shapes
+	// are disjoint: an attribution carries a claimant, a confidence and a
+	// state, and a derivation carries none of the three.
+	edges, err := m.graph.Derivations(r.Context(), workspace, want, 0)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+
 	out := struct {
 		fragmentResponse
 		Attributions []attributionResponse `json:"attributions"`
+		Derivations  []derivationResponse  `json:"derivations"`
 	}{fragmentResponse: asFragment(found)}
 	out.Attributions = make([]attributionResponse, 0, len(claims))
 	for _, c := range claims {
 		out.Attributions = append(out.Attributions, asAttribution(c))
 	}
+	out.Derivations = make([]derivationResponse, 0, len(edges))
+	for _, e := range edges {
+		out.Derivations = append(out.Derivations, derivationResponse{
+			DerivationID: e.ID.String(),
+			From:         e.From.String(), To: e.To.String(), Label: e.Label,
+			InvocationID: e.Invocation.String(), ArtifactID: e.Artifact.String(),
+			MappingID: e.Mapping.String(),
+			CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
 	httpx.WriteJSON(w, r, http.StatusOK, out)
+}
+
+// derivationResponse is `0003`'s second edge kind on the wire, and the fields it
+// does NOT have are the point:
+//
+//	> A decoder rejects a `derivation` carrying `claimant`, `confidence` or
+//	> `state`, and rejects an `attribution` with no `claimant`.
+//
+// There is nowhere here to put any of the three, which is that rule held by the
+// struct rather than by a decoder remembering.
+type derivationResponse struct {
+	DerivationID string `json:"derivation_id"`
+
+	// From is what it was read OUT OF; To is what was read.
+	From string `json:"from"`
+	To   string `json:"to"`
+
+	// Label names the act — `input`, `SAN entry`, `commit author`.
+	Label string `json:"label"`
+
+	// NEVER absent, either of them. An edge without them is a similarity edge
+	// wearing a costume, and it would arrive looking trustworthy.
+	InvocationID string `json:"invocation_id"`
+	ArtifactID   string `json:"artifact_id"`
+	MappingID    string `json:"mapping_id"`
+
+	CreatedAt string `json:"created_at"`
 }
 
 func (m *me) listEntities(w http.ResponseWriter, r *http.Request) {
@@ -276,21 +325,73 @@ func (m *me) readCanvas(w http.ResponseWriter, r *http.Request) {
 	type node struct {
 		fragmentResponse
 		Edge attributionResponse `json:"edge"`
+
+		// SeenElsewhere is `0044` §2: attributed to more than one ROOT in THIS
+		// engagement. Never across workspaces — a flag that said so would
+		// disclose that another engagement exists.
+		//
+		// The legend's caption is the client's to render and it is the honest
+		// one: "Nothing is joined; cross-target identity is undecided."
+		SeenElsewhere bool `json:"seen_elsewhere"`
+
+		// InScope is the SPAWN GATE'S ANSWER NOW. `false` on a drawn node means
+		// *attributed and not permitted* — `CLAUDE.md`'s first pair, and the
+		// only screen that shows both halves. It happens when the rule that let
+		// a run find this has since been narrowed: `0030` supersedes rather than
+		// edits, so the attribution stands and the permission does not.
+		InScope bool `json:"in_scope"`
 	}
 	out := struct {
 		Root  entityResponse `json:"root"`
 		Nodes []node         `json:"nodes"`
+
+		// Derivations is `0003`'s SECOND EDGE KIND, and a separate array rather
+		// than one list with a `kind` discriminator — that record makes the two
+		// shapes disjoint, and a decoder must reject a derivation carrying a
+		// claimant. Two arrays make that structural.
+		//
+		// **Both ends are always drawn.** An edge to a node that is not on this
+		// canvas is omitted, because drawing one implies the picture is
+		// complete and the reader cannot see why the line stops.
+		Derivations []derivationResponse `json:"derivations"`
+
+		// Summary counts what was DRAWN, not the estate. Beside a truncated
+		// picture those differ, which is what `truncated` is for.
+		Summary struct {
+			Accepted    int `json:"accepted"`
+			Proposed    int `json:"proposed"`
+			Rejected    int `json:"rejected"`
+			Derivations int `json:"derivations"`
+		} `json:"summary"`
+
 		// Truncated says the limit was reached. A canvas that silently drew half
 		// a graph would look like a smaller estate, which is the one way this
 		// screen can lie.
 		Truncated bool `json:"truncated"`
 	}{Root: asEntity(canvas.Root), Truncated: canvas.Truncated}
+
 	out.Nodes = make([]node, 0, len(canvas.Nodes))
 	for _, n := range canvas.Nodes {
 		out.Nodes = append(out.Nodes, node{
 			fragmentResponse: asFragment(n.Fragment), Edge: asAttribution(n.Edge),
+			SeenElsewhere: n.SeenElsewhere, InScope: n.InScope,
 		})
 	}
+	out.Derivations = make([]derivationResponse, 0, len(canvas.Derivations))
+	for _, e := range canvas.Derivations {
+		out.Derivations = append(out.Derivations, derivationResponse{
+			DerivationID: e.ID.String(),
+			From:         e.From.String(), To: e.To.String(), Label: e.Label,
+			InvocationID: e.Invocation.String(), ArtifactID: e.Artifact.String(),
+			MappingID: e.Mapping.String(),
+			CreatedAt: e.CreatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	out.Summary.Accepted = canvas.Summary.Accepted
+	out.Summary.Proposed = canvas.Summary.Proposed
+	out.Summary.Rejected = canvas.Summary.Rejected
+	out.Summary.Derivations = canvas.Summary.Derivations
+
 	httpx.WriteJSON(w, r, http.StatusOK, out)
 }
 

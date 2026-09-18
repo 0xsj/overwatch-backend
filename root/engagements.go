@@ -112,8 +112,15 @@ func (m *me) closeEngagement(w http.ResponseWriter, r *http.Request) {
 // **It can fail on the name.** Closing released it, so another engagement may
 // hold it now; the answer is a conflict and the fix is to rename first.
 func (m *me) reopenEngagement(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, org, closed, ok := m.reachWorkspace(w, r, orgdomain.LevelAdmin)
+	caller, workspace, org, closed, client, ok := m.reachWorkspace(w, r, orgdomain.LevelAdmin)
 	if !ok {
+		return
+	}
+	if client {
+		// Unreachable today — a client's ceiling is `read` and this asks for
+		// `admin` — and checked anyway, because "unreachable because of another
+		// rule" is how a gate stops holding when that rule moves.
+		httpx.Fail(m.log, w, r, orgquery.ErrNoAccess)
 		return
 	}
 	_, _ = caller, org

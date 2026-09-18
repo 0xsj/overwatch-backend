@@ -43,12 +43,14 @@ type Chain struct {
 // error and it is not an unfinished check.
 func (c Chain) Empty() bool { return len(c.Steps) == 0 }
 
-// Validate holds the three rules a chain owes. It does NOT check that an edge is
-// type-legal — that the upstream tool's `produces` is the downstream's
-// `consumes` — because this package cannot see `tool` and must not: the two are
-// peers. decisions/0032 leaves that validation unbuilt rather than approximated,
-// on the ground that nothing runs yet and a check nobody executes cannot be
-// wrong about what it would feed.
+// Validate holds the three rules a chain owes ON ITS OWN — every step known,
+// no self-edge, no duplicate edge, and acyclic.
+//
+// TYPE-LEGALITY IS SEPARATE and lives in [Chain.TypeLegal], because it needs to
+// know what each step's TOOL deals in and this package may not see `tool`. The
+// command resolves that through a port and hands it in, so the rule stays here
+// as a pure function rather than moving into a layer that cannot be tested
+// against a literal graph.
 func (c Chain) Validate() error {
 	known := make(map[id.ID]bool, len(c.Steps))
 	for _, s := range c.Steps {
@@ -114,6 +116,60 @@ func acyclic(known map[id.ID]bool, out map[id.ID][]id.ID) error {
 			if err := walk(step); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// Feeds is what one step's tool deals in, in check's own vocabulary. The
+// command resolves it from `tool` — a peer — and hands it in.
+//
+// Empty strings are meaningful and are not "unknown": an empty `Consumes` is a
+// SOURCE tool seeded from the target, and an empty `Produces` is a tool whose
+// output nothing else can read.
+type Feeds struct {
+	Consumes string
+	Produces string
+}
+
+// TypeLegal refuses an edge that could never carry anything — the rule
+// `0032` deferred with its reasons, and which `0039` and `0041` each turned from
+// tidiness into a SILENT WRONG ANSWER.
+//
+// Before a chain fed itself, an illegal edge was inert: nothing ran, so nothing
+// could be wrong about what it would feed. Now a downstream step resolves its
+// candidates from the observations its feeders produced, FILTERED TO THE KIND
+// ITS TOOL CONSUMES — so a mismatched edge yields zero candidates every time and
+// the step is `skipped` with the reason "nothing upstream produced observations
+// to feed it". That is indistinguishable from a feeder that genuinely found
+// nothing, and it is a lie about a configuration error.
+//
+//	upstream produces nothing    it cannot feed anything
+//	downstream consumes nothing  it is a SOURCE tool and cannot be fed
+//	they disagree                the edge carries nothing, silently
+//
+// **It is checked at SAVE time**, which is where a person can still fix it. A
+// chain saved before this rule existed is untouched until somebody saves it
+// again — the same shape every write-time rule here has, and the alternative
+// would break editing for graphs that are already wrong.
+func (c Chain) TypeLegal(feeds map[id.ID]Feeds) error {
+	for _, f := range c.Flows {
+		from, ok := feeds[f.From]
+		if !ok {
+			return ErrStepUnknown
+		}
+		to, ok := feeds[f.To]
+		if !ok {
+			return ErrStepUnknown
+		}
+		if from.Produces == "" {
+			return ErrEdgeProducesNothing
+		}
+		if to.Consumes == "" {
+			return ErrEdgeConsumesNothing
+		}
+		if from.Produces != to.Consumes {
+			return ErrEdgeMismatched
 		}
 	}
 	return nil

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -29,7 +30,28 @@ func (p *Pool) InTx(ctx context.Context, fn func(context.Context) error) error {
 		return fn(ctx)
 	}
 
-	tx, err := p.pool.Begin(ctx)
+	return p.inTx(ctx, pgx.TxOptions{}, fn)
+}
+
+// InSnapshot keeps all reads on one repeatable-read snapshot. Joining an outer
+// READ COMMITTED transaction would weaken this guarantee, so that is refused.
+// An ordinary InTx inside a snapshot still joins it as usual.
+func (p *Pool) InSnapshot(ctx context.Context, fn func(context.Context) error) error {
+	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		var isolation string
+		if err := tx.QueryRow(ctx, "show transaction_isolation").Scan(&isolation); err != nil {
+			return Translate(ctx, err, "postgres: snapshot isolation")
+		}
+		if isolation != "repeatable read" && isolation != "serializable" {
+			return fmt.Errorf("postgres: snapshot requires repeatable read or serializable isolation, got %s", isolation)
+		}
+		return fn(ctx)
+	}
+	return p.inTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, fn)
+}
+
+func (p *Pool) inTx(ctx context.Context, options pgx.TxOptions, fn func(context.Context) error) error {
+	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return Translate(ctx, err, "postgres: begin")
 	}

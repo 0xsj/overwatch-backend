@@ -128,6 +128,9 @@ func (c *Checks) SaveChain(ctx context.Context, org, want id.ID,
 		Steps: make([]domain.Step, 0, len(steps)),
 		Flows: make([]domain.Flow, 0, len(flows)),
 	}
+	// What each step's tool DEALS IN, collected as the steps are built so the
+	// edge check below needs no second pass over `tool`.
+	feeds := make(map[id.ID]domain.Feeds, len(steps))
 	for _, in := range steps {
 		if in.ToolID.IsZero() {
 			return domain.Chain{}, domain.ErrToolRequired
@@ -135,7 +138,7 @@ func (c *Checks) SaveChain(ctx context.Context, org, want id.ID,
 		// The tool must be THIS org's. Without this a check could name a tool it
 		// cannot see, and the refusal would surface at run time as a missing
 		// binary rather than here as a bad reference.
-		ok, err := c.tools.Exists(ctx, org, in.ToolID)
+		deals, ok, err := c.tools.Feeds(ctx, org, in.ToolID)
 		if err != nil {
 			return domain.Chain{}, err
 		}
@@ -146,6 +149,7 @@ func (c *Checks) SaveChain(ctx context.Context, org, want id.ID,
 		if stepID.IsZero() {
 			stepID = c.ids.NewID()
 		}
+		feeds[stepID] = deals
 		chain.Steps = append(chain.Steps, domain.Step{
 			ID: stepID, CheckID: want, ToolID: in.ToolID,
 			X: in.X, Y: in.Y, Pinned: in.Pinned,
@@ -165,6 +169,13 @@ func (c *Checks) SaveChain(ctx context.Context, org, want id.ID,
 	}
 
 	if err := chain.Validate(); err != nil {
+		return domain.Chain{}, err
+	}
+	// AND THAT EVERY EDGE COULD CARRY SOMETHING — decisions/0032's deferred
+	// rule. It is second because `Validate` is what makes the graph
+	// well-formed, and checking types on a graph with an unknown step would
+	// report the wrong problem.
+	if err := chain.TypeLegal(feeds); err != nil {
 		return domain.Chain{}, err
 	}
 

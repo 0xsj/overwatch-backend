@@ -18,6 +18,7 @@ var (
 	ErrExitOnRefusal  = errors.New(errors.Invalid, "a refused invocation never had a process, so it has no exit code")
 	ErrRuleRequired   = errors.New(errors.Invalid, "a refusal names the rule that refused it")
 	ErrReasonRequired = errors.New(errors.Invalid, "a skip names what did not arrive")
+	ErrCandidateEmpty = errors.New(errors.Invalid, "a candidate is a kind and a value, and neither is optional")
 	ErrHashRequired   = errors.New(errors.Invalid, "an artifact is named by the hash of its bytes")
 
 	ErrNotFound           = errors.New(errors.NotFound, "run")

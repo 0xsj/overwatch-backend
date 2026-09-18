@@ -22,6 +22,7 @@ func (s *Store) AddMember(ctx context.Context, m domain.Member) error {
 		CreatedAt:  stamp(m.CreatedAt),
 		UpdatedAt:  stamp(m.UpdatedAt),
 		ArchivedAt: stamp(m.ArchivedAt),
+		ExpiresAt:  stamp(m.ExpiresAt),
 	})
 	if err == nil {
 		return nil
@@ -82,6 +83,7 @@ func (s *Store) SaveMember(ctx context.Context, m domain.Member) error {
 		UpdatedAt:  stamp(m.UpdatedAt),
 		ArchivedAt: stamp(m.ArchivedAt),
 		Version_2:  int32(m.Version - 1),
+		ExpiresAt:  stamp(m.ExpiresAt),
 	})
 	if err != nil {
 		return postgres.Translate(ctx, err, "org: update member")

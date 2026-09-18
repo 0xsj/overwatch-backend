@@ -20,6 +20,19 @@ type RunArtifact struct {
 	CreatedAt    pgtype.Timestamptz
 }
 
+type RunCandidate struct {
+	ID            pgtype.UUID
+	WorkspaceID   pgtype.UUID
+	RunID         pgtype.UUID
+	InvocationID  pgtype.UUID
+	Kind          string
+	Value         string
+	Permitted     bool
+	RefusalRule   pgtype.UUID
+	RefusalReason pgtype.Text
+	CreatedAt     pgtype.Timestamptz
+}
+
 type RunInvocation struct {
 	ID             pgtype.UUID
 	RunID          pgtype.UUID
@@ -40,8 +53,7 @@ type RunInvocation struct {
 	FinishedAt     pgtype.Timestamptz
 	DurationMs     int64
 	PermitRule     pgtype.UUID
-	SubjectKind    pgtype.Text
-	SubjectValue   pgtype.Text
+	Feeds          []pgtype.UUID
 }
 
 type RunRun struct {

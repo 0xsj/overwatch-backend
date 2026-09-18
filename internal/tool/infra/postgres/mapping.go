@@ -20,6 +20,7 @@ func (s *Store) CreateMapping(ctx context.Context, m domain.Mapping) error {
 		Expression: m.Expression,
 		Version:    int32(m.Version),
 		State:      m.State.String(),
+		Role:       m.Role.String(),
 		CreatedBy:  uuid(m.CreatedBy),
 		CreatedAt:  stamp(m.CreatedAt),
 		PromotedAt: stamp(m.PromotedAt),
@@ -29,6 +30,68 @@ func (s *Store) CreateMapping(ctx context.Context, m domain.Mapping) error {
 		return postgres.Translate(ctx, err, "tool: insert mapping")
 	}
 	return nil
+}
+
+// LiveByRole is what EXTRACTION asks — decisions/0040 §1. The subject and the
+// provenance mapping, resolved by ROLE and never by field name, so renaming a
+// field leaves both resolving.
+func (s *Store) LiveByRole(ctx context.Context, tool id.ID) ([]domain.Mapping, error) {
+	rows, err := s.q(ctx).LiveMappingsForToolByRole(ctx, uuid(tool))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "tool: live mappings by role")
+	}
+	out := make([]domain.Mapping, 0, len(rows))
+	for _, row := range rows {
+		m, err := mapping(row)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// Unread is `health`'s probe for a tool with NO LIVE MAPPING: it spawns, its
+// bytes are stored and citable, and nothing is read out of them.
+func (s *Store) Unread(ctx context.Context, org id.ID) ([]domain.Silent, error) {
+	rows, err := s.q(ctx).ToolsNobodyReads(ctx, uuid(org))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "tool: tools nobody reads")
+	}
+	out := make([]domain.Silent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Silent{
+			ID: ident(row.ID), Name: row.Name,
+			Produces: row.Produces.String, Since: instant(row.CreatedAt),
+		})
+	}
+	return out, nil
+}
+
+// Unsigned is decisions/0041 §2's quiet failure: a finding-producing tool with
+// no `signature` mapping extracts nothing, and a scan producing no findings
+// looks exactly like a clean one.
+func (s *Store) Unsigned(ctx context.Context, org id.ID) ([]domain.Silent, error) {
+	rows, err := s.q(ctx).FindingToolsWithNoSignature(ctx, uuid(org))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "tool: finding tools with no signature")
+	}
+	out := make([]domain.Silent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Silent{
+			ID: ident(row.ID), Name: row.Name, Produces: "finding",
+			Since: instant(row.CreatedAt),
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) CountTools(ctx context.Context, org id.ID) (int, error) {
+	n, err := s.q(ctx).ToolsConsidered(ctx, uuid(org))
+	if err != nil {
+		return 0, postgres.Translate(ctx, err, "tool: tools considered")
+	}
+	return int(n), nil
 }
 
 func (s *Store) MappingByID(ctx context.Context, org, want id.ID) (domain.Mapping, error) {

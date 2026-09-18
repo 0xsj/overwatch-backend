@@ -5,6 +5,7 @@ import (
 	"io"
 
 	checkquery "github.com/0xsj/overwatch-backend/internal/check/app/query"
+	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	rundomain "github.com/0xsj/overwatch-backend/internal/run/domain"
 	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
 	scopedomain "github.com/0xsj/overwatch-backend/internal/scope/domain"
@@ -50,9 +51,14 @@ func (c chains) Steps(ctx context.Context, workspace, check id.ID) ([]rundomain.
 	if err != nil {
 		return nil, false, err
 	}
+	// WHAT FEEDS WHAT. `fed` answers "is this a source"; `into` answers "by
+	// which steps", which is what a downstream step needs to find the
+	// invocations whose observations it consumes — decisions/0039 Section 3.
 	fed := map[id.ID]bool{}
+	into := map[id.ID][]id.ID{}
 	for _, f := range chain.Flows {
 		fed[f.To] = true
+		into[f.To] = append(into[f.To], f.From)
 	}
 
 	steps := make([]rundomain.Step, 0, len(ordered))
@@ -69,6 +75,7 @@ func (c chains) Steps(ctx context.Context, workspace, check id.ID) ([]rundomain.
 			StepID: s.ID, ToolID: s.ToolID, Template: t.Argv,
 			Source: !fed[s.ID], Loud: t.Intensity == tooldomain.IntensityLoud,
 			Kind: spawnKindOf(t), Intensity: t.Intensity.String(),
+			Upstream: into[s.ID],
 		})
 	}
 	return steps, loud, nil
@@ -111,6 +118,18 @@ func spawnKindOf(t tooldomain.Tool) string {
 		return ""
 	}
 	return feed.String()
+}
+
+// observedSubjects is the port into `observation` that a downstream step needs.
+// It is a second adapter over the same query package `entity` reaches through
+// (`subjects`, in entityports.go), because the two ask different questions: that
+// one groups one invocation's readings into subjects for a delivery, this one
+// unions several invocations' subjects of ONE KIND into an argv.
+type observedSubjects struct{ observed *obsquery.Observations }
+
+func (o observedSubjects) Subjects(ctx context.Context, workspace id.ID,
+	invocations []id.ID, kind string) ([]string, error) {
+	return o.observed.SubjectsForInvocations(ctx, workspace, invocations, kind)
 }
 
 // targets hands run the one string it needs. Asking for more would let `run`

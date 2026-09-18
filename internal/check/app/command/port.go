@@ -26,8 +26,15 @@ type Repository interface {
 // — does this tool exist in this org — and deliberately does not ask what the
 // tool consumes or produces: validating an edge is 0032's unbuilt half, and a
 // port that returns the whole tool invites doing it here by accident.
+// Tools is the port into `tool` — a peer this package may not import.
+//
+// It answers the FEEDS as well as existence, because an edge is type-legal only
+// if the upstream's `produces` is the downstream's `consumes` — decisions/0032's
+// deferred rule, which `0039` turned from tidiness into a silent wrong answer.
+// The two questions come from one row, so asking them separately would be two
+// reads of the same tool per step.
 type Tools interface {
-	Exists(ctx context.Context, org, tool id.ID) (bool, error)
+	Feeds(ctx context.Context, org, tool id.ID) (feeds domain.Feeds, ok bool, err error)
 }
 
 // Transactor is here because saving a chain is a prune, a clear, and N inserts.

@@ -16,6 +16,8 @@ type Reader interface {
 	UnmappedFor(ctx context.Context, workspace, invocation id.ID) ([]domain.Unmapped, error)
 	Quality(ctx context.Context, workspace, invocation id.ID) (domain.Quality, error)
 	SubjectsPerInvocation(ctx context.Context, workspace id.ID) ([]domain.SubjectSeen, error)
+	SubjectsForInvocations(ctx context.Context, workspace id.ID, invocations []id.ID, kind string) ([]string, error)
+	ProvenanceForInvocation(ctx context.Context, workspace, invocation id.ID) ([]domain.Provenance, error)
 }
 
 const (
@@ -127,6 +129,35 @@ func (o *Observations) Lineage(ctx context.Context, workspace, want id.ID) (Line
 		return Lineage{}, fmt.Errorf("observation: lineage rule: %w", err)
 	}
 	return out, nil
+}
+
+// ProvenanceForInvocation is what each record was READ OUT OF —
+// decisions/0040. It answers the readings whose mapping declared the
+// `derived_from` role, per record rather than grouped: an edge is per record,
+// and grouping would destroy exactly the pairing it exists to carry.
+func (o *Observations) ProvenanceForInvocation(ctx context.Context, workspace, invocation id.ID) ([]domain.Provenance, error) {
+	if workspace.IsZero() || invocation.IsZero() {
+		return nil, domain.ErrWorkspaceRequired
+	}
+	return o.reader.ProvenanceForInvocation(ctx, workspace, invocation)
+}
+
+// SubjectsForInvocations is what feeds a downstream step — decisions/0039
+// Section 3. The distinct subjects a set of invocations observed, of one kind.
+//
+// AN EMPTY INVOCATION SET ANSWERS NOTHING rather than everything. `= any('{}')`
+// already matches no row, so this only makes the intent unmissable: a step whose
+// feeders are unknown must be fed nothing, and the alternative reading would
+// point a tool at the whole engagement.
+func (o *Observations) SubjectsForInvocations(ctx context.Context, workspace id.ID,
+	invocations []id.ID, kind string) ([]string, error) {
+	if workspace.IsZero() {
+		return nil, domain.ErrWorkspaceRequired
+	}
+	if len(invocations) == 0 || kind == "" {
+		return nil, nil
+	}
+	return o.reader.SubjectsForInvocations(ctx, workspace, invocations, kind)
 }
 
 // SubjectsPerInvocation is coverage's second source. See domain.SubjectSeen.

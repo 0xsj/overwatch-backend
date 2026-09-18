@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"strings"
 	"time"
 
 	"github.com/0xsj/overwatch-backend/pkg/id"
@@ -72,19 +71,24 @@ type Invocation struct {
 	StepID id.ID
 	ToolID id.ID
 
-	// Subject is WHAT THIS WAS AIMED AT — decisions/0037. Both values exist at
-	// plan time (they are what the spawn gate is asked) and were thrown away
-	// until coverage needed them.
-	//
-	// SubjectValue is FOLDED, matching `entity.fragment.value`. 0037 names the
-	// fold mismatch as its own quiet failure: unfolded here, every coverage cell
-	// reads `never` and every row is otherwise correct.
-	SubjectKind  string
-	SubjectValue string
+	// WHAT THIS WAS AIMED AT is NOT here. `0037` put `subject_kind` and
+	// `subject_value` on this struct and `0039` took them off four hours later:
+	// a step touches many things, and a refused one needs somewhere to live.
+	// See [Candidate], which is that somewhere.
 
 	// Sequence is the position in topological order, so a reader can lay the
 	// run out without re-deriving the graph from a chain that may have moved.
 	Sequence int
+
+	// Upstream is the STEP ids that feed this one, recorded at plan time for
+	// the same reason StepID and ToolID are: a chain edited tomorrow must not
+	// change what this row says happened — decisions/0032.
+	//
+	// The executor reads it to find which invocations of THIS run produced the
+	// observations this step consumes. Re-reading the chain instead would be one
+	// fewer column and would make a mid-run edit silently redirect a step's
+	// input, which is the drift those two ids exist to prevent.
+	Upstream []id.ID
 
 	Phase Phase
 
@@ -149,8 +153,8 @@ func (i Invocation) Permit(rule id.ID) Invocation {
 // Plan builds an invocation that has not run. Every field that describes an
 // outcome is deliberately absent, and the constructors below are the only way
 // to fill them.
-func Plan(newID, run, workspace, step, tool id.ID, sequence int, argv []string,
-	subjectKind, subjectValue string) (Invocation, error) {
+func Plan(newID, run, workspace, step, tool id.ID, sequence int,
+	argv []string, upstream []id.ID) (Invocation, error) {
 	if newID.IsZero() || run.IsZero() || step.IsZero() || tool.IsZero() {
 		return Invocation{}, ErrIDRequired
 	}
@@ -160,18 +164,30 @@ func Plan(newID, run, workspace, step, tool id.ID, sequence int, argv []string,
 	if len(argv) == 0 {
 		return Invocation{}, ErrArgvEmpty
 	}
-	subjectValue = strings.ToLower(strings.TrimSpace(subjectValue))
-	if subjectKind == "" || subjectValue == "" {
-		// A step the gate could not be asked about — an untranslatable kind —
-		// carries neither. The pair moves together so a half-set subject is
-		// impossible, which is the schema's constraint stated in Go.
-		subjectKind, subjectValue = "", ""
-	}
 	return Invocation{
 		ID: newID, RunID: run, WorkspaceID: workspace, StepID: step, ToolID: tool,
 		Sequence: sequence, Phase: PhasePending, Argv: argv,
-		SubjectKind: subjectKind, SubjectValue: subjectValue,
+		Upstream: upstream,
 	}, nil
+}
+
+// Resolve overwrites a PLANNED argv with the one built from the permitted
+// candidates — decisions/0039 §4. A downstream step is planned with the split,
+// UNSUBSTITUTED template, because at plan time there is nothing to substitute;
+// this is the moment there is.
+//
+//	pending / skipped   ["httpx" "-u" "{{host}}"]      what WOULD have run
+//	ok / failed         ["httpx" "-u" "a.acme.test"]   what RAN — 0033 §4
+//
+// It refuses an empty argv rather than clearing the template, so a resolution
+// that produced nothing leaves the record readable instead of blank.
+func (i Invocation) Resolve(argv []string) (Invocation, error) {
+	if len(argv) == 0 {
+		return i, ErrArgvEmpty
+	}
+	next := i
+	next.Argv = argv
+	return next, nil
 }
 
 // Refuse records a spawn that never happened. It KEEPS the argv, because the
@@ -310,6 +326,20 @@ type Checked struct {
 	Kind    string
 	Value   string
 	At      time.Time
+}
+
+// Unavailable is a tool that could not be RUN AT ALL — off PATH, not
+// executable. `CLAUDE.md`'s `health` noun exists because the alternative looks
+// exactly like silence: the run finishes, the record is complete, and nothing
+// was looked at.
+type Unavailable struct {
+	ToolID id.ID
+	Reason string
+	Seen   int
+	// Since is the OLDEST occurrence. "Broken since Tuesday" is the sentence
+	// somebody needs; "last seen a minute ago" is true of everything still
+	// broken.
+	Since time.Time
 }
 
 // InvocationCheck maps an invocation to the check its run answered. Coverage

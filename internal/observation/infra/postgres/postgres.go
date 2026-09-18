@@ -74,6 +74,11 @@ func instant(t pgtype.Timestamptz) time.Time {
 }
 
 func observation(row observationdb.ObservationObservation) domain.Observation {
+	// An UNPARSEABLE role reads as `attribute`, which is the harmless one. This
+	// mapper has no error return by design — an observation is a statement
+	// already made, and refusing to read one back because of a column added
+	// later would lose the statement to protect an enum.
+	role, _ := domain.ParseRole(row.Role)
 	return domain.Observation{
 		ID:             ident(row.ID),
 		WorkspaceID:    ident(row.WorkspaceID),
@@ -85,6 +90,7 @@ func observation(row observationdb.ObservationObservation) domain.Observation {
 		ArtifactID:     ident(row.ArtifactID),
 		MappingID:      ident(row.MappingID),
 		MappingVersion: int(row.MappingVersion),
+		Role:           role,
 		ObservedAt:     instant(row.ObservedAt),
 		RecordedAt:     instant(row.RecordedAt),
 	}
@@ -110,6 +116,7 @@ func (s *Store) Create(ctx context.Context, o domain.Observation) error {
 		Field: o.Field, Value: o.Value,
 		InvocationID: uuid(o.InvocationID), ArtifactID: uuid(o.ArtifactID),
 		MappingID: uuid(o.MappingID), MappingVersion: int32(o.MappingVersion),
+		Role:       o.Role.String(),
 		ObservedAt: stamp(o.ObservedAt), RecordedAt: stamp(o.RecordedAt),
 	})
 	if err != nil {
@@ -219,6 +226,69 @@ func observations(rows []observationdb.ObservationObservation) []domain.Observat
 		out = append(out, observation(row))
 	}
 	return out
+}
+
+// Unmapped is `health`'s probe for a tool saying something nobody taught this
+// system to read. Grouped by PATH, because "`.tech[]` is unmapped across 400
+// records" is one fact and 400 rows are not.
+func (s *Store) UnmappedPaths(ctx context.Context, workspace id.ID, limit int) ([]domain.UnmappedPath, error) {
+	rows, err := s.q(ctx).PathsNobodyMapped(ctx, observationdb.PathsNobodyMappedParams{
+		WorkspaceID: uuid(workspace), Page: int32(limit),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "observation: paths nobody mapped")
+	}
+	out := make([]domain.UnmappedPath, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.UnmappedPath{
+			Path: row.Path, Seen: int(row.Seen),
+			Invocations: int(row.Invocations), Since: instant(row.Since),
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) CountUnmapped(ctx context.Context, workspace id.ID) (int, error) {
+	n, err := s.q(ctx).UnmappedConsidered(ctx, uuid(workspace))
+	if err != nil {
+		return 0, postgres.Translate(ctx, err, "observation: unmapped considered")
+	}
+	return int(n), nil
+}
+
+// ProvenanceForInvocation is what each record was READ OUT OF — decisions/0040.
+func (s *Store) ProvenanceForInvocation(ctx context.Context, workspace, invocation id.ID) ([]domain.Provenance, error) {
+	rows, err := s.q(ctx).ProvenanceForInvocation(ctx, observationdb.ProvenanceForInvocationParams{
+		WorkspaceID: uuid(workspace), InvocationID: uuid(invocation),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "observation: provenance for invocation")
+	}
+	out := make([]domain.Provenance, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Provenance{
+			SubjectKind: row.SubjectKind, SubjectValue: row.SubjectValue,
+			FromValue: row.FromValue, Label: row.Label,
+			MappingID: ident(row.MappingID), ArtifactID: ident(row.ArtifactID),
+		})
+	}
+	return out, nil
+}
+
+// SubjectsForInvocations is what a downstream step is fed — decisions/0039.
+func (s *Store) SubjectsForInvocations(ctx context.Context, workspace id.ID,
+	invocations []id.ID, kind string) ([]string, error) {
+	ids := make([]pgtype.UUID, 0, len(invocations))
+	for _, i := range invocations {
+		ids = append(ids, uuid(i))
+	}
+	rows, err := s.q(ctx).SubjectsForInvocations(ctx, observationdb.SubjectsForInvocationsParams{
+		WorkspaceID: uuid(workspace), Invocations: ids, Kind: kind,
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "observation: subjects for invocations")
+	}
+	return rows, nil
 }
 
 // SubjectsPerInvocation is coverage's second source — what each invocation

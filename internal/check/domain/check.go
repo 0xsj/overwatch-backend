@@ -8,6 +8,15 @@ import (
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
+// Stalled is a check `health` reports: enabled, on a clock, and with no chain,
+// so nothing ever runs it. `human` is NOT one of these — `READ BY YOU` is
+// chainless by design, and 0037 §3 made that a flag for exactly this reason.
+type Stalled struct {
+	ID              id.ID
+	Name            string
+	IntervalSeconds int
+}
+
 const (
 	MaxNameLength     = 120
 	MaxQuestionLength = 400

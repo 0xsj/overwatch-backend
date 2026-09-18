@@ -50,14 +50,49 @@
 //	fields, then substitute   ["subfinder" "-d" "x; rm -rf /"]    one element
 //	substitute, then fields   ["subfinder" "-d" "x;" "rm" ...]    four
 //
-// # Downstream steps are `skipped`, and that is true today
+// A value is ONE argv element whatever is in it, and N values are N elements —
+// there is no escaping to get wrong, which is the same property `pkg/execx` has
+// for taking a slice at all.
 //
-// Feeding step two needs to know what step one FOUND, which is a `mapping`
-// applied to an artifact producing an `observation` — and `observation` is
-// UNBUILT. So a run executes its SOURCE steps and writes every downstream step
-// as `skipped`, with a reason naming what did not arrive.
+// # A step is one invocation over many candidates — 0039
 //
-// Not faked, not deferred. `skipped` is genuinely reached, correctly.
+// `httpx -l hosts.txt` is ONE PROCESS over forty hosts, so a step is one
+// invocation however many things it touches. What it touched is a
+// [domain.Candidate] each:
+//
+//	invocation   one per step, planned up front            0033 §1 intact
+//	candidate    run · invocation · kind · value ·
+//	             permitted · refusal_rule · refusal_reason
+//
+// **The candidate is where the SCOPE PROOF lives.** `0037` put the subject on
+// the invocation, which was right while a step touched one thing; an array
+// replacing it was refused because the REFUSED candidates would have nowhere to
+// live, and *"we would have looked at these three and a rule said no"* is
+// `0010`'s whole purpose.
+//
+// The gate is asked PER CANDIDATE and the permitted subset is what the argv
+// carries. A source step has exactly one — the target — so today's behaviour is
+// the one-candidate case of the general shape.
+//
+// # A downstream step resolves when it RUNS, not when it is planned
+//
+// Its candidates are the distinct subjects its feeders observed, filtered to the
+// kind its tool consumes; several feeders union. So its argv cannot exist at
+// plan time, and it is written as the SPLIT, UNSUBSTITUTED TEMPLATE and
+// overwritten when it runs:
+//
+//	pending / skipped   ["httpx" "-u" "{{host}}"]      what WOULD have run
+//	ok / failed         ["httpx" "-u" "a.acme.test"]   what RAN
+//
+// A step whose feeders produced nothing is still `skipped`, and the reason has
+// stopped being a lie: until `observation` landed it said *"nothing upstream
+// produced observations to feed it"* because nothing ever could.
+//
+// **DERIVATION STILL CANNOT BE BUILT, and the reason changed.** One process
+// given thirty-seven hosts emits two hundred URLs, and nothing in the record
+// connects a URL to the host it came from. The connection is in the bytes —
+// `httpx` emits `.input` — so it needs a mapping naming the field that carries a
+// record's provenance, which is a decision about mappings and not about runs.
 //
 // # These are the engagement's rows — 0031
 //

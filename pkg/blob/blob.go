@@ -131,6 +131,22 @@ func (s *Store) Stat(_ context.Context, ref Ref) (Info, error) {
 	return Info{Ref: ref, Size: fi.Size()}, nil
 }
 
+// Remove deletes one content-addressed file. It is intentionally a narrow
+// primitive: callers must have already proved that no durable record cites the
+// reference. A missing file is reported as ErrNotFound so a sweep can remain
+// idempotent and distinguish "already cleaned" from a storage failure.
+func (s *Store) Remove(_ context.Context, ref Ref) error {
+	if _, err := ParseRef(ref.String()); err != nil {
+		return fmt.Errorf("blob: %w", ErrBadRef)
+	}
+	if err := os.Remove(s.path(ref)); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("blob: %s: %w", ref, ErrNotFound)
+	} else if err != nil {
+		return pkgerrors.Wrap(err, pkgerrors.Unavailable, "blob: remove "+ref.String())
+	}
+	return nil
+}
+
 // Verify re-hashes what is on disk. A record citing bytes that no longer hash to
 // their name is a record that stopped being true, and only reading them says so.
 func (s *Store) Verify(ctx context.Context, ref Ref) error {

@@ -124,6 +124,10 @@ func mapping(row tooldb.ToolMapping) (domain.Mapping, error) {
 	if err != nil {
 		return domain.Mapping{}, err
 	}
+	role, err := domain.ParseRole(row.Role)
+	if err != nil {
+		return domain.Mapping{}, err
+	}
 	return domain.Mapping{
 		ID:         ident(row.ID),
 		OrgID:      ident(row.OrgID),
@@ -132,6 +136,7 @@ func mapping(row tooldb.ToolMapping) (domain.Mapping, error) {
 		Expression: row.Expression,
 		Version:    int(row.Version),
 		State:      state,
+		Role:       role,
 		CreatedBy:  ident(row.CreatedBy),
 		CreatedAt:  instant(row.CreatedAt),
 		PromotedAt: instant(row.PromotedAt),

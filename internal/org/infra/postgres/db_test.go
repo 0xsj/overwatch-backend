@@ -34,7 +34,7 @@ func personal(t *testing.T, s *orgpg.Store, m *id.Sequence, name string) (domain
 	if err := s.CreateOrg(ctx, o); err != nil {
 		t.Fatalf("create org: %v", err)
 	}
-	member, err := domain.NewMember(m.NewID(), o.ID, account, domain.RoleOwner, at)
+	member, err := domain.NewMember(m.NewID(), o.ID, account, domain.RoleOwner, time.Time{}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestAnAccountCannotJoinTheSameOrgTwiceButMayRejoinAfterLeaving(t *testing.T
 	m := ids()
 	o, first, account := personal(t, s, m, "Vertex Labs Security")
 
-	dup, err := domain.NewMember(m.NewID(), o.ID, account, domain.RoleOwner, at)
+	dup, err := domain.NewMember(m.NewID(), o.ID, account, domain.RoleOwner, time.Time{}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestAnAccountCannotJoinTheSameOrgTwiceButMayRejoinAfterLeaving(t *testing.T
 	}
 
 	// A second owner, so archiving the first is not the last-owner case.
-	second, err := domain.NewMember(m.NewID(), o.ID, m.NewID(), domain.RoleOwner, at)
+	second, err := domain.NewMember(m.NewID(), o.ID, m.NewID(), domain.RoleOwner, time.Time{}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestAMemberNamingANonexistentAccountIsAcceptedAndThatIsTheTrade(t *testing.
 	m := ids()
 	o, _, _ := personal(t, s, m, "Vertex")
 
-	ghost, err := domain.NewMember(m.NewID(), o.ID, m.NewID(), domain.RoleOwner, at)
+	ghost, err := domain.NewMember(m.NewID(), o.ID, m.NewID(), domain.RoleOwner, time.Time{}, at)
 	if err != nil {
 		t.Fatal(err)
 	}

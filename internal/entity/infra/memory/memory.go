@@ -245,7 +245,12 @@ func (s *Store) Decide(_ context.Context, a domain.Attribution) error {
 // Assets restates the VIEW's predicate, in the order the SQL states it: a
 // targetable kind, an ACCEPTED attribution, to an entity that is a target's ROOT.
 // An accepted attribution to any other entity does not make a fragment an asset.
-func (s *Store) Assets(_ context.Context, workspace, target id.ID, limit int) ([]domain.Asset, error) {
+func (s *Store) Assets(ctx context.Context, workspace, target id.ID, limit int) ([]domain.Asset, error) {
+	out, err := s.AllAssets(ctx, workspace, target)
+	return cap(out, limit), err
+}
+
+func (s *Store) AllAssets(_ context.Context, workspace, target id.ID) ([]domain.Asset, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]domain.Asset, 0)
@@ -275,7 +280,63 @@ func (s *Store) Assets(_ context.Context, workspace, target id.ID, limit int) ([
 		}
 		return out[i].Value < out[j].Value
 	})
-	return cap(out, limit), nil
+	return out, nil
+}
+
+func (s *Store) AcceptedFragmentsForTarget(_ context.Context, workspace, target id.ID) ([]id.ID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []id.ID{}
+	seen := map[id.ID]bool{}
+	for _, a := range s.attributions {
+		root, ok := s.entities[a.EntityID]
+		fragment, exists := s.fragments[a.FragmentID]
+		if !ok || !exists || a.WorkspaceID != workspace || root.WorkspaceID != workspace ||
+			fragment.WorkspaceID != workspace || root.TargetID != target || a.State != domain.Accepted || seen[a.FragmentID] {
+			continue
+		}
+		seen[a.FragmentID] = true
+		out = append(out, a.FragmentID)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out, nil
+}
+
+// FragmentFor answers from the same map Upsert writes, folded the same way —
+// a fake that matched differently would hide exactly the fold mismatch the
+// real one exists to avoid.
+func (s *Store) FragmentFor(_ context.Context, workspace id.ID, kind, value string) (domain.Fragment, bool, error) {
+	for _, f := range s.fragments {
+		if f.WorkspaceID == workspace && f.Kind == kind && f.Value == domain.Fold(value) {
+			return f, true, nil
+		}
+	}
+	return domain.Fragment{}, false, nil
+}
+
+// RootsPerFragment and DerivationsAmong answer EMPTY, like the two below and
+// for the same reason: this store exists to test coverage, which reads neither,
+// and a stub that invented a canvas facet would let a coverage test pass on a
+// graph that does not exist.
+func (s *Store) RootsPerFragment(context.Context, id.ID, []id.ID) (map[id.ID]int, error) {
+	return map[id.ID]int{}, nil
+}
+
+func (s *Store) DerivationsAmong(context.Context, id.ID, []id.ID) ([]domain.Derivation, error) {
+	return nil, nil
+}
+
+// Derivations and Unresolved answer EMPTY — decisions/0040. This store exists
+// to test coverage and the asset view, neither of which reads an edge, and a
+// stub that invented one would let a coverage test pass on a graph that does
+// not exist. It is the same shape every other unused method here has: the
+// interface is satisfied and nothing is faked.
+func (s *Store) Derivations(context.Context, id.ID, id.ID, int) ([]domain.Derivation, error) {
+	return nil, nil
+}
+
+func (s *Store) Unresolved(context.Context, id.ID, id.ID) ([]domain.Unresolved, error) {
+	return nil, nil
 }
 
 func cap[T any](in []T, limit int) []T {

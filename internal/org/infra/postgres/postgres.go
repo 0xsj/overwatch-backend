@@ -99,6 +99,7 @@ func member(row orgdb.OrgMember) (domain.Member, error) {
 		CreatedAt:  instant(row.CreatedAt),
 		UpdatedAt:  instant(row.UpdatedAt),
 		ArchivedAt: instant(row.ArchivedAt),
+		ExpiresAt:  instant(row.ExpiresAt),
 	}, nil
 }
 

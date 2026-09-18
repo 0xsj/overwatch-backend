@@ -25,6 +25,7 @@ type Executor struct {
 	spawner    Spawner
 	blobs      Blobs
 	extracts   Extracts
+	observed   Observed
 	tx         Transactor
 	publisher  events.Publisher
 	ids        Minter
@@ -45,12 +46,12 @@ type Logger interface {
 }
 
 func NewExecutor(repo Repository, runs *Runs, tools Tools, workspaces Workspaces,
-	spawner Spawner, blobs Blobs, extracts Extracts, tx Transactor, publisher events.Publisher,
-	ids Minter, clock Clock, policy execx.Policy, batch int, every time.Duration,
-	log Logger) *Executor {
+	spawner Spawner, blobs Blobs, extracts Extracts, observed Observed, tx Transactor,
+	publisher events.Publisher, ids Minter, clock Clock, policy execx.Policy,
+	batch int, every time.Duration, log Logger) *Executor {
 	if repo == nil || runs == nil || tools == nil || workspaces == nil ||
-		spawner == nil || blobs == nil || extracts == nil || tx == nil ||
-		publisher == nil || ids == nil || clock == nil || log == nil {
+		spawner == nil || blobs == nil || extracts == nil || observed == nil ||
+		tx == nil || publisher == nil || ids == nil || clock == nil || log == nil {
 		panic("run: NewExecutor with a nil dependency")
 	}
 	if batch < 1 {
@@ -60,8 +61,9 @@ func NewExecutor(repo Repository, runs *Runs, tools Tools, workspaces Workspaces
 		every = 2 * time.Second
 	}
 	return &Executor{repo: repo, runs: runs, tools: tools, workspaces: workspaces,
-		spawner: spawner, blobs: blobs, extracts: extracts, tx: tx, publisher: publisher,
-		ids: ids, clock: clock, policy: policy, batch: batch, every: every, log: log}
+		spawner: spawner, blobs: blobs, extracts: extracts, observed: observed,
+		tx: tx, publisher: publisher, ids: ids, clock: clock, policy: policy,
+		batch: batch, every: every, log: log}
 }
 
 // Run polls until the context is cancelled. It polls rather than subscribing
@@ -76,30 +78,37 @@ func (e *Executor) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := e.tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			if err := e.Tick(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				e.log.Error("run executor", "cause", err)
 			}
 		}
 	}
 }
 
-func (e *Executor) tick(ctx context.Context) error {
-	// The claim and the execution are in ONE transaction, so `for update skip
-	// locked` still holds the row while the processes run. That serialises a
-	// batch against other workers and is the point: a run executed twice writes
-	// two sets of artifacts for one plan.
-	return e.tx.InTx(ctx, func(ctx context.Context) error {
-		claimed, err := e.repo.Claim(ctx, e.batch)
-		if err != nil {
+// Tick is one pass: claim a batch, then execute each run outside the claim
+// transaction. [Executor.Run] calls it on a ticker; it is exported so a test
+// can drive exactly one pass without a clock, which is the only way to assert
+// what a run did rather than what it eventually does.
+func (e *Executor) Tick(ctx context.Context) error {
+	// Claim is the short critical section. The repository marks rows as running
+	// before returning them, so closing this transaction releases database locks
+	// without making the work claimable by another worker. External processes,
+	// blob writes, extraction, and event publication must not hold a database
+	// transaction open.
+	var claimed []domain.Run
+	if err := e.tx.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		claimed, err = e.repo.Claim(ctx, e.batch)
+		return err
+	}); err != nil {
+		return err
+	}
+	for _, r := range claimed {
+		if err := e.execute(ctx, r); err != nil {
 			return err
 		}
-		for _, r := range claimed {
-			if err := e.execute(ctx, r); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return nil
 }
 
 func (e *Executor) execute(ctx context.Context, r domain.Run) error {
@@ -112,10 +121,47 @@ func (e *Executor) execute(ctx context.Context, r domain.Run) error {
 		return err
 	}
 
+	// WHAT EACH STEP DEALS IN, re-read once for the run. The chain's EDGES are
+	// not re-read — they are on the invocation, so a mid-run edit cannot
+	// redirect a step's input — but the kind and intensity come off the tool,
+	// which every other read here already takes live (`Succeeded`, `MediaType`).
+	//
+	// A failure to read it is NOT a failed run. Only downstream steps need it,
+	// and a run whose check was edited away should finish with those steps
+	// skipped and a reason, rather than being retried forever — which is the
+	// shape owed item Y is about.
+	kinds := map[id.ID]domain.Step{}
+	if needsResolving(planned) {
+		steps, _, err := e.runs.chains.Steps(ctx, r.WorkspaceID, r.CheckID)
+		if err != nil {
+			e.log.Error("run executor: chain unreadable, downstream steps skipped",
+				"run", r.ID.String(), "cause", err)
+		}
+		for _, step := range steps {
+			kinds[step.StepID] = step
+		}
+	}
+
+	// invocations by STEP, so a downstream step can find the ones that fed it.
+	// Built as the loop goes rather than up front, because only invocations that
+	// have already finished can have produced anything.
+	byStep := make(map[id.ID]id.ID, len(planned))
+
 	var ran, failed int
 	for _, i := range planned {
+		byStep[i.StepID] = i.ID
 		if i.Phase != domain.PhasePending {
 			continue
+		}
+		if len(i.Upstream) > 0 {
+			resolved, spawns, err := e.resolve(ctx, r, i, kinds[i.StepID], byStep)
+			if err != nil {
+				return err
+			}
+			if !spawns {
+				continue
+			}
+			i = resolved
 		}
 		done, err := e.one(ctx, org, i)
 		if err != nil {
@@ -141,6 +187,83 @@ func (e *Executor) execute(ctx context.Context, r domain.Run) error {
 		RunID: finished.ID.String(), WorkspaceID: finished.WorkspaceID.String(),
 		State: finished.State.String(), Ran: ran, Failed: failed,
 	})
+}
+
+// needsResolving says whether anything in this plan is a downstream step still
+// waiting. A run of a one-step check reads no chain at all.
+func needsResolving(planned []domain.Invocation) bool {
+	for _, i := range planned {
+		if i.Phase == domain.PhasePending && len(i.Upstream) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// resolve turns a DOWNSTREAM step's plan into something that can spawn —
+// decisions/0039 Section 3. It is the half of a run that could not exist before
+// `observation` landed, and `0033` Section 5 predicted this function by name.
+//
+//	candidates   the distinct subjects its feeders observed, of the kind this
+//	             tool consumes. Several feeders UNION
+//	gate         asked per candidate, exactly as at plan time
+//	argv         the permitted subset filled into the stored template
+//
+// It answers `false` for "this does not spawn", having already recorded why —
+// skipped when nothing fed it, refused when a rule excluded everything that did.
+func (e *Executor) resolve(ctx context.Context, r domain.Run, i domain.Invocation,
+	step domain.Step, byStep map[id.ID]id.ID) (domain.Invocation, bool, error) {
+	now := e.clock.Now()
+
+	feeders := make([]id.ID, 0, len(i.Upstream))
+	for _, upstream := range i.Upstream {
+		if found, ok := byStep[upstream]; ok {
+			feeders = append(feeders, found)
+		}
+	}
+
+	// An unresolvable step — its check edited since the plan, so nothing says
+	// what kind it consumes. SKIPPED with a reason rather than guessed at: a
+	// gate asked about an empty kind fails closed and would record a refusal
+	// nobody's rule caused.
+	var values []string
+	if step.Kind == "" {
+		e.log.Error("run executor: step no longer in the chain",
+			"run", r.ID.String(), "invocation", i.ID.String())
+	} else if len(feeders) > 0 {
+		found, err := e.observed.Subjects(ctx, r.WorkspaceID, feeders, step.Kind)
+		if err != nil {
+			return i, false, err
+		}
+		values = domain.DistinctValues(found)
+	}
+
+	decided, candidates, err := e.runs.ask(ctx, r.WorkspaceID, r.TargetID, r.ID,
+		i, step.Kind, step.Intensity, values, now)
+	if err != nil {
+		return i, false, err
+	}
+	for _, c := range candidates {
+		if err := e.repo.AddCandidate(ctx, c); err != nil {
+			return i, false, err
+		}
+	}
+
+	permitted := domain.PermittedValues(candidates)
+	if len(permitted) == 0 {
+		// Skipped or refused. Either way nothing spawns, and the row already
+		// says which of the two it was and why.
+		return decided, false, e.repo.SaveInvocation(ctx, decided)
+	}
+
+	// THE ARGV BECOMES WHAT WILL RUN. Until this line it held the split,
+	// unsubstituted template — 0039 Section 4 — and a reader could tell the two
+	// apart by eye.
+	filled, err := decided.Resolve(domain.Fill(decided.Argv, permitted))
+	if err != nil {
+		return i, false, err
+	}
+	return filled, true, e.repo.SaveInvocation(ctx, filled)
 }
 
 // one runs a single invocation and records everything that came back, including
@@ -224,6 +347,7 @@ func (e *Executor) one(ctx context.Context, org id.ID, i domain.Invocation) (dom
 		read, err := e.extracts.Extract(ctx, Extraction{
 			WorkspaceID: done.WorkspaceID, OrgID: org, InvocationID: done.ID,
 			ArtifactID: artifact.ID, ToolID: done.ToolID, Body: stream.body,
+			MediaType: stream.media,
 			// The INVOCATION's start, not now — decisions/0035 §5.
 			ObservedAt: done.StartedAt,
 		})

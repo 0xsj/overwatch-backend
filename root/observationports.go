@@ -3,6 +3,8 @@ package root
 import (
 	"context"
 
+	entdomain "github.com/0xsj/overwatch-backend/internal/entity/domain"
+	findingcmd "github.com/0xsj/overwatch-backend/internal/finding/app/command"
 	obscmd "github.com/0xsj/overwatch-backend/internal/observation/app/command"
 	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	obsdomain "github.com/0xsj/overwatch-backend/internal/observation/domain"
@@ -24,28 +26,43 @@ import (
 // spelled — which is decisions/0035 §2's rule made concrete.
 type liveMappings struct{ tools *toolquery.Tools }
 
-func (l liveMappings) Live(ctx context.Context, org, tool id.ID) ([]obsdomain.Mapping, string, error) {
+func (l liveMappings) Live(ctx context.Context, org, tool id.ID) ([]obsdomain.Mapping, string, bool, error) {
 	found, err := l.tools.ByID(ctx, org, tool)
 	if err != nil {
 		if errors.IsKind(err, errors.NotFound) {
 			// A tool archived since the run was planned reads nothing rather
 			// than failing the artifact — the bytes are already stored and
 			// citable, which is the part that had to survive.
-			return nil, "", nil
+			return nil, "", false, nil
 		}
-		return nil, "", err
+		return nil, "", false, err
 	}
-	// A tool producing `finding` has no fragment kind to be a subject, so its
-	// output is somebody else's noun — 0034 keeps `finding` out of the kind
-	// vocabulary deliberately.
+
+	// A FINDING-PRODUCING TOOL'S SUBJECT KIND IS ITS `consumes` —
+	// decisions/0041 §2. `nuclei` consumes `url` and produces `finding`, and
+	// `matched-at` is a url; the finding is ABOUT that url and is not itself a
+	// kind in the vocabulary. `0034` keeps `finding` out of that vocabulary
+	// deliberately and stays right: nothing is spawned against a finding and no
+	// scope rule can permit one.
+	//
+	// It is the same asymmetry `spawnKindOf` carries at a source step, and it is
+	// why the subject kind stopped being `tool.produces` outright.
+	findings := found.Produces == tooldomain.FeedFinding
 	subject := found.Produces.String()
-	if found.Produces == tooldomain.FeedNone || found.Produces == tooldomain.FeedFinding {
-		return nil, "", nil
+	if findings {
+		subject = found.Consumes.String()
+		if found.Consumes == tooldomain.FeedNone || found.Consumes == tooldomain.FeedFinding {
+			// A finding tool that consumes nothing has nothing to hang its
+			// findings ON. Reads nothing rather than inventing a subject.
+			return nil, "", false, nil
+		}
+	} else if found.Produces == tooldomain.FeedNone {
+		return nil, "", false, nil
 	}
 
 	versions, err := l.tools.Mappings(ctx, org, tool)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	out := make([]obsdomain.Mapping, 0, len(versions))
 	for _, v := range versions {
@@ -62,11 +79,94 @@ func (l liveMappings) Live(ctx context.Context, org, tool id.ID) ([]obsdomain.Ma
 			// one shows up as a field that never appears.
 			continue
 		}
+		role, err := obsdomain.ParseRole(v.Role.String())
+		if err != nil {
+			// Two packages spell this enum identically and are forbidden from
+			// sharing the type. An unparseable role reads as `attribute`, which
+			// is the harmless one — `root/vocabulary_test.go` is the shape that
+			// stops the two lists drifting far enough for this to matter.
+			role = obsdomain.RoleAttribute
+		}
 		out = append(out, obsdomain.Mapping{
-			ID: v.ID, Field: v.Field, Version: v.Version, Path: path,
+			ID: v.ID, Field: v.Field, Version: v.Version, Path: path, Role: role,
 		})
 	}
-	return out, subject, nil
+	// A FINDING TOOL WITH NO SIGNATURE MAPPING READS NOTHING — 0041 §2. Without
+	// one, every match on one fragment collapses into a single finding whose
+	// identity is a lie, and an empty result would look identical to a clean
+	// scan. Refused here rather than in `Extract` because only this side knows
+	// the tool produces findings at all.
+	if findings && !hasRole(out, obsdomain.RoleSignature) {
+		return nil, "", false, nil
+	}
+	return out, subject, findings, nil
+}
+
+func hasRole(ms []obsdomain.Mapping, want obsdomain.Role) bool {
+	for _, m := range ms {
+		if m.Role == want {
+			return true
+		}
+	}
+	return false
+}
+
+// sightings is observation's port into `finding`, translated. The two Sighting
+// types are identical and live in two packages because those packages are
+// peers — the same duplication every port at this root carries.
+type sightings struct{ findings *findingcmd.Findings }
+
+func (s sightings) Record(ctx context.Context, in []obscmd.Sighting) error {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]findingcmd.Sighting, 0, len(in))
+	for _, one := range in {
+		next := findingcmd.Sighting{
+			WorkspaceID: one.WorkspaceID, ToolID: one.ToolID,
+			InvocationID: one.InvocationID, ArtifactID: one.ArtifactID,
+			Signature: one.Signature, SignatureMapping: one.SignatureMapping,
+			Severity:     one.Severity,
+			SubjectKind:  one.SubjectKind,
+			SubjectValue: one.SubjectValue,
+			SeenAt:       one.SeenAt,
+		}
+		for _, d := range one.Details {
+			next.Details = append(next.Details, findingcmd.Detail{
+				Field: d.Field, Value: d.Value, Mapping: d.Mapping,
+			})
+		}
+		out = append(out, next)
+	}
+	_, err := s.findings.Record(ctx, out)
+	return err
+}
+
+// findingFragments is finding's port into `entity`. A finding is ON a fragment,
+// and the lookup is the SAME folded one a derivation resolves its `from`
+// through — one door into that table, so "the same host" means one thing
+// everywhere.
+//
+// It declares the ONE METHOD it needs rather than taking the query package,
+// because `entity`'s reader is assembled from coverage ports that are built
+// later and would make this a construction cycle. An interface the consumer
+// declares is the ordinary answer to that, and it is what every port in this
+// file already is.
+type findingFragments struct{ fragments fragmentLookup }
+
+type fragmentLookup interface {
+	FragmentFor(ctx context.Context, workspace id.ID, kind, value string) (entdomain.Fragment, bool, error)
+}
+
+func (f findingFragments) ForValue(ctx context.Context, workspace id.ID, kind, value string) (id.ID, bool, error) {
+	if workspace.IsZero() || kind == "" || value == "" {
+		return id.ID{}, false, nil
+	}
+	found, ok, err := f.fragments.FragmentFor(ctx, workspace, kind, value)
+	if err != nil || !ok {
+		return id.ID{}, false, err
+	}
+	return found.ID, true, nil
 }
 
 // mappingStep is the PARSER VERSION half of a lineage.
@@ -158,7 +258,7 @@ func (e extracts) Extract(ctx context.Context, in runcmd.Extraction) (int, error
 	got, err := e.extractor.Extract(ctx, obscmd.Source{
 		WorkspaceID: in.WorkspaceID, OrgID: in.OrgID, InvocationID: in.InvocationID,
 		ArtifactID: in.ArtifactID, ToolID: in.ToolID, Body: in.Body,
-		ObservedAt: in.ObservedAt,
+		MediaType: in.MediaType, ObservedAt: in.ObservedAt,
 	})
 	if err != nil {
 		return 0, err

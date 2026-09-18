@@ -8,6 +8,7 @@ import (
 	"time"
 
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
+	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
 	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
 	rundomain "github.com/0xsj/overwatch-backend/internal/run/domain"
 	"github.com/0xsj/overwatch-backend/pkg/errors"
@@ -62,7 +63,31 @@ type invocationResponse struct {
 	StartedAt  string `json:"started_at,omitempty"`
 	DurationMS int64  `json:"duration_ms"`
 
+	// Candidates is what this step was AIMED AT — decisions/0039 — permitted
+	// and refused in one list, because the refused ones are the scope proof and
+	// splitting them into two arrays invites a client to render only the first.
+	//
+	// Always present, never null: an empty list is "nothing was resolved yet",
+	// which is a different claim from a missing key.
+	Candidates []candidateResponse `json:"candidates"`
+
 	Artifacts []artifactResponse `json:"artifacts"`
+}
+
+type candidateResponse struct {
+	CandidateID string `json:"candidate_id"`
+	Kind        string `json:"kind"`
+	Value       string `json:"value"`
+
+	// Permitted is a plain bool and NOT omitempty. `false` is the interesting
+	// half — it is the sentence a client's report cites — and omitting it would
+	// make a refusal indistinguishable from an unanswered question.
+	Permitted bool `json:"permitted"`
+
+	// RefusalRule is absent when NOTHING permitted this rather than a rule
+	// having excluded it — 0010's default, and a different fact.
+	RefusalRule string `json:"refusal_rule,omitempty"`
+	Refusal     string `json:"refusal,omitempty"`
 }
 
 type artifactResponse struct {
@@ -80,6 +105,26 @@ type artifactResponse struct {
 type runDetailResponse struct {
 	runResponse
 	Invocations []invocationResponse `json:"invocations"`
+}
+
+// refusalsResponse is an OBJECT and was an array until decisions/0039, because
+// one rule now refuses two shapes of thing. Both lists are always present: an
+// empty one is "this rule refused none of those", which is a claim, and a
+// missing key is not.
+type refusalsResponse struct {
+	Invocations []invocationResponse       `json:"invocations"`
+	Candidates  []refusedCandidateResponse `json:"candidates"`
+}
+
+// refusedCandidateResponse names the RUN as well as the invocation, because a
+// reader arriving from a scope rule has neither and wants to open the run.
+type refusedCandidateResponse struct {
+	CandidateID  string `json:"candidate_id"`
+	RunID        string `json:"run_id"`
+	InvocationID string `json:"invocation_id"`
+	Kind         string `json:"kind"`
+	Value        string `json:"value"`
+	Refusal      string `json:"refusal,omitempty"`
 }
 
 type runPageResponse struct {
@@ -102,13 +147,25 @@ func asRun(r rundomain.Run) runResponse {
 	return out
 }
 
-func asInvocation(i rundomain.Invocation, artifacts []rundomain.Artifact) invocationResponse {
+func asInvocation(i rundomain.Invocation, artifacts []rundomain.Artifact,
+	candidates []rundomain.Candidate) invocationResponse {
 	out := invocationResponse{
 		InvocationID: i.ID.String(), StepID: i.StepID.String(), ToolID: i.ToolID.String(),
 		Sequence: i.Sequence, State: i.Phase.String(), Argv: i.Argv, Binary: i.Binary,
 		Signal: i.Signal, Refusal: i.RefusalReason, SkippedBecause: i.SkippedBecause,
 		Unavailable: i.Unavailable, DurationMS: i.DurationMS,
-		Artifacts: make([]artifactResponse, 0, len(artifacts)),
+		Candidates: make([]candidateResponse, 0, len(candidates)),
+		Artifacts:  make([]artifactResponse, 0, len(artifacts)),
+	}
+	for _, c := range candidates {
+		one := candidateResponse{
+			CandidateID: c.ID.String(), Kind: c.Kind, Value: c.Value,
+			Permitted: c.Permitted, Refusal: c.RefusalReason,
+		}
+		if !c.RefusalRule.IsZero() {
+			one.RefusalRule = c.RefusalRule.String()
+		}
+		out.Candidates = append(out.Candidates, one)
 	}
 	if i.HasExitCode {
 		code := i.ExitCode
@@ -169,7 +226,7 @@ func (m *me) startRun(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, r, http.StatusAccepted, renderPlan(planned.Run, planned.Invocations))
+	httpx.WriteJSON(w, r, http.StatusAccepted, renderPlan(planned))
 }
 
 // previewRun answers what the spawn gate WOULD say, without writing anything.
@@ -210,7 +267,7 @@ func (m *me) previewRun(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
-	httpx.WriteJSON(w, r, http.StatusOK, renderPlan(planned.Run, planned.Invocations))
+	httpx.WriteJSON(w, r, http.StatusOK, renderPlan(planned))
 }
 
 // mayRunHere raises the gate to `admin` when the chain contains a loud tool.
@@ -231,13 +288,14 @@ func (m *me) mayRunHere(w http.ResponseWriter, r *http.Request, workspace, check
 	return true
 }
 
-func renderPlan(of rundomain.Run, invocations []rundomain.Invocation) runDetailResponse {
+func renderPlan(planned runcmd.Planned) runDetailResponse {
 	out := runDetailResponse{
-		runResponse: asRun(of),
-		Invocations: make([]invocationResponse, 0, len(invocations)),
+		runResponse: asRun(planned.Run),
+		Invocations: make([]invocationResponse, 0, len(planned.Invocations)),
 	}
-	for _, i := range invocations {
-		out.Invocations = append(out.Invocations, asInvocation(i, nil))
+	for _, i := range planned.Invocations {
+		out.Invocations = append(out.Invocations,
+			asInvocation(i, nil, planned.CandidatesOf(i.ID)))
 	}
 	return out
 }
@@ -314,7 +372,7 @@ func (m *me) readRun(w http.ResponseWriter, r *http.Request) {
 		Invocations: make([]invocationResponse, 0, len(detail.Invocations)),
 	}
 	for _, i := range detail.Invocations {
-		out.Invocations = append(out.Invocations, asInvocation(i, detail.Artifacts[i.ID]))
+		out.Invocations = append(out.Invocations, asInvocation(i, detail.Artifacts[i.ID], detail.Candidates[i.ID]))
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, out)
 }
@@ -387,9 +445,29 @@ func (m *me) listRefusals(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
-	out := make([]invocationResponse, 0, len(found))
+	// THE OTHER HALF — decisions/0039. A rule now refuses two different things:
+	// a whole STEP, when nothing it was aimed at survived, and a single
+	// CANDIDATE inside a step that ran anyway. The second did not exist before
+	// a step could touch many things, and a proof that showed only the first
+	// would silently under-report every batched run.
+	refused, err := m.runs.RefusedCandidates(r.Context(), workspace, rule, size)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	out := refusalsResponse{
+		Invocations: make([]invocationResponse, 0, len(found)),
+		Candidates:  make([]refusedCandidateResponse, 0, len(refused)),
+	}
 	for _, i := range found {
-		out = append(out, asInvocation(i, nil))
+		out.Invocations = append(out.Invocations, asInvocation(i, nil, nil))
+	}
+	for _, c := range refused {
+		out.Candidates = append(out.Candidates, refusedCandidateResponse{
+			CandidateID: c.ID.String(), InvocationID: c.InvocationID.String(),
+			RunID: c.RunID.String(), Kind: c.Kind, Value: c.Value,
+			Refusal: c.RefusalReason,
+		})
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, out)
 }

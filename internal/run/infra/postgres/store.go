@@ -113,7 +113,7 @@ func (s *Store) PlanInvocation(ctx context.Context, i domain.Invocation) error {
 		SkippedBecause: text(i.SkippedBecause), Unavailable: text(i.Unavailable),
 		StartedAt: stamp(i.StartedAt), FinishedAt: stamp(i.FinishedAt),
 		DurationMs: i.DurationMS, PermitRule: maybe(i.PermitRule),
-		SubjectKind: text(i.SubjectKind), SubjectValue: text(i.SubjectValue),
+		Feeds: uuids(i.Upstream),
 	})
 	if err != nil {
 		return postgres.Translate(ctx, err, "run: insert invocation")
@@ -222,6 +222,55 @@ func (s *Store) ArtifactByID(ctx context.Context, workspace, want id.ID) (domain
 	return artifact(row)
 }
 
+// AddCandidate records one thing a step was aimed at — decisions/0039. It is
+// idempotent on (invocation, kind, value): a resolution that runs twice must not
+// double the coverage denominator, and the second write is identical to the
+// first because both come from the same gate answer.
+func (s *Store) AddCandidate(ctx context.Context, c domain.Candidate) error {
+	err := s.q(ctx).InsertCandidate(ctx, rundb.InsertCandidateParams{
+		ID: uuid(c.ID), WorkspaceID: uuid(c.WorkspaceID), RunID: uuid(c.RunID),
+		InvocationID: uuid(c.InvocationID), Kind: c.Kind, Value: c.Value,
+		Permitted: c.Permitted, RefusalRule: maybe(c.RefusalRule),
+		RefusalReason: text(c.RefusalReason), CreatedAt: stamp(c.CreatedAt),
+	})
+	if err != nil {
+		return postgres.Translate(ctx, err, "run: insert candidate")
+	}
+	return nil
+}
+
+// Candidates is every thing a run's steps were aimed at, permitted and refused
+// together. The refused ones are the scope proof and are the reason this is a
+// table rather than a column.
+func (s *Store) Candidates(ctx context.Context, run id.ID) ([]domain.Candidate, error) {
+	rows, err := s.q(ctx).CandidatesForRun(ctx, uuid(run))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "run: candidates for run")
+	}
+	out := make([]domain.Candidate, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, candidate(row))
+	}
+	return out, nil
+}
+
+// RefusedCandidates is the per-candidate half of the scope proof: which THINGS
+// one rule refused inside steps that ran anyway. `Refusals` answers which whole
+// steps it refused, and only 0039 made the two different questions.
+func (s *Store) RefusedCandidates(ctx context.Context, workspace, rule id.ID, limit int) ([]domain.Candidate, error) {
+	rows, err := s.q(ctx).RefusedCandidatesForRule(ctx, rundb.RefusedCandidatesForRuleParams{
+		WorkspaceID: uuid(workspace), RefusalRule: maybe(rule), Page: int32(limit),
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "run: refused candidates")
+	}
+	out := make([]domain.Candidate, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, candidate(row))
+	}
+	return out, nil
+}
+
 // LatestCheckedPerSubject is what COVERAGE reads — decisions/0037. It is a
 // group-by in the database rather than a walk in Go, because the alternative is
 // pulling every invocation an engagement has ever run to compute one grid.
@@ -235,11 +284,39 @@ func (s *Store) LatestCheckedPerSubject(ctx context.Context, workspace, target i
 	out := make([]domain.Checked, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, domain.Checked{
-			CheckID: ident(row.CheckID), Kind: row.SubjectKind.String,
-			Value: row.SubjectValue.String, At: instant(row.LastChecked),
+			CheckID: ident(row.CheckID), Kind: row.SubjectKind,
+			Value: row.SubjectValue, At: instant(row.LastChecked),
 		})
 	}
 	return out, nil
+}
+
+// Unavailable is `health`'s first probe: a tool `execx` could not start at all.
+// Grouped by tool and reason, so one tool off PATH across forty invocations is
+// one symptom with a count.
+func (s *Store) Unavailable(ctx context.Context, workspace id.ID) ([]domain.Unavailable, error) {
+	rows, err := s.q(ctx).ToolsThatCouldNotStart(ctx, uuid(workspace))
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "run: tools that could not start")
+	}
+	out := make([]domain.Unavailable, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.Unavailable{
+			ToolID: ident(row.ToolID), Reason: row.Unavailable.String,
+			Seen: int(row.Seen), Since: instant(row.Since),
+		})
+	}
+	return out, nil
+}
+
+// Invocations counted, which is the DENOMINATOR that probe needs: "no tool
+// failed to start, out of nought invocations" is not a measurement.
+func (s *Store) CountInvocations(ctx context.Context, workspace id.ID) (int, error) {
+	n, err := s.q(ctx).InvocationsConsidered(ctx, uuid(workspace))
+	if err != nil {
+		return 0, postgres.Translate(ctx, err, "run: invocations considered")
+	}
+	return int(n), nil
 }
 
 // InvocationChecks is the other half of coverage's join — which check each

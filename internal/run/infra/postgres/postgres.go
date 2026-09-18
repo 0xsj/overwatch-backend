@@ -124,8 +124,7 @@ func invocation(row rundb.RunInvocation) (domain.Invocation, error) {
 		Signal:         row.Signal.String,
 		RefusalRule:    ident(row.RefusalRule),
 		PermitRule:     ident(row.PermitRule),
-		SubjectKind:    row.SubjectKind.String,
-		SubjectValue:   row.SubjectValue.String,
+		Upstream:       idents(row.Feeds),
 		RefusalReason:  row.RefusalReason.String,
 		SkippedBecause: row.SkippedBecause.String,
 		Unavailable:    row.Unavailable.String,
@@ -133,6 +132,43 @@ func invocation(row rundb.RunInvocation) (domain.Invocation, error) {
 		FinishedAt:     instant(row.FinishedAt),
 		DurationMS:     row.DurationMs,
 	}, nil
+}
+
+// candidate maps one thing a step was aimed at — decisions/0039.
+func candidate(row rundb.RunCandidate) domain.Candidate {
+	return domain.Candidate{
+		ID:            ident(row.ID),
+		WorkspaceID:   ident(row.WorkspaceID),
+		RunID:         ident(row.RunID),
+		InvocationID:  ident(row.InvocationID),
+		Kind:          row.Kind,
+		Value:         row.Value,
+		Permitted:     row.Permitted,
+		RefusalRule:   ident(row.RefusalRule),
+		RefusalReason: row.RefusalReason.String,
+		CreatedAt:     instant(row.CreatedAt),
+	}
+}
+
+// idents turns a uuid[] into ids, dropping NULLs. A null inside an array is not
+// an id and there is nothing useful to make of it.
+func idents(us []pgtype.UUID) []id.ID {
+	out := make([]id.ID, 0, len(us))
+	for _, u := range us {
+		if found := ident(u); !found.IsZero() {
+			out = append(out, found)
+		}
+	}
+	return out
+}
+
+// uuids is the other direction, for writing what feeds a step.
+func uuids(ids []id.ID) []pgtype.UUID {
+	out := make([]pgtype.UUID, 0, len(ids))
+	for _, i := range ids {
+		out = append(out, uuid(i))
+	}
+	return out
 }
 
 func artifact(row rundb.RunArtifact) (domain.Artifact, error) {

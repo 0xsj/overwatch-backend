@@ -6,15 +6,23 @@ import (
 	"os"
 	"time"
 
+	cleanuppg "github.com/0xsj/overwatch-backend/internal/artifactcleanup/infra/postgres"
+	assistpg "github.com/0xsj/overwatch-backend/internal/assistance/infra/postgres"
 	auditapp "github.com/0xsj/overwatch-backend/internal/audit/app"
 	auditquery "github.com/0xsj/overwatch-backend/internal/audit/app/query"
 	auditpg "github.com/0xsj/overwatch-backend/internal/audit/infra/postgres"
+	briefpg "github.com/0xsj/overwatch-backend/internal/brief/infra/postgres"
 	checkcmd "github.com/0xsj/overwatch-backend/internal/check/app/command"
 	checkquery "github.com/0xsj/overwatch-backend/internal/check/app/query"
 	checkpg "github.com/0xsj/overwatch-backend/internal/check/infra/postgres"
 	entcmd "github.com/0xsj/overwatch-backend/internal/entity/app/command"
 	entquery "github.com/0xsj/overwatch-backend/internal/entity/app/query"
 	entpg "github.com/0xsj/overwatch-backend/internal/entity/infra/postgres"
+	eventpg "github.com/0xsj/overwatch-backend/internal/event/infra/postgres"
+	findingcmd "github.com/0xsj/overwatch-backend/internal/finding/app/command"
+	findingquery "github.com/0xsj/overwatch-backend/internal/finding/app/query"
+	findingpg "github.com/0xsj/overwatch-backend/internal/finding/infra/postgres"
+	healthquery "github.com/0xsj/overwatch-backend/internal/health/app/query"
 	identitycmd "github.com/0xsj/overwatch-backend/internal/identity/app/command"
 	identityquery "github.com/0xsj/overwatch-backend/internal/identity/app/query"
 	identitypg "github.com/0xsj/overwatch-backend/internal/identity/infra/postgres"
@@ -22,18 +30,31 @@ import (
 	journalapp "github.com/0xsj/overwatch-backend/internal/journal/app"
 	journalquery "github.com/0xsj/overwatch-backend/internal/journal/app/query"
 	journalpg "github.com/0xsj/overwatch-backend/internal/journal/infra/postgres"
+	leadpg "github.com/0xsj/overwatch-backend/internal/lead/infra/postgres"
+	notecmd "github.com/0xsj/overwatch-backend/internal/note/app/command"
+	notequery "github.com/0xsj/overwatch-backend/internal/note/app/query"
+	notepg "github.com/0xsj/overwatch-backend/internal/note/infra/postgres"
 	obscmd "github.com/0xsj/overwatch-backend/internal/observation/app/command"
 	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	obspg "github.com/0xsj/overwatch-backend/internal/observation/infra/postgres"
 	orgcmd "github.com/0xsj/overwatch-backend/internal/org/app/command"
 	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
+	reportcmd "github.com/0xsj/overwatch-backend/internal/report/app/command"
+	reportquery "github.com/0xsj/overwatch-backend/internal/report/app/query"
+	reportpg "github.com/0xsj/overwatch-backend/internal/report/infra/postgres"
+	connectionpg "github.com/0xsj/overwatch-backend/internal/researchconnection/infra/postgres"
+	recordpg "github.com/0xsj/overwatch-backend/internal/researchentity/infra/postgres"
+	resolutionpg "github.com/0xsj/overwatch-backend/internal/researchresolution/infra/postgres"
+	reviewpg "github.com/0xsj/overwatch-backend/internal/review/infra/postgres"
 	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
 	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
 	runpg "github.com/0xsj/overwatch-backend/internal/run/infra/postgres"
 	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
 	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
 	scopepg "github.com/0xsj/overwatch-backend/internal/scope/infra/postgres"
+	extractionpg "github.com/0xsj/overwatch-backend/internal/source/extraction/infra/postgres"
+	sourcepg "github.com/0xsj/overwatch-backend/internal/source/infra/postgres"
 	targetcmd "github.com/0xsj/overwatch-backend/internal/target/app/command"
 	targetquery "github.com/0xsj/overwatch-backend/internal/target/app/query"
 	targetpg "github.com/0xsj/overwatch-backend/internal/target/infra/postgres"
@@ -155,6 +176,9 @@ func Boot(ctx context.Context) (*app, error) {
 	// Migrations, in the order a fresh database needs them. Each domain owns its
 	// own schema and its own ledger, so the only thing this ordering asserts is
 	// that the shared outbox exists before anything publishes into it.
+	researchMigrations := append([]postgres.Migration{}, recordpg.Migrations...)
+	researchMigrations = append(researchMigrations, connectionpg.Migrations...)
+	researchMigrations = append(researchMigrations, resolutionpg.Migrations...)
 	for _, set := range []struct {
 		name string
 		ms   []postgres.Migration
@@ -171,8 +195,20 @@ func Boot(ctx context.Context) (*app, error) {
 		{"tool", toolpg.Migrations, []postgres.MigrateOption{postgres.InSchema(toolpg.Schema)}},
 		{"checks", checkpg.Migrations, []postgres.MigrateOption{postgres.InSchema(checkpg.Schema)}},
 		{"run", runpg.Migrations, []postgres.MigrateOption{postgres.InSchema(runpg.Schema)}},
+		{"source", sourcepg.Migrations, []postgres.MigrateOption{postgres.InSchema(sourcepg.Schema)}},
+		{"source extraction", extractionpg.Migrations, []postgres.MigrateOption{postgres.InSchema(extractionpg.Schema)}},
 		{"observation", obspg.Migrations, []postgres.MigrateOption{postgres.InSchema(obspg.Schema)}},
+		{"research", researchMigrations, []postgres.MigrateOption{postgres.InSchema(recordpg.Schema)}},
+		{"timeline", eventpg.Migrations, []postgres.MigrateOption{postgres.InSchema(eventpg.Schema)}},
 		{"entity", entpg.Migrations, []postgres.MigrateOption{postgres.InSchema(entpg.Schema)}},
+		{"finding", findingpg.Migrations, []postgres.MigrateOption{postgres.InSchema(findingpg.Schema)}},
+		{"report", reportpg.Migrations, []postgres.MigrateOption{postgres.InSchema(reportpg.Schema)}},
+		{"note", notepg.Migrations, []postgres.MigrateOption{postgres.InSchema(notepg.Schema)}},
+		{"review", reviewpg.Migrations, []postgres.MigrateOption{postgres.InSchema(reviewpg.Schema)}},
+		{"lead", leadpg.Migrations, []postgres.MigrateOption{postgres.InSchema(leadpg.Schema)}},
+		{"brief", briefpg.Migrations, []postgres.MigrateOption{postgres.InSchema(briefpg.Schema)}},
+		{"assistance", assistpg.Migrations, []postgres.MigrateOption{postgres.InSchema(assistpg.Schema)}},
+		{"artifact cleanup", cleanuppg.Migrations, []postgres.MigrateOption{postgres.InSchema(cleanuppg.Schema)}},
 	} {
 		n, err := postgres.Migrate(bootCtx, db, set.ms, set.opts...)
 		if err != nil {
@@ -224,6 +260,22 @@ func Boot(ctx context.Context) (*app, error) {
 		Clock: clk,
 	})
 
+	// TEN FAILED GUESSES, then one back every thirty seconds — owed item A.
+	// `POST /v1/sessions` was the only unauthenticated endpoint taking a
+	// password and the only one with no budget at all, which made credential
+	// stuffing against a leaked address list cost an attacker one request per
+	// guess.
+	//
+	// It is charged on FAILURE only and against two keys — the address and the
+	// email — so a shared office NAT does not lock everybody out together and
+	// an attacker cannot move to the next address for free. Ten is chosen for a
+	// person who has just changed their password and is working through their
+	// devices; two a minute sustained is useless for guessing.
+	guessLimit := limit.New(limit.Config{
+		Rule:  limit.Rule{Burst: 10, Every: 30 * time.Second},
+		Clock: clk,
+	})
+
 	// The registration chain — decisions/0017. Each link runs in its own
 	// transaction against its own schema, so any of the three can become a
 	// separate service by replacing one handler here with a NATS publisher.
@@ -238,7 +290,7 @@ func Boot(ctx context.Context) (*app, error) {
 	// workspace.opened, which is a choice somebody made.
 	granter := orgcmd.NewGranter(orgStore, ids, clk)
 
-	orgAccess := orgquery.NewAccess(orgStore)
+	orgAccess := orgquery.NewAccess(orgStore, clk)
 	people := identityquery.NewDirectory(accounts)
 	members := orgcmd.NewMembers(orgStore, publisher, db, ids, clk)
 
@@ -272,17 +324,32 @@ func Boot(ctx context.Context) (*app, error) {
 
 	obsStore := obspg.NewStore(db)
 	runReads := runquery.NewRuns(runStore, bytes)
-	// Extraction is a PORT the executor calls — 0035 §6. It is synchronous and
-	// inside the executor's transaction, so a finished run's observation count
-	// is a number rather than a promise.
-	extractor := obscmd.NewExtractor(obsStore,
-		liveMappings{tools: toolReads}, publisher, ids, clk)
 
 	// The graph — decisions/0036. Two SUBSCRIBERS: one on `target.added` for the
 	// root entity, one on `extract.observation.created` for the fragments and
 	// the attributions. So the graph is eventually consistent, arriving one
 	// outbox delivery after the run that produced the observations.
 	entStore := entpg.NewStore(db)
+
+	// FINDINGS — decisions/0041. Constructed before the extractor because a
+	// finding-producing tool's extraction writes findings instead of
+	// observations, and a finding has to resolve the FRAGMENT it is on.
+	//
+	// It reaches `entity` through the same folded lookup a derivation resolves
+	// its `from` through, so "the same host" means one thing in both.
+	findingStore := findingpg.NewStore(db)
+	findingsCmd := findingcmd.NewFindings(findingStore,
+		findingFragments{fragments: entStore},
+		db, publisher, ids, clk)
+
+	// Extraction is a PORT the executor calls — 0035 §6. It is synchronous and
+	// inside the executor's transaction, so a finished run's observation count
+	// is a number rather than a promise.
+	extractor := obscmd.NewExtractor(obsStore,
+		liveMappings{tools: toolReads},
+		sightings{findings: findingsCmd},
+		publisher, ids, clk)
+
 	obsReads := obsquery.NewObservations(obsStore,
 		mappingStep{tools: toolReads},
 		runSteps{runs: runReads},
@@ -290,9 +357,37 @@ func Boot(ctx context.Context) (*app, error) {
 		orgOf{reads: workspaceReads})
 	assembler := entcmd.NewAssembler(entStore,
 		subjects{observed: obsReads},
+		provenances{observed: obsReads, runs: runReads, tools: toolReads,
+			spaces: workspaceReads},
 		targetOfRun{runs: runReads},
 		claims{rules: scopeReads},
 		publisher, ids, clk)
+
+	// REPORTS — decisions/0042. Constructed here because its seven section ports
+	// need every read in the system, and the entity graph is the last of them.
+	//
+	// **A section is a capability**, and this is where that stops being a
+	// slogan: a section nobody can source has no adapter, so it cannot exist.
+	// NOTES — decisions/0043. Constructed before `report`, because the eighth
+	// section reads them.
+	noteStore := notepg.NewStore(db)
+	noteReads := notequery.NewNotes(noteStore)
+	notesCmd := notecmd.NewNotes(noteStore, knownKinds{}, publisher, ids, clk)
+
+	reportStore := reportpg.NewStore(db)
+	reportsCmd := reportcmd.NewReports(reportStore,
+		sections{
+			rules: scopeReads,
+			graph: entquery.NewGraph(entStore,
+				spawnPermits{rules: scopeReads},
+				coverageChecks{checks: checkReads, workspaces: workspaceReads},
+				coverageChecked{runs: runReads, observed: obsReads}),
+			findings:        findingquery.NewFindings(findingStore),
+			runs:            runReads,
+			clock:           clk,
+			engagementNotes: engagementNotes{notes: noteReads},
+		},
+		bytes, db, publisher, ids, clk)
 
 	var scheduler *runcmd.Scheduler
 	if cfg.SchedulerBatch > 0 {
@@ -303,7 +398,8 @@ func Boot(ctx context.Context) (*app, error) {
 
 	executor := runcmd.NewExecutor(runStore, runsCmd, kit,
 		orgOf{reads: workspaceReads}, execxSpawner{}, bytes,
-		extracts{extractor: extractor}, db, publisher,
+		extracts{extractor: extractor},
+		observedSubjects{observed: obsReads}, db, publisher,
 		ids, clk, execx.Policy{
 			Timeout:   cfg.RunTimeout,
 			MaxOutput: cfg.RunMaxOutput,
@@ -368,7 +464,7 @@ func Boot(ctx context.Context) (*app, error) {
 	return &app{
 		cfg: cfg, log: log, clk: clk, ids: ids, db: db, boot: bootCtx,
 		identity: identityhttp.NewAPI(registrar, authenticator, verifier,
-			settings, sessions, mailLimit, log),
+			settings, sessions, mailLimit, guessLimit, log),
 		// The moment this is non-nil, every record in the system starts naming
 		// a person instead of `anonymous`.
 		whoami:     identityhttp.Identifier(sessions),
@@ -395,9 +491,22 @@ func Boot(ctx context.Context) (*app, error) {
 			runsCmd,
 			obsReads,
 			entquery.NewGraph(entStore,
+				spawnPermits{rules: scopeReads},
 				coverageChecks{checks: checkReads, workspaces: workspaceReads},
 				coverageChecked{runs: runReads, observed: obsReads}),
 			entcmd.NewRulings(entStore, publisher, ids, clk),
+			findingquery.NewFindings(findingStore),
+			findingsCmd,
+			reportquery.NewReports(reportStore, bytes),
+			reportsCmd,
+			healthquery.NewDoctor(probes{
+				runs: runStore, tools: toolStore, checks: checkStore,
+				observed: obsStore, events: outbox.NewPostgres(db),
+				workspaces: workspaceReads,
+			}, clk),
+			noteReads,
+			notesCmd,
+			newResearchWithOCRAndAssistanceAndSynthesis(db, artifacts, publisher, ids, clk, configuredImageOCR(cfg), configuredAssistanceProvider(cfg), configuredSynthesisProvider(cfg)),
 			auditquery.NewLedger(auditpg.NewStore(db)),
 			journalquery.NewTrail(journalpg.NewStore(db)), log),
 		close: func() { db.Close() },

@@ -14,6 +14,8 @@ import (
 	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
 	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
 	scopedomain "github.com/0xsj/overwatch-backend/internal/scope/domain"
+	toolquery "github.com/0xsj/overwatch-backend/internal/tool/app/query"
+	tooldomain "github.com/0xsj/overwatch-backend/internal/tool/domain"
 	workspacequery "github.com/0xsj/overwatch-backend/internal/workspace/app/query"
 	"github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/id"
@@ -53,6 +55,93 @@ func (s subjects) ForInvocation(ctx context.Context, workspace, invocation id.ID
 		out = append(out, *held[k])
 	}
 	return out, nil
+}
+
+// provenances is entity's port into `observation` for what each record was READ
+// OUT OF — decisions/0040 §4 — and it is the one place the `from` value's KIND
+// is supplied.
+//
+// **The kind is the TOOL's `consumes`, and it is resolved here because nothing
+// else can see both ends.** `observation` holds the value and not the kind;
+// `entity` may import neither `observation` nor `tool`. So the walk is
+// invocation → tool → consumes, and it happens at the composition root, which is
+// where two peers are allowed to meet.
+//
+// Reading the kind off the value's SHAPE was the alternative and it is the
+// observation/fact error one level down: `a.acme.test` looks like a host and
+// `192.0.2.1` looks like an ip, and a tool consuming `cidr` would have both
+// guessed wrong.
+//
+// **The tool is read LIVE**, so a tool whose `consumes` changed between the run
+// and the assembly resolves the new kind. The window is the seconds between an
+// invocation finishing and its delivery landing, and it is the same trade the
+// executor already makes for `Succeeded` and `MediaType`.
+type provenances struct {
+	observed *obsquery.Observations
+	runs     *runquery.Runs
+	tools    *toolquery.Tools
+	spaces   *workspacequery.Workspaces
+}
+
+func (p provenances) ForInvocation(ctx context.Context, workspace, invocation id.ID) ([]entcmd.Provenance, error) {
+	found, err := p.observed.ProvenanceForInvocation(ctx, workspace, invocation)
+	if err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		// MOST TOOLS DECLARE NO PROVENANCE MAPPING, so this is the common path
+		// and it must not cost three reads to learn nothing happened.
+		return nil, nil
+	}
+
+	kind, err := p.consumesOf(ctx, workspace, invocation)
+	if err != nil {
+		return nil, err
+	}
+	if kind == "" {
+		// The tool consumes nothing, or was archived since the run. A source
+		// tool cannot legally hold a `derived_from` mapping (0040 §3), so
+		// reaching here means the tool changed under a run that already
+		// happened — and an edge whose `from` has no kind cannot be built.
+		// Answering NOTHING makes those readings unresolved rather than
+		// silently kind-less.
+		return nil, nil
+	}
+
+	out := make([]entcmd.Provenance, 0, len(found))
+	for _, one := range found {
+		out = append(out, entcmd.Provenance{
+			SubjectKind: one.SubjectKind, SubjectValue: one.SubjectValue,
+			FromKind: kind, FromValue: one.FromValue, Label: one.Label,
+			MappingID: one.MappingID, ArtifactID: one.ArtifactID,
+		})
+	}
+	return out, nil
+}
+
+// consumesOf walks invocation → tool → consumes. It is `entity`'s second
+// invocation walk beside [targetOfRun], and they are separate because they
+// answer different questions and one of them is allowed to come back empty.
+func (p provenances) consumesOf(ctx context.Context, workspace, invocation id.ID) (string, error) {
+	one, err := p.runs.Invocation(ctx, workspace, invocation)
+	if err != nil {
+		return "", err
+	}
+	org, _, err := p.spaces.OrgOf(ctx, workspace)
+	if err != nil {
+		return "", err
+	}
+	found, err := p.tools.ByID(ctx, org, one.ToolID)
+	if err != nil {
+		if errors.IsKind(err, errors.NotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	if found.Consumes == tooldomain.FeedNone || found.Consumes == tooldomain.FeedFinding {
+		return "", nil
+	}
+	return found.Consumes.String(), nil
 }
 
 // targets resolves invocation → run → target. **This is the join decisions/0036
@@ -134,6 +223,57 @@ func (c claims) MayClaim(ctx context.Context, workspace, target id.ID,
 		// says so, and it is what the drawer renders under "on what basis".
 		Basis: "scope rule " + decision.Winner.Pattern + " covers this engagement",
 	}, nil
+}
+
+// spawnPermits is the canvas's port into `scope`'s SPAWN GATE — decisions/0044
+// §3, and it is where `CLAUDE.md`'s first pair gets both halves on one screen.
+//
+// **It reads the live rules ONCE and decides in memory.** `scope.Decide` is a
+// pure function over a rule slice, so a call per node would re-read the same
+// rules per node — this is one read and N decisions.
+type spawnPermits struct{ rules *scopequery.Rules }
+
+func (s spawnPermits) Permitted(ctx context.Context, workspace, target id.ID,
+	of []entquery.Subject) (map[entquery.Subject]bool, error) {
+	out := make(map[entquery.Subject]bool, len(of))
+	if len(of) == 0 || target.IsZero() {
+		// No target means no scope to be in or out of — a root with no target
+		// row, which `0029` allows for a graph built before one existed. Every
+		// node reads NOT in scope, which is the honest answer rather than a
+		// blanket yes.
+		return out, nil
+	}
+	live, err := s.rules.Live(ctx, workspace, target)
+	if err != nil {
+		return nil, err
+	}
+	for _, one := range of {
+		kind, err := scopedomain.ParseKind(one.Kind)
+		if err != nil {
+			// A kind scope has no word for cannot be permitted by any rule.
+			// FAILS CLOSED, and `root/vocabulary_test.go` is what stops this
+			// being reachable.
+			out[one] = false
+			continue
+		}
+		// **PERMITTED FOR ANYTHING.** `0010` qualifies a spawn rule by the
+		// intensities it allows, and the facet asks whether the engagement may
+		// touch this at all — so a host permitted only for `loud` is in scope,
+		// and one every rule excludes is not. Three pure decisions over an
+		// already-loaded slice; the cost is nothing.
+		for _, intensity := range []scopedomain.Intensity{
+			scopedomain.IntensityPassive, scopedomain.IntensityLight, scopedomain.IntensityLoud,
+		} {
+			decision := scopedomain.Decide(live, scopedomain.GateSpawn, scopedomain.Candidate{
+				Kind: kind, Value: one.Value, Intensity: intensity,
+			})
+			if decision.Verdict == scopedomain.Permitted {
+				out[one] = true
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // coverageChecks is the port into `check`. It resolves the one thing coverage

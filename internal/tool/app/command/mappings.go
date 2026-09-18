@@ -36,7 +36,7 @@ func NewMappings(repo Repository, tx Transactor, publisher events.Publisher,
 // **This is what `correction` is.** It gets no table: a correction is a version
 // whose author is a person, and the author is a field.
 func (m *Mappings) Draft(ctx context.Context, org, tool, by id.ID,
-	field, expression string, promote bool) (domain.Mapping, error) {
+	field, expression string, role domain.Role, promote bool) (domain.Mapping, error) {
 	held, err := m.repo.ByID(ctx, org, tool)
 	if err != nil {
 		return domain.Mapping{}, err
@@ -51,8 +51,11 @@ func (m *Mappings) Draft(ctx context.Context, org, tool, by id.ID,
 		if err != nil {
 			return err
 		}
+		// THE TOOL'S `consumes` IS THE ARGUMENT — 0040 §3. A source tool has
+		// no input, so a `derived_from` mapping on one could never fire, and
+		// the domain refuses it rather than letting extraction ignore it.
 		fresh, err := domain.NewMapping(m.ids.NewID(), org, tool, by,
-			field, expression, version, m.clock.Now())
+			field, expression, version, role, held.Consumes, m.clock.Now())
 		if err != nil {
 			return err
 		}
@@ -73,6 +76,7 @@ func (m *Mappings) Draft(ctx context.Context, org, tool, by id.ID,
 	if err := m.emit(ctx, domain.EventMappingAdded, org, domain.MappingAdded{
 		MappingID: written.ID.String(), ToolID: tool.String(), OrgID: org.String(),
 		Field: written.Field, Version: written.Version, ByPerson: !by.IsZero(),
+		Role: written.Role.String(),
 	}); err != nil {
 		return domain.Mapping{}, err
 	}

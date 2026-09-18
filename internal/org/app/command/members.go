@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/org/app/query"
 	"github.com/0xsj/overwatch-backend/internal/org/domain"
@@ -51,12 +52,25 @@ func NewMembers(repo MemberRepository, publisher events.Publisher, tx Transactor
 // **Transferring ownership is this command twice** — decisions/0026. Promote
 // them, then demote yourself. The other order is refused by the last-owner
 // guard, which is correct: that order has a moment with no owner in it.
-func (m *Members) ChangeRole(ctx context.Context, caller, org, account id.ID, role domain.Role) error {
+// ChangeRole promotes or demotes. `until` is the TIME BOX the new role needs —
+// required when moving somebody TO `guest` or `client` and refused otherwise,
+// which is owed item D's rule at the one place a role can change.
+//
+// **Moving off a boxed role clears the date rather than keeping it.** A guest
+// promoted to a member is no longer time-boxed, and a stale expiry left on the
+// row would time-box the firm's own staff.
+func (m *Members) ChangeRole(ctx context.Context, caller, org, account id.ID,
+	role domain.Role, until time.Time) error {
 	at := m.clock.Now()
 
 	actor, target, err := m.pair(ctx, caller, org, account)
 	if err != nil {
 		return err
+	}
+	// pair also serves self-removal, so it permits a member to act on their
+	// own membership. Changing a role still requires authority to manage it.
+	if actor.Role != domain.RoleOwner && actor.Role != domain.RoleAdmin {
+		return query.ErrNoAccess
 	}
 	// Only an owner may MAKE or UNMAKE an owner — the same rule 0025 applies to
 	// inviting one. An administrator who can demote the owner can take the firm.
@@ -68,24 +82,23 @@ func (m *Members) ChangeRole(ctx context.Context, caller, org, account id.ID, ro
 		return nil
 	}
 
-	err = m.tx.InTx(ctx, func(ctx context.Context) error {
+	return m.tx.InTx(ctx, func(ctx context.Context) error {
 		if target.Role == domain.RoleOwner {
 			if err := m.keepAnOwner(ctx, org, account); err != nil {
 				return err
 			}
 		}
-		next, err := target.ChangeRole(role, at)
+		next, err := target.ChangeRoleUntil(role, until, at)
 		if err != nil {
 			return err
 		}
-		return m.repo.SaveMember(ctx, next)
-	})
-	if err != nil {
-		return err
-	}
-	return m.emit(ctx, domain.EventRoleChanged, org, domain.RoleChanged{
-		OrgID: org.String(), AccountID: account.String(),
-		From: target.Role.String(), To: role.String(),
+		if err := m.repo.SaveMember(ctx, next); err != nil {
+			return err
+		}
+		return m.emit(ctx, domain.EventRoleChanged, org, domain.RoleChanged{
+			OrgID: org.String(), AccountID: account.String(),
+			From: target.Role.String(), To: role.String(),
+		})
 	})
 }
 

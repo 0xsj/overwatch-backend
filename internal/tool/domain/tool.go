@@ -293,6 +293,15 @@ type ToolArchived struct {
 	Name   string `json:"name"`
 }
 
+// Silent is a tool that runs and says nothing anybody reads — `health`'s two
+// tool-shaped symptoms, which differ only in WHY.
+type Silent struct {
+	ID       id.ID
+	Name     string
+	Produces string
+	Since    time.Time
+}
+
 type MappingAdded struct {
 	MappingID string `json:"mapping_id"`
 	ToolID    string `json:"tool_id"`
@@ -300,6 +309,11 @@ type MappingAdded struct {
 	Field     string `json:"field"`
 	Version   int    `json:"version"`
 	ByPerson  bool   `json:"by_person"`
+
+	// Role is in the envelope because a subscriber cannot compute it —
+	// decisions/0013 — and `derived_from` is the one that changes the entity
+	// graph rather than only the observation table.
+	Role string `json:"role"`
 }
 
 type MappingPromoted struct {

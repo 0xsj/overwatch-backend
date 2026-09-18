@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/run/domain"
 	"github.com/0xsj/overwatch-backend/pkg/events"
@@ -40,6 +41,27 @@ func NewRuns(repo Repository, chains Chains, targets Targets, spawns Spawns,
 type Planned struct {
 	Run         domain.Run
 	Invocations []domain.Invocation
+
+	// Candidates is what each invocation was AIMED AT, and at plan time only a
+	// source step has any — decisions/0039 Section 3. A downstream step's are
+	// resolved when it runs, from what its feeders observed.
+	//
+	// They travel beside the invocations rather than inside them because a
+	// candidate is a row: an invocation carrying a slice would make the refused
+	// ones a field of the thing that did not touch them.
+	Candidates []domain.Candidate
+}
+
+// CandidatesOf groups a plan's candidates by the invocation they belong to, for
+// a caller rendering one step at a time.
+func (p Planned) CandidatesOf(invocation id.ID) []domain.Candidate {
+	out := make([]domain.Candidate, 0, 1)
+	for _, c := range p.Candidates {
+		if c.InvocationID == invocation {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Counts is the summary the envelope carries. A subscriber cannot compute it —
@@ -83,6 +105,12 @@ func (r *Runs) Start(ctx context.Context, workspace, target, check, by id.ID) (P
 				return err
 			}
 		}
+		// AFTER the invocations, because a candidate names one.
+		for _, c := range planned.Candidates {
+			if err := r.repo.AddCandidate(ctx, c); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -123,48 +151,111 @@ func (r *Runs) plan(ctx context.Context, workspace, target, check, by id.ID) (Pl
 	out := Planned{Run: fresh, Invocations: make([]domain.Invocation, 0, len(slots))}
 	for n, slot := range slots {
 		planned, err := domain.Plan(r.ids.NewID(), fresh.ID, workspace,
-			slot.Step.StepID, slot.Step.ToolID, n, slot.Argv,
-			slot.Step.Kind, slot.Value)
+			slot.Step.StepID, slot.Step.ToolID, n, slot.Argv, slot.Step.Upstream)
 		if err != nil {
 			return Planned{}, err
 		}
 
-		// A step that cannot run today is skipped WITHOUT asking the gate. The
-		// gate answers "may this spawn"; there is no spawn to ask about, and a
-		// refusal recorded for something that was never going to run would put a
-		// rule citation on a row that proves nothing.
-		if slot.Skip != "" {
-			planned, err = planned.Skip(slot.Skip, now)
-			if err != nil {
-				return Planned{}, err
-			}
+		// A DOWNSTREAM step is left PENDING with its template unresolved. The
+		// gate is not asked because there is nothing to ask about yet: its
+		// candidates are the subjects its feeders observe, and nothing has run.
+		// decisions/0039 Section 3 — and this is the line that used to write
+		// `skipped` unconditionally, which was true only while nothing could
+		// ever feed it.
+		if !slot.Step.Source {
 			out.Invocations = append(out.Invocations, planned)
 			continue
 		}
 
-		gate, err := r.spawns.MaySpawn(ctx, workspace, target,
-			slot.Step.Kind, slot.Value, slot.Intensity)
+		decided, candidates, err := r.ask(ctx, workspace, target, fresh.ID,
+			planned, slot.Step.Kind, slot.Intensity, slot.Values, now)
 		if err != nil {
 			return Planned{}, err
+		}
+		out.Invocations = append(out.Invocations, decided)
+		out.Candidates = append(out.Candidates, candidates...)
+	}
+	return out, nil
+}
+
+// ask puts every candidate to the SPAWN GATE and settles the invocation from
+// their answers — decisions/0039 Section 2. It is one function because plan time
+// and execution time ask the identical question of a source step and a
+// downstream one, and two copies of a gate walk drift.
+//
+//	any permitted    PENDING, citing the rule that permitted the first
+//	all refused      REFUSED, citing that refusal
+//	none at all      SKIPPED, naming what did not arrive
+//
+// **The invocation cites ONE rule and the candidates carry the rest.** `0010`'s
+// three surfaces cite a rule id and an invocation has one column for it; a
+// summary id merging several would be a citation to something nobody wrote. That
+// is lossy for attribution when two rules permit different halves of one step —
+// 0036 Section 5 reads `permit_rule` to attribute a discovered fragment — and it
+// is accepted: any permitting rule is a true answer to "did this engagement's
+// scope allow this run", which is the question being asked.
+func (r *Runs) ask(ctx context.Context, workspace, target, run id.ID,
+	planned domain.Invocation, kind, intensity string, values []string,
+	now time.Time) (domain.Invocation, []domain.Candidate, error) {
+	if len(values) == 0 {
+		skipped, err := planned.Skip(domain.SkipNothingUpstream, now)
+		return skipped, nil, err
+	}
+
+	candidates := make([]domain.Candidate, 0, len(values))
+	permit := id.ID{}
+	for _, value := range values {
+		candidate, err := domain.NewCandidate(r.ids.NewID(), workspace, run,
+			planned.ID, kind, value, now)
+		if err != nil {
+			// A kind the vocabulary has no word for, or an empty value. Both
+			// are the planner's bug rather than the gate's answer, and turning
+			// one into a silent refusal would hide it.
+			return planned, nil, err
+		}
+		gate, err := r.spawns.MaySpawn(ctx, workspace, target, kind, value, intensity)
+		if err != nil {
+			return planned, nil, err
 		}
 		switch {
 		case gate.Permitted:
-			// Left PENDING — this is the only path to a process — but the RULE
-			// that permitted it is recorded, because PRODUCT.md's lineage walks
-			// back to "the scope rule that allowed the command to run" and
-			// nothing else records it.
-			planned = planned.Permit(gate.Rule)
+			candidate = candidate.Permit()
+			if permit.IsZero() {
+				permit = gate.Rule
+			}
 		case gate.Rule.IsZero():
-			planned, err = planned.NotInScope(gate.Reason, now)
+			candidate, err = candidate.NotInScope(gate.Reason)
 		default:
-			planned, err = planned.Refuse(gate.Rule, gate.Reason, now)
+			candidate, err = candidate.Refuse(gate.Rule, gate.Reason)
 		}
 		if err != nil {
-			return Planned{}, err
+			return planned, nil, err
 		}
-		out.Invocations = append(out.Invocations, planned)
+		candidates = append(candidates, candidate)
 	}
-	return out, nil
+
+	if len(domain.PermittedValues(candidates)) > 0 {
+		// Left PENDING — this is the only path to a process — but the RULE that
+		// permitted it is recorded, because PRODUCT.md's lineage walks back to
+		// "the scope rule that allowed the command to run" and nothing else
+		// records it.
+		return planned.Permit(permit), candidates, nil
+	}
+
+	// EVERY candidate refused, so nothing spawns. The invocation carries the
+	// first refusal so the run reads without opening the candidate rows, and
+	// the rows carry each one so the scope proof is complete.
+	first, _ := domain.FirstRefusal(candidates)
+	var (
+		refused domain.Invocation
+		err     error
+	)
+	if first.RefusalRule.IsZero() {
+		refused, err = planned.NotInScope(first.RefusalReason, now)
+	} else {
+		refused, err = planned.Refuse(first.RefusalRule, first.RefusalReason, now)
+	}
+	return refused, candidates, err
 }
 
 // Loud says whether starting this check needs `admin` rather than `write` —

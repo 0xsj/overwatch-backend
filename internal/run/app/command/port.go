@@ -20,6 +20,10 @@ type Repository interface {
 	SaveInvocation(ctx context.Context, i domain.Invocation) error
 	Invocations(ctx context.Context, run id.ID) ([]domain.Invocation, error)
 
+	// AddCandidate is idempotent on (invocation, kind, value). A resolution
+	// that runs twice must not double the coverage denominator — decisions/0039.
+	AddCandidate(ctx context.Context, c domain.Candidate) error
+
 	AddArtifact(ctx context.Context, a domain.Artifact) error
 }
 
@@ -102,7 +106,29 @@ type Extraction struct {
 	ArtifactID   id.ID
 	ToolID       id.ID
 	Body         []byte
-	ObservedAt   time.Time
+
+	// MediaType is the SAME string that goes on the artifact, from the same
+	// read of the argv. It travels with the bytes because what they are is a
+	// fact about the command, and the reader on the other side has no other way
+	// to know whether it is holding JSON records or lines.
+	MediaType  string
+	ObservedAt time.Time
+}
+
+// Observed is the port into `observation` that a DOWNSTREAM step needs —
+// decisions/0039 Section 3. `run` may not import it (peers), so the composition
+// root adapts it.
+//
+// It answers VALUES rather than observations, because a candidate is a subject
+// and pulling every field read out of an artifact to group it in Go would move
+// the group-by out of the database. The union of several feeders happens here
+// because the query answers per invocation, and [domain.DistinctValues] is
+// where it is folded and ordered.
+type Observed interface {
+	// Subjects answers the distinct subject values these invocations observed,
+	// filtered to one kind. An empty result is "they found nothing of that
+	// kind", which is why the step it feeds becomes `skipped` and not `failed`.
+	Subjects(ctx context.Context, workspace id.ID, invocations []id.ID, kind string) ([]string, error)
 }
 
 type Transactor interface {

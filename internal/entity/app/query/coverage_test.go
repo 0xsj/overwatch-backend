@@ -16,6 +16,15 @@ import (
 
 var now = time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
 
+// permitsNothing answers the spawn gate with silence. These tests are about
+// COVERAGE, and a canvas facet firing inside them would be a fixture rather than
+// a measurement — the same reason `memory.Store` returns no derivations.
+type permitsNothing struct{}
+
+func (permitsNothing) Permitted(context.Context, id.ID, id.ID, []query.Subject) (map[query.Subject]bool, error) {
+	return map[query.Subject]bool{}, nil
+}
+
 func nonZero(b byte) id.ID {
 	var out id.ID
 	out[0] = b
@@ -72,7 +81,7 @@ func world(t *testing.T, kinds []string, cs checks, ch checked) (*query.Graph, [
 		}
 		out = append(out, stored)
 	}
-	return query.NewGraph(store, cs, ch), out
+	return query.NewGraph(store, permitsNothing{}, cs, ch), out
 }
 
 func report(t *testing.T, g *query.Graph) query.Report {
@@ -182,7 +191,7 @@ func TestTheHumanCheckNeverGoesStale(t *testing.T) {
 		domain.ByRule, nonZero(9), 0, false, "b", now)
 	store.Attribute(ctx, a)
 
-	g := query.NewGraph(store, cs, checked(nil))
+	g := query.NewGraph(store, permitsNothing{}, cs, checked(nil))
 	got, err := g.Compute(ctx, nonZero(ws), id.ID{}, now, 0)
 	if err != nil {
 		t.Fatal(err)

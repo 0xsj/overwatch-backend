@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"testing"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/org/app/command"
 	"github.com/0xsj/overwatch-backend/internal/org/domain"
@@ -81,7 +82,8 @@ func TestTheSameAccountCannotBeProvisionedIntoOneOrgTwice(t *testing.T) {
 		t.Fatalf("a second org of the same name was refused: %v", err)
 	}
 	// But one account cannot hold two live memberships of one org.
-	dup, err := domain.NewMember(ids.NewID(), first.Org.ID, owner, domain.RoleOwner, first.Org.CreatedAt)
+	dup, err := domain.NewMember(ids.NewID(), first.Org.ID, owner, domain.RoleOwner,
+		time.Time{}, first.Org.CreatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,12 +22,19 @@ type API struct {
 	// mail limits the two endpoints that send one. Nil disables the charge,
 	// which is a test's business and never a deployment's.
 	mail *limit.Limiter
-	log  *slog.Logger
+
+	// guesses is a SEPARATE limiter from `mail` because the two are protecting
+	// against different things at different rates. `mail` stops this domain
+	// being used to post to arbitrary addresses; this stops credential stuffing
+	// against a known address list — and a person mistyping their password
+	// three times must not be spending the same budget as a mail send.
+	guesses *limit.Limiter
+	log     *slog.Logger
 }
 
 func NewAPI(registrar *command.Registrar, auth *command.Authenticator,
 	verifier *command.Verifier, settings *command.Settings, sessions *query.Sessions,
-	mail *limit.Limiter, log *slog.Logger) *API {
+	mail, guesses *limit.Limiter, log *slog.Logger) *API {
 	if registrar == nil || auth == nil || verifier == nil || settings == nil || sessions == nil {
 		panic("identity: NewAPI with a nil dependency")
 	}
@@ -35,7 +42,7 @@ func NewAPI(registrar *command.Registrar, auth *command.Authenticator,
 		log = slog.New(slog.DiscardHandler)
 	}
 	return &API{registrar: registrar, auth: auth, verifier: verifier,
-		settings: settings, sessions: sessions, mail: mail, log: log}
+		settings: settings, sessions: sessions, mail: mail, guesses: guesses, log: log}
 }
 
 // Routes names resources, not verbs. `POST /v1/accounts` creates an account the

@@ -8,6 +8,7 @@ import (
 	checkcmd "github.com/0xsj/overwatch-backend/internal/check/app/command"
 	checkdomain "github.com/0xsj/overwatch-backend/internal/check/domain"
 	toolquery "github.com/0xsj/overwatch-backend/internal/tool/app/query"
+	tooldomain "github.com/0xsj/overwatch-backend/internal/tool/domain"
 	"github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
@@ -149,21 +150,43 @@ func checkDraft(in checkRequest) (checkdomain.Draft, error) {
 // four lines because the port asks the narrowest question there is.
 type toolbox struct{ tools *toolquery.Tools }
 
-func (t toolbox) Exists(ctx context.Context, org, tool id.ID) (bool, error) {
+// Feeds answers what a tool DEALS IN, and whether it exists at all. The two come
+// from one row, so a chain editor's save costs one read per step rather than
+// two — and `check` gets both answers in its own vocabulary, never `tool`'s
+// type.
+func (t toolbox) Feeds(ctx context.Context, org, tool id.ID) (checkdomain.Feeds, bool, error) {
 	found, err := t.tools.ByID(ctx, org, tool)
 	if err != nil {
 		if errors.IsKind(err, errors.NotFound) {
 			// Not found is an ANSWER here, not a failure. Returning the error
 			// would make a step naming a deleted tool a 404 on the whole save
 			// rather than a message about that step.
-			return false, nil
+			return checkdomain.Feeds{}, false, nil
 		}
-		return false, err
+		return checkdomain.Feeds{}, false, err
 	}
-	// An ARCHIVED tool is not available to a new chain. It stays in the chains
-	// that already name it — every run that happened names it too — but a check
-	// edited today may not reach for one.
-	return !found.Archived(), nil
+	if found.Archived() {
+		// An ARCHIVED tool is not available to a new chain. It stays in the
+		// chains that already name it — every run that happened names it too —
+		// but a check edited today may not reach for one.
+		return checkdomain.Feeds{}, false, nil
+	}
+	// FeedNone spells itself as the empty string, which is exactly what
+	// `TypeLegal` reads as "produces nothing" and "cannot be fed".
+	return checkdomain.Feeds{
+		Consumes: feedWord(found.Consumes),
+		Produces: feedWord(found.Produces),
+	}, true, nil
+}
+
+// feedWord turns `tool`'s enum into check's plain string. `FeedNone` becomes
+// empty rather than the word "none", because empty is what the domain's rule
+// tests and a sentinel word would need translating in two places.
+func feedWord(f tooldomain.Feed) string {
+	if f == tooldomain.FeedNone {
+		return ""
+	}
+	return f.String()
 }
 
 func (m *me) listChecks(w http.ResponseWriter, r *http.Request) {

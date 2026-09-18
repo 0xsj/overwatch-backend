@@ -53,6 +53,84 @@ returning id, workspace_id, kind, value, origin, first_seen, last_seen,
           observations, judgement_state, judgement_by, judgement_at,
           judgement_reason, created_at, read_at, read_by, (xmax = 0) as inserted;
 
+-- name: RootsPerFragment :many
+-- How many DISTINCT ROOT ENTITIES have an accepted attribution to each of these
+-- fragments — decisions/0044 §2's `seen elsewhere`.
+--
+-- **WITHIN ONE WORKSPACE, and it cannot be otherwise.** `entity.fragment` is
+-- (workspace, kind, value), so a fragment does not exist across engagements at
+-- all; what this finds is one client's two subsidiaries sharing a host.
+--
+-- Crossing a workspace was refused in 0044 §2 and the reason is a disclosure:
+-- an analyst on one engagement holding `none` on another must not learn that
+-- other engagement exists.
+select fragment_id, count(distinct entity_id)::int as roots
+from entity.attribution
+where workspace_id = $1
+  and state = 'accepted'
+  and fragment_id = any(sqlc.arg(fragments)::uuid[])
+group by fragment_id;
+
+-- name: DerivationsAmong :many
+-- Every edge BETWEEN THESE FRAGMENTS — decisions/0044 §1. Both ends must be on
+-- the canvas: drawing an edge to a node that is not there implies the picture is
+-- complete and the reader cannot see why the line stops.
+select id, workspace_id, from_fragment_id, to_fragment_id, label,
+       invocation_id, artifact_id, mapping_id, created_at
+from entity.derivation
+where workspace_id = $1
+  and from_fragment_id = any(sqlc.arg(fragments)::uuid[])
+  and to_fragment_id = any(sqlc.arg(fragments)::uuid[])
+order by created_at;
+
+-- name: FragmentForValue :one
+-- THE LOOKUP A DERIVATION'S `from` RESOLVES THROUGH — decisions/0040 §5.
+--
+-- The value is folded by the ADAPTER, not by the caller and not here. The
+-- column is folded, `entity.domain.Fold` is the one function that decides what
+-- "the same host" means, and the store is the single door every lookup goes
+-- through — so a caller cannot forget, and there is no `lower()` here competing
+-- with a Go function for the definition.
+select id, workspace_id, kind, value, origin, first_seen, last_seen,
+       observations, judgement_state, judgement_by, judgement_at,
+       judgement_reason, created_at, read_at, read_by
+from entity.fragment where workspace_id = $1 and kind = $2 and value = $3;
+
+-- name: InsertDerivation :exec
+-- `0003`'s second edge kind. ON CONFLICT DO NOTHING against `derivation_once`:
+-- the outbox is at-least-once (0007) and a redelivered extraction must not
+-- double the graph.
+insert into entity.derivation (
+    id, workspace_id, from_fragment_id, to_fragment_id, label,
+    invocation_id, artifact_id, mapping_id, created_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+on conflict (from_fragment_id, to_fragment_id, label, invocation_id) do nothing;
+
+-- name: InsertUnresolved :exec
+insert into entity.derivation_unresolved (
+    id, workspace_id, invocation_id, mapping_id, to_fragment_id,
+    from_kind, from_value, from_raw, label, created_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+on conflict (invocation_id, to_fragment_id, from_value, label) do nothing;
+
+-- name: DerivationsForFragment :many
+-- BOTH DIRECTIONS in one read. The canvas draws outward from a fragment and
+-- does not care which end it is; two queries would make the caller union them
+-- and get the ordering wrong.
+select id, workspace_id, from_fragment_id, to_fragment_id, label,
+       invocation_id, artifact_id, mapping_id, created_at
+from entity.derivation
+where workspace_id = $1 and (from_fragment_id = $2 or to_fragment_id = $2)
+order by created_at desc
+limit sqlc.arg(page)::int;
+
+-- name: UnresolvedForInvocation :many
+select id, workspace_id, invocation_id, mapping_id, to_fragment_id,
+       from_kind, from_value, from_raw, label, created_at
+from entity.derivation_unresolved
+where workspace_id = $1 and invocation_id = $2
+order by from_value;
+
 -- name: FragmentByID :one
 select id, workspace_id, kind, value, origin, first_seen, last_seen,
        observations, judgement_state, judgement_by, judgement_at,
@@ -129,3 +207,25 @@ limit sqlc.arg(page)::int;
 update entity.fragment
 set read_at = $3, read_by = $4
 where id = $1 and workspace_id = $2;
+
+-- name: AllAssets :many
+-- Reads the VIEW, which is the point of the view: the word and the query are the
+-- same object — 0009.
+select id, workspace_id, kind, value, origin, first_seen, last_seen, observations,
+       judgement_state, judgement_by, judgement_at, judgement_reason, created_at,
+       read_at, read_by,
+       attribution_id, claimant, basis, root_entity_id, target_id
+from entity.asset
+where workspace_id = $1
+  and (sqlc.narg(target)::uuid is null or target_id = sqlc.narg(target)::uuid)
+order by last_seen desc nulls last, value;
+
+-- name: AcceptedFragmentsForTarget :many
+-- Includes non-asset kinds, such as documents, while retaining target and
+-- workspace isolation. Proposed and rejected connections supply no attribution.
+select distinct a.fragment_id
+from entity.attribution a
+join entity.entity e on e.id = a.entity_id and e.workspace_id = a.workspace_id
+join entity.fragment f on f.id = a.fragment_id and f.workspace_id = a.workspace_id
+where a.workspace_id = $1 and e.target_id = $2 and a.state = 'accepted'
+order by a.fragment_id;

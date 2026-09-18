@@ -54,7 +54,12 @@ type toolResponse struct {
 type addMappingRequest struct {
 	Field      string `json:"field"`
 	Expression string `json:"expression"`
-	Promote    bool   `json:"promote"`
+
+	// Role is what this mapping is FOR — decisions/0040. Absent means
+	// `attribute`, which is the harmless one: a mapping nobody thought about
+	// reads a value and changes nothing else.
+	Role    string `json:"role"`
+	Promote bool   `json:"promote"`
 }
 
 type mappingResponse struct {
@@ -64,7 +69,12 @@ type mappingResponse struct {
 	Expression string `json:"expression"`
 	Version    int    `json:"version"`
 	State      string `json:"state"`
-	CreatedAt  string `json:"created_at"`
+
+	// Role is ALWAYS present, including `attribute`. Omitting the default
+	// would make a client guess, and the guess would be right until somebody
+	// changed the default.
+	Role      string `json:"role"`
+	CreatedAt string `json:"created_at"`
 }
 
 func asTool(t tooldomain.Tool) toolResponse {
@@ -82,6 +92,7 @@ func asMapping(m tooldomain.Mapping) mappingResponse {
 	return mappingResponse{
 		MappingID: m.ID.String(), ToolID: m.ToolID.String(), Field: m.Field,
 		Expression: m.Expression, Version: m.Version, State: m.State.String(),
+		Role:      m.Role.String(),
 		CreatedAt: m.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
@@ -242,8 +253,20 @@ func (m *me) addMapping(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &in) {
 		return
 	}
+	// An ABSENT role is `attribute` and an UNKNOWN one is refused. Defaulting
+	// an unrecognised string would silently downgrade a `derived_from` a client
+	// spelled wrong into a mapping that reads a value and draws nothing.
+	role := tooldomain.RoleAttribute
+	if in.Role != "" {
+		parsed, err := tooldomain.ParseRole(in.Role)
+		if err != nil {
+			httpx.Fail(m.log, w, r, err)
+			return
+		}
+		role = parsed
+	}
 	added, err := m.mappingsCmd.Draft(r.Context(), org, tool, caller,
-		in.Field, in.Expression, in.Promote)
+		in.Field, in.Expression, role, in.Promote)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return

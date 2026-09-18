@@ -33,21 +33,21 @@ insert into run.invocation (
     id, run_id, workspace_id, step_id, tool_id, sequence, phase,
     argv, binary_path, exit_code, signal, refusal_rule, refusal_reason,
     skipped_because, unavailable, started_at, finished_at, duration_ms, permit_rule,
-    subject_kind, subject_value
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21);
+    feeds
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20);
 
 -- name: InvocationsForRun :many
 select id, run_id, workspace_id, step_id, tool_id, sequence, phase,
        argv, binary_path, exit_code, signal, refusal_rule, refusal_reason,
        skipped_because, unavailable, started_at, finished_at, duration_ms, permit_rule,
-       subject_kind, subject_value
+       feeds
 from run.invocation where run_id = $1 order by sequence;
 
 -- name: InvocationByID :one
 select id, run_id, workspace_id, step_id, tool_id, sequence, phase,
        argv, binary_path, exit_code, signal, refusal_rule, refusal_reason,
        skipped_because, unavailable, started_at, finished_at, duration_ms, permit_rule,
-       subject_kind, subject_value
+       feeds
 from run.invocation where id = $1 and workspace_id = $2;
 
 -- name: SaveInvocation :execrows
@@ -109,7 +109,7 @@ for update of r skip locked;
 select id, run_id, workspace_id, step_id, tool_id, sequence, phase,
        argv, binary_path, exit_code, signal, refusal_rule, refusal_reason,
        skipped_because, unavailable, started_at, finished_at, duration_ms, permit_rule,
-       subject_kind, subject_value
+       feeds
 from run.invocation
 where workspace_id = $1 and refusal_rule = $2
 order by finished_at desc
@@ -126,16 +126,20 @@ limit sqlc.arg(page)::int;
 -- A REFUSED invocation is deliberately not a check. The scope gate said no, so
 -- nothing looked — which is `never`, and rendering it as checked would make a
 -- refusal look like coverage.
-select r.check_id, i.subject_kind, i.subject_value,
+select r.check_id, c.kind as subject_kind, c.value as subject_value,
        max(i.finished_at)::timestamptz as last_checked
-from run.invocation i
+from run.candidate c
+join run.invocation i on i.id = c.invocation_id
 join run.run r on r.id = i.run_id
-where i.workspace_id = $1
-  and i.subject_value is not null
+where c.workspace_id = $1
+  -- PERMITTED ONLY. A refused candidate is a scope proof, not a measurement:
+  -- nothing looked at it, so it is `never`, and crediting it would make a wall
+  -- read as coverage — decisions/0039 Section 2, and 0037's rule unchanged.
+  and c.permitted
   and i.finished_at is not null
   and i.phase in ('ok', 'failed')
   and (sqlc.narg(target)::uuid is null or r.target_id = sqlc.narg(target)::uuid)
-group by r.check_id, i.subject_kind, i.subject_value;
+group by r.check_id, c.kind, c.value;
 
 -- name: InvocationChecks :many
 -- Which CHECK each invocation belonged to — the other half of coverage's join,
@@ -146,6 +150,54 @@ from run.invocation i
 join run.run r on r.id = i.run_id
 where i.workspace_id = $1
   and (sqlc.narg(target)::uuid is null or r.target_id = sqlc.narg(target)::uuid);
+
+-- name: InsertCandidate :exec
+-- One row per thing a step was aimed at — decisions/0039.
+--
+-- ON CONFLICT DO NOTHING against (invocation_id, kind, value): a resolution that
+-- runs twice must not double the coverage denominator, and the second write is
+-- byte-identical to the first because both come from the same gate answer.
+insert into run.candidate (
+    id, workspace_id, run_id, invocation_id, kind, value,
+    permitted, refusal_rule, refusal_reason, created_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+on conflict (invocation_id, kind, value) do nothing;
+
+-- name: CandidatesForRun :many
+select id, workspace_id, run_id, invocation_id, kind, value,
+       permitted, refusal_rule, refusal_reason, created_at
+from run.candidate where run_id = $1 order by invocation_id, value;
+
+-- name: RefusedCandidatesForRule :many
+-- The per-candidate half of the scope proof. `RefusalsForRule` answers which
+-- whole STEPS a rule refused; this answers which THINGS it refused inside a step
+-- that ran anyway — which is the case that exists at all only because of 0039.
+select id, workspace_id, run_id, invocation_id, kind, value,
+       permitted, refusal_rule, refusal_reason, created_at
+from run.candidate
+where workspace_id = $1 and refusal_rule = $2
+order by created_at desc
+limit sqlc.arg(page)::int;
+
+-- name: ToolsThatCouldNotStart :many
+-- `execx` writes `unavailable` when a tool could not be run AT ALL — off PATH,
+-- not executable — and CLAUDE.md's `health` noun exists because the alternative
+-- looks exactly like silence: the run finishes, the record is complete, and
+-- nothing was looked at.
+--
+-- GROUPED BY TOOL AND REASON, so one tool off PATH across forty invocations is
+-- one symptom with a count rather than forty rows.
+select tool_id, unavailable, count(*)::int as seen,
+       min(finished_at)::timestamptz as since
+from run.invocation
+where workspace_id = $1 and unavailable is not null and unavailable <> ''
+group by tool_id, unavailable
+order by seen desc;
+
+-- name: InvocationsConsidered :one
+-- The DENOMINATOR for the probe above. A clean result means nothing without it:
+-- "no tool failed to start, out of nought invocations" is not a measurement.
+select count(*)::int from run.invocation where workspace_id = $1;
 
 -- name: LastStartedPerPair :many
 -- The newest START of each (target, check) — decisions/0038 §5.

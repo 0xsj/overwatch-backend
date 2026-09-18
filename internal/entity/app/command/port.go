@@ -19,6 +19,16 @@ type Repository interface {
 	JudgeFragment(ctx context.Context, f domain.Fragment) error
 	MarkRead(ctx context.Context, f domain.Fragment) error
 
+	// Draw and RecordUnresolved are both idempotent on redelivery — the outbox
+	// is at-least-once (0007) and a redelivered extraction must not double the
+	// graph. The unique indexes are what say so.
+	Draw(ctx context.Context, d domain.Derivation) error
+	RecordUnresolved(ctx context.Context, u domain.Unresolved) error
+	// FragmentFor is the LOOKUP a derivation's `from` resolves through. It
+	// answers `false` rather than an error when nothing matches, because a
+	// provenance nobody can resolve is an ordinary state and 0040 §5 records it.
+	FragmentFor(ctx context.Context, workspace id.ID, kind, value string) (domain.Fragment, bool, error)
+
 	Attribute(ctx context.Context, a domain.Attribution) error
 	AttributionByID(ctx context.Context, workspace, want id.ID) (domain.Attribution, error)
 	Decide(ctx context.Context, a domain.Attribution) error
@@ -39,6 +49,34 @@ type Subject struct {
 	Value    string
 	Count    int
 	LastSeen time.Time
+}
+
+// Provenances is the port into `observation` for what each record was READ OUT
+// OF — decisions/0040 §4.
+//
+// It is a SECOND port rather than a widening of [Subjects], because the two ask
+// different questions: that one groups a delivery's readings into distinct
+// subjects, this one keeps them per record — an edge is per record and grouping
+// would destroy exactly the pairing it exists to carry.
+type Provenances interface {
+	ForInvocation(ctx context.Context, workspace, invocation id.ID) ([]Provenance, error)
+}
+
+// Provenance is one record's *"this was read out of that"*.
+//
+// **FromKind is filled by the composition root, not by `observation`.** It is
+// the tool's `consumes` — 0040 §3 — and reading it off the value's shape would
+// be the observation/fact error one level down.
+type Provenance struct {
+	SubjectKind  string
+	SubjectValue string
+
+	FromKind  string
+	FromValue string
+
+	Label      string
+	MappingID  id.ID
+	ArtifactID id.ID
 }
 
 // Runs resolves which TARGET an invocation was against — invocation → run →

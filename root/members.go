@@ -16,6 +16,11 @@ import (
 
 type changeRoleRequest struct {
 	Role string `json:"role"`
+
+	// SeatUntil is required when moving somebody TO `guest` or `client` — owed
+	// item D. Absent for every other role, and sending one is refused rather
+	// than ignored: a date that does nothing is a promise a screen would show.
+	SeatUntil string `json:"seat_until"`
 }
 
 type renameOrgRequest struct {
@@ -36,7 +41,12 @@ func (m *me) changeRole(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
-	if err := m.membership.ChangeRole(r.Context(), caller, org, account, role); err != nil {
+	until, err := onlyDate(in.SeatUntil)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	if err := m.membership.ChangeRole(r.Context(), caller, org, account, role, until); err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}

@@ -47,6 +47,31 @@ type EntityAttribution struct {
 	CreatedAt   pgtype.Timestamptz
 }
 
+type EntityDerivation struct {
+	ID             pgtype.UUID
+	WorkspaceID    pgtype.UUID
+	FromFragmentID pgtype.UUID
+	ToFragmentID   pgtype.UUID
+	Label          string
+	InvocationID   pgtype.UUID
+	ArtifactID     pgtype.UUID
+	MappingID      pgtype.UUID
+	CreatedAt      pgtype.Timestamptz
+}
+
+type EntityDerivationUnresolved struct {
+	ID           pgtype.UUID
+	WorkspaceID  pgtype.UUID
+	InvocationID pgtype.UUID
+	MappingID    pgtype.UUID
+	ToFragmentID pgtype.UUID
+	FromKind     string
+	FromValue    string
+	FromRaw      string
+	Label        string
+	CreatedAt    pgtype.Timestamptz
+}
+
 type EntityEntity struct {
 	ID              pgtype.UUID
 	WorkspaceID     pgtype.UUID

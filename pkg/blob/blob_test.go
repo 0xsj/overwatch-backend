@@ -151,6 +151,46 @@ func TestAMissingBlobIsNotFoundAndNotAFailure(t *testing.T) {
 	}
 }
 
+func TestRemoveDeletesOnlyTheRequestedBlobAndIsIdempotenceAware(t *testing.T) {
+	root := t.TempDir()
+	s, _ := blob.New(root)
+	ctx := context.Background()
+	one, err := s.Put(ctx, strings.NewReader("one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := s.Put(ctx, strings.NewReader("two"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Remove(ctx, one.Ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Stat(ctx, one.Ref); !errors.Is(err, blob.ErrNotFound) {
+		t.Fatalf("removed blob still exists: %v", err)
+	}
+	if _, err := s.Stat(ctx, two.Ref); err != nil {
+		t.Fatalf("remove touched a different blob: %v", err)
+	}
+	if err := s.Remove(ctx, one.Ref); !errors.Is(err, blob.ErrNotFound) {
+		t.Fatalf("second remove gave %v, want ErrNotFound", err)
+	}
+}
+
+func TestRemoveRefusesMalformedReferences(t *testing.T) {
+	s := store(t)
+	for _, ref := range []blob.Ref{
+		{},
+		{Algo: "md5", Hex: strings.Repeat("0f", 32)},
+		{Algo: blob.Algo, Hex: "../" + strings.Repeat("0f", 30)},
+	} {
+		if err := s.Remove(context.Background(), ref); !errors.Is(err, blob.ErrBadRef) {
+			t.Errorf("Remove(%+v) gave %v, want ErrBadRef", ref, err)
+		}
+	}
+}
+
 func TestARefIsParsedStrictlyOrRefused(t *testing.T) {
 	good := "sha256:" + strings.Repeat("0f", 32)
 	ref, err := blob.ParseRef(good)

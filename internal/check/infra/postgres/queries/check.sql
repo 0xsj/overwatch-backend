@@ -57,6 +57,28 @@ delete from checks.flow where check_id = $1;
 -- name: InsertFlow :exec
 insert into checks.flow (check_id, from_step, to_step) values ($1, $2, $3);
 
+-- name: ChecksThatCannotRun :many
+-- Enabled, on a clock, and CHAINLESS — so the scheduler skips it every tick,
+-- forever. `0038` stopped one of these holding the head of the queue; it still
+-- never runs, and a coverage grid counts its column as `never attempted`
+-- without ever saying why.
+--
+-- `human` is EXCLUDED: `READ BY YOU` is the check with no chain by design, and
+-- reporting the one intentionally chainless check as broken would train a reader
+-- to ignore this list — 0037 §3 made `human` a flag for exactly this reason.
+select c.id, c.name, c.interval_seconds
+from checks.check c
+where c.org_id = $1
+  and c.status <> 'archived'
+  and c.enabled
+  and not c.human
+  and c.interval_seconds > 0
+  and not exists (select 1 from checks.step s where s.check_id = c.id)
+order by c.name;
+
+-- name: ChecksConsidered :one
+select count(*)::int from checks.check where org_id = $1 and status <> 'archived';
+
 -- name: ChecksUsingTool :many
 -- What archiving a tool has to ask, and the reason the chain is rows rather than
 -- a jsonb column — 0032. A blob answers this with a scan and a parse.

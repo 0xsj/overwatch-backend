@@ -105,7 +105,11 @@ func TestRemovalRevokesGrantsAndDemotionDoesNot(t *testing.T) {
 	}
 
 	// A demotion keeps the row and caps the level.
-	if res := s.do(t, http.MethodPatch, seat, `{"role":"client"}`, ownerAuth); res.StatusCode != http.StatusNoContent {
+	// `seat_until` is REQUIRED when moving somebody to a time-boxed role —
+	// owed item D. Without it this is a 400, which is the rule rather than an
+	// inconvenience: a client with no end date is what the rule exists to stop.
+	if res := s.do(t, http.MethodPatch, seat,
+		`{"role":"client","seat_until":"2027-01-01"}`, ownerAuth); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("demote: %d", res.StatusCode)
 	}
 	if grants() != 1 {
@@ -221,4 +225,35 @@ func TestRenamingTheFirm(t *testing.T) {
 		t.Errorf("the rename recorded %q -> %q", from, to)
 	}
 	_ = kit
+}
+
+// Self-removal is allowed, but that exception must not grant authority to
+// rewrite a role. Exercise the HTTP path, including its "me" account alias.
+func TestMemberCannotPromoteTheirOwnRoleThroughHTTP(t *testing.T) {
+	s := tracedSystem(t)
+	org, _, _, member, _, memberAuth := firm(t, s, orgdomain.RoleMember)
+	for _, account := range []string{member.String(), "me"} {
+		res := s.do(t, http.MethodPatch, "/v1/orgs/"+org.String()+"/members/"+account,
+			`{"role":"admin"}`, memberAuth)
+		res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("self role change through %s: %d, want 404", account, res.StatusCode)
+		}
+	}
+	found := false
+	for _, held := range s.me(t, memberAuth).Orgs {
+		if held.OrgID == org.String() {
+			found = true
+			if held.Role != "member" {
+				t.Fatalf("rejected request changed the member to %q", held.Role)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("rejected role change removed the membership")
+	}
+	s.drain(t)
+	if n := s.counted(t, `select count(*) from audit.entry where action = $1`, orgdomain.EventRoleChanged); n != 0 {
+		t.Fatalf("rejected self-promotion published %d role-change events", n)
+	}
 }

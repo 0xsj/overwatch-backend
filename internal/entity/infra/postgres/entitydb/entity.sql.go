@@ -11,6 +11,101 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const acceptedFragmentsForTarget = `-- name: AcceptedFragmentsForTarget :many
+select distinct a.fragment_id
+from entity.attribution a
+join entity.entity e on e.id = a.entity_id and e.workspace_id = a.workspace_id
+join entity.fragment f on f.id = a.fragment_id and f.workspace_id = a.workspace_id
+where a.workspace_id = $1 and e.target_id = $2 and a.state = 'accepted'
+order by a.fragment_id
+`
+
+type AcceptedFragmentsForTargetParams struct {
+	WorkspaceID pgtype.UUID
+	TargetID    pgtype.UUID
+}
+
+// Includes non-asset kinds, such as documents, while retaining target and
+// workspace isolation. Proposed and rejected connections supply no attribution.
+func (q *Queries) AcceptedFragmentsForTarget(ctx context.Context, arg AcceptedFragmentsForTargetParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, acceptedFragmentsForTarget, arg.WorkspaceID, arg.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var fragment_id pgtype.UUID
+		if err := rows.Scan(&fragment_id); err != nil {
+			return nil, err
+		}
+		items = append(items, fragment_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const allAssets = `-- name: AllAssets :many
+select id, workspace_id, kind, value, origin, first_seen, last_seen, observations,
+       judgement_state, judgement_by, judgement_at, judgement_reason, created_at,
+       read_at, read_by,
+       attribution_id, claimant, basis, root_entity_id, target_id
+from entity.asset
+where workspace_id = $1
+  and ($2::uuid is null or target_id = $2::uuid)
+order by last_seen desc nulls last, value
+`
+
+type AllAssetsParams struct {
+	WorkspaceID pgtype.UUID
+	Target      pgtype.UUID
+}
+
+// Reads the VIEW, which is the point of the view: the word and the query are the
+// same object — 0009.
+func (q *Queries) AllAssets(ctx context.Context, arg AllAssetsParams) ([]EntityAsset, error) {
+	rows, err := q.db.Query(ctx, allAssets, arg.WorkspaceID, arg.Target)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EntityAsset{}
+	for rows.Next() {
+		var i EntityAsset
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Kind,
+			&i.Value,
+			&i.Origin,
+			&i.FirstSeen,
+			&i.LastSeen,
+			&i.Observations,
+			&i.JudgementState,
+			&i.JudgementBy,
+			&i.JudgementAt,
+			&i.JudgementReason,
+			&i.CreatedAt,
+			&i.ReadAt,
+			&i.ReadBy,
+			&i.AttributionID,
+			&i.Claimant,
+			&i.Basis,
+			&i.RootEntityID,
+			&i.TargetID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const assets = `-- name: Assets :many
 select id, workspace_id, kind, value, origin, first_seen, last_seen, observations,
        judgement_state, judgement_by, judgement_at, judgement_reason, created_at,
@@ -226,6 +321,102 @@ func (q *Queries) DecideAttribution(ctx context.Context, arg DecideAttributionPa
 	return result.RowsAffected(), nil
 }
 
+const derivationsAmong = `-- name: DerivationsAmong :many
+select id, workspace_id, from_fragment_id, to_fragment_id, label,
+       invocation_id, artifact_id, mapping_id, created_at
+from entity.derivation
+where workspace_id = $1
+  and from_fragment_id = any($2::uuid[])
+  and to_fragment_id = any($2::uuid[])
+order by created_at
+`
+
+type DerivationsAmongParams struct {
+	WorkspaceID pgtype.UUID
+	Fragments   []pgtype.UUID
+}
+
+// Every edge BETWEEN THESE FRAGMENTS — decisions/0044 §1. Both ends must be on
+// the canvas: drawing an edge to a node that is not there implies the picture is
+// complete and the reader cannot see why the line stops.
+func (q *Queries) DerivationsAmong(ctx context.Context, arg DerivationsAmongParams) ([]EntityDerivation, error) {
+	rows, err := q.db.Query(ctx, derivationsAmong, arg.WorkspaceID, arg.Fragments)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EntityDerivation{}
+	for rows.Next() {
+		var i EntityDerivation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.FromFragmentID,
+			&i.ToFragmentID,
+			&i.Label,
+			&i.InvocationID,
+			&i.ArtifactID,
+			&i.MappingID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const derivationsForFragment = `-- name: DerivationsForFragment :many
+select id, workspace_id, from_fragment_id, to_fragment_id, label,
+       invocation_id, artifact_id, mapping_id, created_at
+from entity.derivation
+where workspace_id = $1 and (from_fragment_id = $2 or to_fragment_id = $2)
+order by created_at desc
+limit $3::int
+`
+
+type DerivationsForFragmentParams struct {
+	WorkspaceID    pgtype.UUID
+	FromFragmentID pgtype.UUID
+	Page           int32
+}
+
+// BOTH DIRECTIONS in one read. The canvas draws outward from a fragment and
+// does not care which end it is; two queries would make the caller union them
+// and get the ordering wrong.
+func (q *Queries) DerivationsForFragment(ctx context.Context, arg DerivationsForFragmentParams) ([]EntityDerivation, error) {
+	rows, err := q.db.Query(ctx, derivationsForFragment, arg.WorkspaceID, arg.FromFragmentID, arg.Page)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EntityDerivation{}
+	for rows.Next() {
+		var i EntityDerivation
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.FromFragmentID,
+			&i.ToFragmentID,
+			&i.Label,
+			&i.InvocationID,
+			&i.ArtifactID,
+			&i.MappingID,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const entitiesForWorkspace = `-- name: EntitiesForWorkspace :many
 select id, workspace_id, kind, label, target_id,
        judgement_state, judgement_by, judgement_at, judgement_reason, created_at
@@ -312,6 +503,49 @@ type FragmentByIDParams struct {
 
 func (q *Queries) FragmentByID(ctx context.Context, arg FragmentByIDParams) (EntityFragment, error) {
 	row := q.db.QueryRow(ctx, fragmentByID, arg.ID, arg.WorkspaceID)
+	var i EntityFragment
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Kind,
+		&i.Value,
+		&i.Origin,
+		&i.FirstSeen,
+		&i.LastSeen,
+		&i.Observations,
+		&i.JudgementState,
+		&i.JudgementBy,
+		&i.JudgementAt,
+		&i.JudgementReason,
+		&i.CreatedAt,
+		&i.ReadAt,
+		&i.ReadBy,
+	)
+	return i, err
+}
+
+const fragmentForValue = `-- name: FragmentForValue :one
+select id, workspace_id, kind, value, origin, first_seen, last_seen,
+       observations, judgement_state, judgement_by, judgement_at,
+       judgement_reason, created_at, read_at, read_by
+from entity.fragment where workspace_id = $1 and kind = $2 and value = $3
+`
+
+type FragmentForValueParams struct {
+	WorkspaceID pgtype.UUID
+	Kind        string
+	Value       string
+}
+
+// THE LOOKUP A DERIVATION'S `from` RESOLVES THROUGH — decisions/0040 §5.
+//
+// The value is folded by the ADAPTER, not by the caller and not here. The
+// column is folded, `entity.domain.Fold` is the one function that decides what
+// "the same host" means, and the store is the single door every lookup goes
+// through — so a caller cannot forget, and there is no `lower()` here competing
+// with a Go function for the definition.
+func (q *Queries) FragmentForValue(ctx context.Context, arg FragmentForValueParams) (EntityFragment, error) {
+	row := q.db.QueryRow(ctx, fragmentForValue, arg.WorkspaceID, arg.Kind, arg.Value)
 	var i EntityFragment
 	err := row.Scan(
 		&i.ID,
@@ -431,6 +665,44 @@ func (q *Queries) InsertAttribution(ctx context.Context, arg InsertAttributionPa
 	return err
 }
 
+const insertDerivation = `-- name: InsertDerivation :exec
+insert into entity.derivation (
+    id, workspace_id, from_fragment_id, to_fragment_id, label,
+    invocation_id, artifact_id, mapping_id, created_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+on conflict (from_fragment_id, to_fragment_id, label, invocation_id) do nothing
+`
+
+type InsertDerivationParams struct {
+	ID             pgtype.UUID
+	WorkspaceID    pgtype.UUID
+	FromFragmentID pgtype.UUID
+	ToFragmentID   pgtype.UUID
+	Label          string
+	InvocationID   pgtype.UUID
+	ArtifactID     pgtype.UUID
+	MappingID      pgtype.UUID
+	CreatedAt      pgtype.Timestamptz
+}
+
+// `0003`'s second edge kind. ON CONFLICT DO NOTHING against `derivation_once`:
+// the outbox is at-least-once (0007) and a redelivered extraction must not
+// double the graph.
+func (q *Queries) InsertDerivation(ctx context.Context, arg InsertDerivationParams) error {
+	_, err := q.db.Exec(ctx, insertDerivation,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.FromFragmentID,
+		arg.ToFragmentID,
+		arg.Label,
+		arg.InvocationID,
+		arg.ArtifactID,
+		arg.MappingID,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const insertEntity = `-- name: InsertEntity :exec
 insert into entity.entity (
     id, workspace_id, kind, label, target_id,
@@ -466,6 +738,43 @@ func (q *Queries) InsertEntity(ctx context.Context, arg InsertEntityParams) erro
 		arg.JudgementBy,
 		arg.JudgementAt,
 		arg.JudgementReason,
+		arg.CreatedAt,
+	)
+	return err
+}
+
+const insertUnresolved = `-- name: InsertUnresolved :exec
+insert into entity.derivation_unresolved (
+    id, workspace_id, invocation_id, mapping_id, to_fragment_id,
+    from_kind, from_value, from_raw, label, created_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+on conflict (invocation_id, to_fragment_id, from_value, label) do nothing
+`
+
+type InsertUnresolvedParams struct {
+	ID           pgtype.UUID
+	WorkspaceID  pgtype.UUID
+	InvocationID pgtype.UUID
+	MappingID    pgtype.UUID
+	ToFragmentID pgtype.UUID
+	FromKind     string
+	FromValue    string
+	FromRaw      string
+	Label        string
+	CreatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) InsertUnresolved(ctx context.Context, arg InsertUnresolvedParams) error {
+	_, err := q.db.Exec(ctx, insertUnresolved,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.InvocationID,
+		arg.MappingID,
+		arg.ToFragmentID,
+		arg.FromKind,
+		arg.FromValue,
+		arg.FromRaw,
+		arg.Label,
 		arg.CreatedAt,
 	)
 	return err
@@ -582,6 +891,99 @@ func (q *Queries) RootEntityForTarget(ctx context.Context, targetID pgtype.UUID)
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const rootsPerFragment = `-- name: RootsPerFragment :many
+select fragment_id, count(distinct entity_id)::int as roots
+from entity.attribution
+where workspace_id = $1
+  and state = 'accepted'
+  and fragment_id = any($2::uuid[])
+group by fragment_id
+`
+
+type RootsPerFragmentParams struct {
+	WorkspaceID pgtype.UUID
+	Fragments   []pgtype.UUID
+}
+
+type RootsPerFragmentRow struct {
+	FragmentID pgtype.UUID
+	Roots      int32
+}
+
+// How many DISTINCT ROOT ENTITIES have an accepted attribution to each of these
+// fragments — decisions/0044 §2's `seen elsewhere`.
+//
+// **WITHIN ONE WORKSPACE, and it cannot be otherwise.** `entity.fragment` is
+// (workspace, kind, value), so a fragment does not exist across engagements at
+// all; what this finds is one client's two subsidiaries sharing a host.
+//
+// Crossing a workspace was refused in 0044 §2 and the reason is a disclosure:
+// an analyst on one engagement holding `none` on another must not learn that
+// other engagement exists.
+func (q *Queries) RootsPerFragment(ctx context.Context, arg RootsPerFragmentParams) ([]RootsPerFragmentRow, error) {
+	rows, err := q.db.Query(ctx, rootsPerFragment, arg.WorkspaceID, arg.Fragments)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RootsPerFragmentRow{}
+	for rows.Next() {
+		var i RootsPerFragmentRow
+		if err := rows.Scan(&i.FragmentID, &i.Roots); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const unresolvedForInvocation = `-- name: UnresolvedForInvocation :many
+select id, workspace_id, invocation_id, mapping_id, to_fragment_id,
+       from_kind, from_value, from_raw, label, created_at
+from entity.derivation_unresolved
+where workspace_id = $1 and invocation_id = $2
+order by from_value
+`
+
+type UnresolvedForInvocationParams struct {
+	WorkspaceID  pgtype.UUID
+	InvocationID pgtype.UUID
+}
+
+func (q *Queries) UnresolvedForInvocation(ctx context.Context, arg UnresolvedForInvocationParams) ([]EntityDerivationUnresolved, error) {
+	rows, err := q.db.Query(ctx, unresolvedForInvocation, arg.WorkspaceID, arg.InvocationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []EntityDerivationUnresolved{}
+	for rows.Next() {
+		var i EntityDerivationUnresolved
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.InvocationID,
+			&i.MappingID,
+			&i.ToFragmentID,
+			&i.FromKind,
+			&i.FromValue,
+			&i.FromRaw,
+			&i.Label,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertFragment = `-- name: UpsertFragment :one

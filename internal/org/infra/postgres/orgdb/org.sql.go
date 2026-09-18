@@ -175,8 +175,8 @@ func (q *Queries) InsertGrant(ctx context.Context, arg InsertGrantParams) error 
 const insertInvite = `-- name: InsertInvite :exec
 insert into org.invite (
     id, org_id, email, role, invited_by, workspace_id, level, hash,
-    created_at, expires_at, accepted_at, accepted_by, revoked_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 `
 
 type InsertInviteParams struct {
@@ -193,6 +193,7 @@ type InsertInviteParams struct {
 	AcceptedAt  pgtype.Timestamptz
 	AcceptedBy  pgtype.UUID
 	RevokedAt   pgtype.Timestamptz
+	SeatUntil   pgtype.Timestamptz
 }
 
 func (q *Queries) InsertInvite(ctx context.Context, arg InsertInviteParams) error {
@@ -210,14 +211,16 @@ func (q *Queries) InsertInvite(ctx context.Context, arg InsertInviteParams) erro
 		arg.AcceptedAt,
 		arg.AcceptedBy,
 		arg.RevokedAt,
+		arg.SeatUntil,
 	)
 	return err
 }
 
 const insertMember = `-- name: InsertMember :exec
 insert into org.member (
-    id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    id, org_id, account_id, role, status, version, created_at, updated_at,
+    archived_at, expires_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type InsertMemberParams struct {
@@ -230,6 +233,7 @@ type InsertMemberParams struct {
 	CreatedAt  pgtype.Timestamptz
 	UpdatedAt  pgtype.Timestamptz
 	ArchivedAt pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
 }
 
 func (q *Queries) InsertMember(ctx context.Context, arg InsertMemberParams) error {
@@ -243,6 +247,7 @@ func (q *Queries) InsertMember(ctx context.Context, arg InsertMemberParams) erro
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.ArchivedAt,
+		arg.ExpiresAt,
 	)
 	return err
 }
@@ -275,7 +280,7 @@ func (q *Queries) InsertOrg(ctx context.Context, arg InsertOrgParams) error {
 
 const inviteByHash = `-- name: InviteByHash :one
 select id, org_id, email, role, invited_by, workspace_id, level, hash,
-       created_at, expires_at, accepted_at, accepted_by, revoked_at
+       created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
 from org.invite where hash = $1
 `
 
@@ -296,13 +301,14 @@ func (q *Queries) InviteByHash(ctx context.Context, hash string) (OrgInvite, err
 		&i.AcceptedAt,
 		&i.AcceptedBy,
 		&i.RevokedAt,
+		&i.SeatUntil,
 	)
 	return i, err
 }
 
 const invitesForOrg = `-- name: InvitesForOrg :many
 select id, org_id, email, role, invited_by, workspace_id, level, hash,
-       created_at, expires_at, accepted_at, accepted_by, revoked_at
+       created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
 from org.invite where org_id = $1 order by created_at desc
 `
 
@@ -329,6 +335,7 @@ func (q *Queries) InvitesForOrg(ctx context.Context, orgID pgtype.UUID) ([]OrgIn
 			&i.AcceptedAt,
 			&i.AcceptedBy,
 			&i.RevokedAt,
+			&i.SeatUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -342,7 +349,7 @@ func (q *Queries) InvitesForOrg(ctx context.Context, orgID pgtype.UUID) ([]OrgIn
 
 const liveInviteFor = `-- name: LiveInviteFor :one
 select id, org_id, email, role, invited_by, workspace_id, level, hash,
-       created_at, expires_at, accepted_at, accepted_by, revoked_at
+       created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
 from org.invite
 where org_id = $1 and email = $2 and accepted_at is null and revoked_at is null
 `
@@ -369,12 +376,14 @@ func (q *Queries) LiveInviteFor(ctx context.Context, arg LiveInviteForParams) (O
 		&i.AcceptedAt,
 		&i.AcceptedBy,
 		&i.RevokedAt,
+		&i.SeatUntil,
 	)
 	return i, err
 }
 
 const liveMemberFor = `-- name: LiveMemberFor :one
-select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
+select id, org_id, account_id, role, status, version, created_at, updated_at,
+       archived_at, expires_at
 from org.member
 where org_id = $1 and account_id = $2 and status <> 'archived'
 `
@@ -397,6 +406,7 @@ func (q *Queries) LiveMemberFor(ctx context.Context, arg LiveMemberForParams) (O
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
@@ -439,7 +449,8 @@ func (q *Queries) LockLiveOwners(ctx context.Context, orgID pgtype.UUID) ([]pgty
 }
 
 const memberByID = `-- name: MemberByID :one
-select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
+select id, org_id, account_id, role, status, version, created_at, updated_at,
+       archived_at, expires_at
 from org.member where id = $1
 `
 
@@ -456,12 +467,14 @@ func (q *Queries) MemberByID(ctx context.Context, id pgtype.UUID) (OrgMember, er
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.ExpiresAt,
 	)
 	return i, err
 }
 
 const membersOf = `-- name: MembersOf :many
-select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
+select id, org_id, account_id, role, status, version, created_at, updated_at,
+       archived_at, expires_at
 from org.member
 where org_id = $1 and status <> 'archived'
 order by created_at
@@ -492,6 +505,7 @@ func (q *Queries) MembersOf(ctx context.Context, orgID pgtype.UUID) ([]OrgMember
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ArchivedAt,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -649,8 +663,9 @@ func (q *Queries) UpdateGrant(ctx context.Context, arg UpdateGrantParams) (int64
 
 const updateMember = `-- name: UpdateMember :execrows
 update org.member
-set role = $2, status = $3, version = $4, updated_at = $5, archived_at = $6
-where id = $1 and version = $7
+set role = $2, status = $3, version = $4, updated_at = $5, archived_at = $6,
+    expires_at = $7
+where id = $1 and version = $8
 `
 
 type UpdateMemberParams struct {
@@ -660,6 +675,7 @@ type UpdateMemberParams struct {
 	Version    int32
 	UpdatedAt  pgtype.Timestamptz
 	ArchivedAt pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
 	Version_2  int32
 }
 
@@ -671,6 +687,7 @@ func (q *Queries) UpdateMember(ctx context.Context, arg UpdateMemberParams) (int
 		arg.Version,
 		arg.UpdatedAt,
 		arg.ArchivedAt,
+		arg.ExpiresAt,
 		arg.Version_2,
 	)
 	if err != nil {

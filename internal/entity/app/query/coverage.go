@@ -144,6 +144,19 @@ func (g *Graph) Compute(ctx context.Context, workspace, target id.ID, now time.T
 	if err != nil {
 		return Report{}, err
 	}
+	return g.compute(ctx, workspace, target, now, assets)
+}
+
+// ComputeAll renders coverage over the complete inventory for a deliverable.
+func (g *Graph) ComputeAll(ctx context.Context, workspace, target id.ID, now time.Time) (Report, error) {
+	assets, err := g.AllAssets(ctx, workspace, target)
+	if err != nil {
+		return Report{}, err
+	}
+	return g.compute(ctx, workspace, target, now, assets)
+}
+
+func (g *Graph) compute(ctx context.Context, workspace, target id.ID, now time.Time, assets []domain.Asset) (Report, error) {
 	checks, err := g.checks.ForCoverage(ctx, workspace)
 	if err != nil {
 		return Report{}, err

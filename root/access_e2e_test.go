@@ -17,11 +17,25 @@ import (
 // command exists yet — decisions/0019 defines the roles and says the flow that
 // creates them arrives with the invite. Reaching past the (absent) command is
 // legitimate here: what is under test is the GATE, not how a member got there.
+// seat puts somebody in an org. A TIME-BOXED role gets a date far enough out
+// that no test measures it — owed item D makes `guest` and `client` require one,
+// and a suite about something else must not be a suite about expiry.
+//
+// `seatUntil` is the variant for tests that ARE about it.
 func (s traced) seat(t *testing.T, org, account id.ID, role orgdomain.Role) {
+	t.Helper()
+	until := time.Time{}
+	if role.TimeBoxed() {
+		until = time.Now().Add(365 * 24 * time.Hour)
+	}
+	s.seatUntil(t, org, account, role, until)
+}
+
+func (s traced) seatUntil(t *testing.T, org, account id.ID, role orgdomain.Role, until time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	ids := id.NewV7(clock.System{}, rand.Reader)
-	member, err := orgdomain.NewMember(ids.NewID(), org, account, role, time.Now())
+	member, err := orgdomain.NewMember(ids.NewID(), org, account, role, until, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

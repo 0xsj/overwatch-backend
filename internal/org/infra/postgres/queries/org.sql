@@ -11,15 +11,18 @@ where id = $1 and version = $5;
 
 -- name: InsertMember :exec
 insert into org.member (
-    id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+    id, org_id, account_id, role, status, version, created_at, updated_at,
+    archived_at, expires_at
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
 -- name: MemberByID :one
-select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
+select id, org_id, account_id, role, status, version, created_at, updated_at,
+       archived_at, expires_at
 from org.member where id = $1;
 
 -- name: LiveMemberFor :one
-select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
+select id, org_id, account_id, role, status, version, created_at, updated_at,
+       archived_at, expires_at
 from org.member
 where org_id = $1 and account_id = $2 and status <> 'archived';
 
@@ -30,7 +33,8 @@ where org_id = $1 and account_id = $2 and status <> 'archived';
 --
 -- A former-members read, when something needs one, gets its OWN query — the same
 -- shape workspace uses for ForOrg and AllForOrg. It does not get a boolean.
-select id, org_id, account_id, role, status, version, created_at, updated_at, archived_at
+select id, org_id, account_id, role, status, version, created_at, updated_at,
+       archived_at, expires_at
 from org.member
 where org_id = $1 and status <> 'archived'
 order by created_at;
@@ -44,8 +48,9 @@ order by o.created_at;
 
 -- name: UpdateMember :execrows
 update org.member
-set role = $2, status = $3, version = $4, updated_at = $5, archived_at = $6
-where id = $1 and version = $7;
+set role = $2, status = $3, version = $4, updated_at = $5, archived_at = $6,
+    expires_at = $7
+where id = $1 and version = $8;
 
 -- name: CountLiveOwners :one
 select count(*) from org.member
@@ -83,23 +88,23 @@ delete from org.grant where org_id = $1 and account_id = $2 and workspace_id = $
 -- name: InsertInvite :exec
 insert into org.invite (
     id, org_id, email, role, invited_by, workspace_id, level, hash,
-    created_at, expires_at, accepted_at, accepted_by, revoked_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13);
+    created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
 
 -- name: InviteByHash :one
 select id, org_id, email, role, invited_by, workspace_id, level, hash,
-       created_at, expires_at, accepted_at, accepted_by, revoked_at
+       created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
 from org.invite where hash = $1;
 
 -- name: LiveInviteFor :one
 select id, org_id, email, role, invited_by, workspace_id, level, hash,
-       created_at, expires_at, accepted_at, accepted_by, revoked_at
+       created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
 from org.invite
 where org_id = $1 and email = $2 and accepted_at is null and revoked_at is null;
 
 -- name: InvitesForOrg :many
 select id, org_id, email, role, invited_by, workspace_id, level, hash,
-       created_at, expires_at, accepted_at, accepted_by, revoked_at
+       created_at, expires_at, accepted_at, accepted_by, revoked_at, seat_until
 from org.invite where org_id = $1 order by created_at desc;
 
 -- name: SaveInvite :execrows

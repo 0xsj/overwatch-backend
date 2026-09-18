@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/0xsj/overwatch-backend/pkg/errors"
@@ -181,6 +182,62 @@ func (p *Postgres) Failed(ctx context.Context, ids []id.ID, reason string, retry
 		update outbox set attempts = attempts + 1, last_error = $2, due_at = $3
 		where id = any($1)`, ids, reason, retryAt)
 	return postgres.Translate(ctx, err, "outbox: defer")
+}
+
+// Buried is owed item B, answered at last. This package's own doc says
+//
+//	the row is **buried** — marked dead, left in place, and skipped forever
+//
+// and justifies not closing a race on the grounds that *"a buried outbox row is
+// the alarm"*. Until `health` read them, that alarm was one ERROR line in a log
+// nobody queries — an honest mitigation only if somebody would see it.
+//
+// **Filtered by TENANT**, which is the workspace id provenance carries. A row
+// with no tenant is a chain that started before one was known — registration —
+// and is deliberately not attributed to any engagement rather than to all of
+// them.
+func (p *Postgres) Buried(ctx context.Context, tenant string) ([]Dead, error) {
+	rows, err := p.db.DB(ctx).Query(ctx, `
+		select name, coalesce(last_error, ''), count(*)::int, min(buried_at)
+		from outbox
+		where buried_at is not null and provenance->>'tenant' = $1
+		group by name, last_error
+		order by count(*) desc`, tenant)
+	if err != nil {
+		return nil, fmt.Errorf("outbox: buried: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Dead{}
+	for rows.Next() {
+		var one Dead
+		if err := rows.Scan(&one.Name, &one.LastError, &one.Count, &one.Since); err != nil {
+			return nil, fmt.Errorf("outbox: buried: %w", err)
+		}
+		out = append(out, one)
+	}
+	return out, rows.Err()
+}
+
+// BuriedDepth is the DENOMINATOR — how many rows this engagement has produced
+// at all. "No events gave up" means nothing without it.
+func (p *Postgres) BuriedDepth(ctx context.Context, tenant string) (int, error) {
+	var n int
+	err := p.db.DB(ctx).QueryRow(ctx,
+		`select count(*)::int from outbox where provenance->>'tenant' = $1`, tenant).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("outbox: depth by tenant: %w", err)
+	}
+	return n, nil
+}
+
+// Dead is one class of buried row: which event, why it gave up, how many, and
+// since when. Grouped, because forty rows of one broken handler is one problem.
+type Dead struct {
+	Name      string
+	LastError string
+	Count     int
+	Since     time.Time
 }
 
 func (p *Postgres) Depth(ctx context.Context, now time.Time) (Level, error) {
