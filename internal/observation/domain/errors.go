@@ -27,5 +27,7 @@ var (
 		"this tool has no live mapping for the kind it produces, so nothing it "+
 			"emits can be attached to a subject")
 
-	ErrNotFound = errors.New(errors.NotFound, "observation")
+	ErrNotFound               = errors.New(errors.NotFound, "observation")
+	ErrShareTokenRequired     = errors.New(errors.Invalid, "a citation share needs a token")
+	ErrInvalidShareAccessMode = errors.New(errors.Invalid, "invalid citation share access mode")
 )

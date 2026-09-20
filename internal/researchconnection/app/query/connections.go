@@ -8,10 +8,11 @@ import (
 )
 
 type Reader interface {
-	Page(context.Context, id.ID, id.ID, int) ([]domain.Connection, error)
+	Page(context.Context, id.ID, id.ID, domain.State, domain.ReviewFilter, int) ([]domain.Connection, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Connection, error)
 	Revisions(context.Context, id.ID, id.ID) ([]domain.Revision, error)
 	RevisionByID(context.Context, id.ID, id.ID, id.ID) (domain.Revision, error)
+	Summary(context.Context, id.ID) (domain.BrowseSummary, error)
 }
 
 type Connections struct{ reader Reader }
@@ -33,9 +34,21 @@ type Page struct {
 	NextCursor *id.ID
 }
 
-func (c *Connections) List(ctx context.Context, workspace, before id.ID, limit int) (Page, error) {
+func (c *Connections) List(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int) (Page, error) {
 	if workspace.IsZero() {
 		return Page{}, domain.ErrInvalid
+	}
+	parsedState := state
+	if state != "" {
+		var err error
+		parsedState, err = domain.ParseState(state.String())
+		if err != nil {
+			return Page{}, err
+		}
+	}
+	parsedReview, err := domain.ParseReviewFilter(review.String())
+	if err != nil {
+		return Page{}, err
 	}
 	if limit <= 0 {
 		limit = DefaultPage
@@ -43,7 +56,7 @@ func (c *Connections) List(ctx context.Context, workspace, before id.ID, limit i
 	if limit > MaxPage {
 		limit = MaxPage
 	}
-	rows, err := c.reader.Page(ctx, workspace, before, limit+1)
+	rows, err := c.reader.Page(ctx, workspace, before, parsedState, parsedReview, limit+1)
 	if err != nil {
 		return Page{}, err
 	}
@@ -57,6 +70,13 @@ func (c *Connections) List(ctx context.Context, workspace, before id.ID, limit i
 		out.Items = rows[:limit]
 	}
 	return out, nil
+}
+
+func (c *Connections) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
+	if workspace.IsZero() {
+		return domain.BrowseSummary{}, domain.ErrInvalid
+	}
+	return c.reader.Summary(ctx, workspace)
 }
 
 func (c *Connections) ByID(ctx context.Context, workspace, want id.ID) (domain.Connection, error) {

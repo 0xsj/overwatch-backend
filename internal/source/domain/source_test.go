@@ -44,6 +44,15 @@ func TestSourceIntakeValidation(t *testing.T) {
 			}
 		})
 	}
+	published := time.Date(2026, 9, 18, 10, 30, 0, 0, time.FixedZone("source", 2*60*60))
+	source, err := domain.New(ids.NewID(), ids.NewID(), ids.NewID(), domain.Draft{Title: "Published notice", Origin: "reference", URL: "https://example.test/published", PublishedAt: &published}, at)
+	if err != nil || source.PublishedAt == nil || !source.PublishedAt.Equal(published.UTC()) {
+		t.Fatalf("publication time was not preserved as UTC: %+v err=%v", source, err)
+	}
+	zero := time.Time{}
+	if _, err := domain.New(ids.NewID(), ids.NewID(), ids.NewID(), domain.Draft{Title: "Invalid publication", Origin: "reference", URL: "https://example.test/invalid", PublishedAt: &zero}, at); err == nil {
+		t.Fatal("zero publication time accepted")
+	}
 }
 
 func TestCaptureLimitIsUTF8BytesAndJSONIsValidatedWithoutReformatting(t *testing.T) {
@@ -110,5 +119,96 @@ func TestSourceRetentionIsExplicitAndClearable(t *testing.T) {
 	cleared, err := updated.SetRetention(id.ID{5}, nil, at.Add(time.Hour))
 	if err != nil || cleared.RetentionUntil != nil || cleared.RetentionUpdatedBy != (id.ID{5}) {
 		t.Fatalf("retention clear: %+v, error=%v", cleared, err)
+	}
+}
+
+func TestSourcePublicationIsExplicitAndClearable(t *testing.T) {
+	at := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	source, err := domain.New(id.ID{1}, id.ID{2}, id.ID{3}, domain.Draft{Title: "Notice", Origin: "reference", URL: "https://example.test/notice"}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := time.Date(2026, 9, 16, 14, 0, 0, 0, time.FixedZone("source", 2*60*60))
+	updated, err := source.SetPublication(id.ID{4}, &published, at)
+	if err != nil || updated.PublishedAt == nil || !updated.PublishedAt.Equal(published.UTC()) {
+		t.Fatalf("publication update: %+v, error=%v", updated, err)
+	}
+	cleared, err := updated.SetPublication(id.ID{5}, nil, at.Add(time.Hour))
+	if err != nil || cleared.PublishedAt != nil {
+		t.Fatalf("publication clear: %+v, error=%v", cleared, err)
+	}
+	zero := time.Time{}
+	if _, err := source.SetPublication(id.ID{6}, &zero, at); err == nil {
+		t.Fatal("zero publication time accepted")
+	}
+}
+
+func TestSourceDuplicatePolicyIsBounded(t *testing.T) {
+	at := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	source, err := domain.New(id.ID{1}, id.ID{2}, id.ID{3}, domain.Draft{Title: "Notice", Origin: "reference", URL: "https://example.test/notice"}, at)
+	if err != nil || source.DuplicatePolicy != domain.DuplicatePolicyWarn {
+		t.Fatalf("default duplicate policy: %+v, error=%v", source, err)
+	}
+	updated, err := source.SetDuplicatePolicy(id.ID{4}, domain.DuplicatePolicyBlock, at)
+	if err != nil || updated.DuplicatePolicy != domain.DuplicatePolicyBlock {
+		t.Fatalf("duplicate policy update: %+v, error=%v", updated, err)
+	}
+	if _, err := source.SetDuplicatePolicy(id.ID{4}, "merge", at); err == nil {
+		t.Fatal("invalid duplicate policy accepted")
+	}
+}
+
+func TestIntakeCandidateRequiresExplicitReview(t *testing.T) {
+	at := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	candidate, err := domain.NewIntakeCandidate(id.ID{1}, id.ID{2}, id.ID{3}, "Notice", "https://example.test/notice", "Found in a monitored feed.", at)
+	if err != nil || candidate.Status != domain.IntakePending {
+		t.Fatalf("candidate: %+v, error=%v", candidate, err)
+	}
+	approved, err := candidate.Review(id.ID{4}, domain.IntakeApproved, "Relevant to the investigation.", id.ID{5}, at.Add(time.Hour))
+	if err != nil || approved.Status != domain.IntakeApproved || approved.SourceID != (id.ID{5}) {
+		t.Fatalf("approval: %+v, error=%v", approved, err)
+	}
+	if _, err := approved.Review(id.ID{4}, domain.IntakeRejected, "No longer needed.", id.ID{}, at.Add(2*time.Hour)); err == nil {
+		t.Fatal("reviewed candidate was reopened")
+	}
+	if _, err := domain.NewIntakeCandidate(id.ID{6}, id.ID{2}, id.ID{3}, "Bad", "ftp://example.test/notice", "note", at); err == nil {
+		t.Fatal("non-web intake URL accepted")
+	}
+	imported, err := domain.NewImportIntakeCandidate(id.ID{7}, id.ID{2}, id.ID{3}, "Notice PDF", "notice.pdf", "application/pdf", []byte("%PDF-1.7\nnotice"), "Imported for review.", at)
+	if err != nil || imported.Origin != domain.IntakeImport || imported.Filename != "notice.pdf" || len(imported.ContentBytes) == 0 {
+		t.Fatalf("import candidate: %+v, error=%v", imported, err)
+	}
+}
+
+func TestSourceWatchSchedulesAndRecordsQualifiedRuns(t *testing.T) {
+	at := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	watch, err := domain.NewWatch(id.ID{1}, id.ID{2}, id.ID{3}, true, domain.MinWatchIntervalSeconds, at)
+	if err != nil || !watch.Enabled || watch.NextRunAt == nil || watch.LastStatus != domain.WatchStatusNever {
+		t.Fatalf("new watch: %+v, error=%v", watch, err)
+	}
+	unchanged, err := watch.RecordRun(id.ID{4}, domain.WatchStatusUnchanged, id.ID{}, "", at.Add(time.Hour))
+	if err != nil || unchanged.LastStatus != domain.WatchStatusUnchanged || unchanged.LastCaptureID != (id.ID{}) || unchanged.NextRunAt == nil {
+		t.Fatalf("unchanged run: %+v, error=%v", unchanged, err)
+	}
+	changed, err := unchanged.RecordRun(id.ID{4}, domain.WatchStatusChanged, id.ID{5}, "", at.Add(2*time.Hour))
+	if err != nil || changed.LastStatus != domain.WatchStatusChanged || changed.LastCaptureID != (id.ID{5}) {
+		t.Fatalf("changed run: %+v, error=%v", changed, err)
+	}
+	if _, err := changed.RecordRun(id.ID{4}, domain.WatchStatusChanged, id.ID{}, "", at); err == nil {
+		t.Fatal("changed run without a capture was accepted")
+	}
+	if _, err := watch.Configure(id.ID{4}, false, domain.MaxWatchIntervalSeconds+1, at); err == nil {
+		t.Fatal("out-of-range watch interval accepted")
+	}
+	claimed, err := watch.Claim("worker-a", at.Add(time.Hour), at.Add(time.Hour+2*time.Minute))
+	if err != nil || claimed.LeaseOwner != "worker-a" || claimed.LeaseUntil == nil {
+		t.Fatalf("due watch was not claimed: %+v, error=%v", claimed, err)
+	}
+	if _, err := claimed.Claim("worker-b", at.Add(time.Hour+time.Minute), at.Add(time.Hour+3*time.Minute)); err != domain.ErrWatchLeased {
+		t.Fatalf("active lease was not protected: %v", err)
+	}
+	released, err := claimed.RecordClaimedRun(id.ID{4}, domain.WatchStatusUnchanged, id.ID{}, "", "worker-a", at.Add(time.Hour+time.Minute))
+	if err != nil || released.LeaseOwner != "" || released.LeaseUntil != nil {
+		t.Fatalf("claimed run did not release lease: %+v, error=%v", released, err)
 	}
 }

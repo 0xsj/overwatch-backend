@@ -13,6 +13,8 @@ type NoteNote struct {
 	WorkspaceID  pgtype.UUID
 	SubjectKind  pgtype.Text
 	SubjectValue pgtype.Text
+	ContextKind  pgtype.Text
+	ContextID    pgtype.UUID
 	Body         string
 	AuthorID     pgtype.UUID
 	CreatedAt    pgtype.Timestamptz

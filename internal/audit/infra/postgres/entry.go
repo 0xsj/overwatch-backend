@@ -117,6 +117,37 @@ func (s *Store) PageForWorkspace(ctx context.Context, workspace string, after Cu
 	return entries(rows)
 }
 
+func (s *Store) PageForWorkspaceDetail(ctx context.Context, workspace, key, value string, after Cursor, limit int32) ([]domain.Entry, error) {
+	rows, err := s.q(ctx).EntriesForWorkspaceDetailPage(ctx, auditdb.EntriesForWorkspaceDetailPageParams{
+		WorkspaceID: workspace,
+		Column2:     key,
+		Column3:     value,
+		Column4:     bound(after),
+		Column5:     cursorID(after),
+		Limit:       limit,
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "audit: page for workspace detail")
+	}
+	return entries(rows)
+}
+
+func (s *Store) PageForWorkspaceDetailFacet(ctx context.Context, workspace, key, value, facet string, after Cursor, limit int32) ([]domain.Entry, error) {
+	rows, err := s.q(ctx).EntriesForWorkspaceDetailFacetPage(ctx, auditdb.EntriesForWorkspaceDetailFacetPageParams{
+		WorkspaceID: workspace,
+		Column2:     key,
+		Column3:     value,
+		Column4:     facet,
+		Column5:     bound(after),
+		Column6:     cursorID(after),
+		Limit:       limit,
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "audit: page for workspace detail facet")
+	}
+	return entries(rows)
+}
+
 // bound is NULL for the first page. The query reads `$2 is null or ...`, so a
 // null timestamp means no lower bound rather than a bound at the zero time —
 // which would match nothing and return an empty first page.
@@ -169,6 +200,22 @@ func (s *Store) FacetsForWorkspace(ctx context.Context, workspace string) ([]Fac
 	rows, err := s.q(ctx).FacetsForWorkspace(ctx, workspace)
 	if err != nil {
 		return nil, postgres.Translate(ctx, err, "audit: facets for workspace")
+	}
+	out := make([]Facet, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, Facet{Name: row.Facet, Total: int(row.Total)})
+	}
+	return out, nil
+}
+
+func (s *Store) FacetsForWorkspaceDetail(ctx context.Context, workspace, key, value string) ([]Facet, error) {
+	rows, err := s.q(ctx).FacetsForWorkspaceDetail(ctx, auditdb.FacetsForWorkspaceDetailParams{
+		WorkspaceID: workspace,
+		Column2:     key,
+		Column3:     value,
+	})
+	if err != nil {
+		return nil, postgres.Translate(ctx, err, "audit: facets for workspace detail")
 	}
 	out := make([]Facet, 0, len(rows))
 	for _, row := range rows {

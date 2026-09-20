@@ -53,6 +53,29 @@ type pageResponse struct {
 	Facets []facetResponse `json:"facets,omitempty"`
 }
 
+type logEntryResponse struct {
+	ID          string          `json:"id"`
+	Action      string          `json:"action"`
+	Subject     string          `json:"subject"`
+	Origin      string          `json:"origin"`
+	Actor       string          `json:"actor"`
+	OnBehalfOf  string          `json:"on_behalf_of,omitempty"`
+	WorkspaceID string          `json:"workspace_id,omitempty"`
+	Depth       int             `json:"depth"`
+	Attempt     int             `json:"attempt"`
+	Decision    bool            `json:"decision"`
+	Correlation string          `json:"correlation_id,omitempty"`
+	Causation   string          `json:"causation_id,omitempty"`
+	Detail      json.RawMessage `json:"detail"`
+	OccurredAt  string          `json:"occurred_at"`
+	RecordedAt  string          `json:"recorded_at"`
+}
+
+type logPageResponse struct {
+	Entries []logEntryResponse `json:"entries"`
+	Next    string             `json:"next,omitempty"`
+}
+
 // myActivity is the caller's own history: the entries whose SUBJECT is their
 // account. Registration, sign-in, verification, a password change.
 //
@@ -102,6 +125,30 @@ func (m *me) workspaceAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, renderPage(page))
+}
+
+// workspaceLogs is the causal journal for one engagement. The audit route
+// above deliberately remains separate: a governance reader asks who changed
+// what, while this one asks what work happened and what caused it.
+func (m *me) workspaceLogs(w http.ResponseWriter, r *http.Request) {
+	caller, err := m.sessions.Authenticate(r.Context(), identityhttp.Presented(r))
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	workspace, err := id.Parse(r.PathValue("workspace"))
+	if err != nil || !m.canSeeWorkspace(r, caller.AccountID, workspace) {
+		httpx.Fail(m.log, w, r, orgquery.ErrNoAccess)
+		return
+	}
+
+	after, size := logPageParams(r)
+	page, err := m.journal.ForWorkspace(r.Context(), workspace.String(), after, size)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, renderLogPage(page))
 }
 
 type stepResponse struct {
@@ -236,6 +283,24 @@ func pageParams(r *http.Request) (auditquery.Cursor, int, string) {
 	return auditquery.Cursor{OccurredAt: at, ID: last}, size, facet
 }
 
+func logPageParams(r *http.Request) (journalquery.Cursor, int) {
+	q := r.URL.Query()
+	size, _ := strconv.Atoi(q.Get("limit"))
+	stamp, rest, ok := strings.Cut(q.Get("after"), ",")
+	if !ok {
+		return journalquery.Cursor{}, size
+	}
+	at, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		return journalquery.Cursor{}, size
+	}
+	last, err := id.Parse(rest)
+	if err != nil {
+		return journalquery.Cursor{}, size
+	}
+	return journalquery.Cursor{OccurredAt: at, ID: last}, size
+}
+
 func renderPage(p auditquery.Page) pageResponse {
 	out := pageResponse{Entries: make([]entryResponse, 0, len(p.Records))}
 	for _, e := range p.Records {
@@ -263,6 +328,31 @@ func renderPage(p auditquery.Page) pageResponse {
 	}
 	for _, f := range p.Facets {
 		out.Facets = append(out.Facets, facetResponse{Facet: f.Name, Total: f.Total})
+	}
+	return out
+}
+
+func renderLogPage(p journalquery.Page) logPageResponse {
+	out := logPageResponse{Entries: make([]logEntryResponse, 0, len(p.Records))}
+	for _, e := range p.Records {
+		row := logEntryResponse{
+			ID: e.ID.String(), Action: e.Action, Subject: e.Subject,
+			Origin: e.Origin, Actor: e.Actor, OnBehalfOf: e.OnBehalfOf,
+			WorkspaceID: e.WorkspaceID, Depth: e.Depth, Attempt: e.Attempt,
+			Decision: e.Decision, Detail: detail(e.Detail),
+			OccurredAt: e.OccurredAt.UTC().Format(time.RFC3339Nano),
+			RecordedAt: e.RecordedAt.UTC().Format(time.RFC3339Nano),
+		}
+		if !e.Correlation.IsZero() {
+			row.Correlation = e.Correlation.String()
+		}
+		if !e.Causation.IsZero() {
+			row.Causation = e.Causation.String()
+		}
+		out.Entries = append(out.Entries, row)
+	}
+	if p.More {
+		out.Next = p.Next.OccurredAt.UTC().Format(time.RFC3339Nano) + "," + p.Next.ID.String()
 	}
 	return out
 }

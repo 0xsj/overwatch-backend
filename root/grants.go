@@ -198,8 +198,9 @@ func (m *me) onWorkspaceRecord(w http.ResponseWriter, r *http.Request) (
 // direction: a route added tomorrow excludes clients without anybody remembering
 // to think about it, and the day one should be shared, saying so is one word.
 //
-// It permits a CLOSED engagement, like [me.onWorkspaceRecord]: a report about
-// last quarter's work is exactly the thing somebody asks for after it ends.
+// It permits a CLOSED engagement, like [me.onWorkspaceRecord]: a frozen
+// deliverable about last quarter's work is exactly the thing somebody asks for
+// after it ends.
 func (m *me) onDeliverable(w http.ResponseWriter, r *http.Request, least orgdomain.Level) (
 	caller, workspace, org id.ID, ok bool) {
 	caller, workspace, org, _, _, ok = m.reachWorkspace(w, r, least)

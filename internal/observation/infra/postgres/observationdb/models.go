@@ -8,18 +8,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type ObservationCitationShare struct {
+	ID            pgtype.UUID
+	WorkspaceID   pgtype.UUID
+	SourceID      pgtype.UUID
+	ObservationID pgtype.UUID
+	CreatedBy     pgtype.UUID
+	TokenDigest   string
+	CreatedAt     pgtype.Timestamptz
+	RevokedAt     pgtype.Timestamptz
+	RevokedBy     pgtype.UUID
+}
+
 type ObservationManual struct {
-	ID          pgtype.UUID
-	WorkspaceID pgtype.UUID
-	SourceID    pgtype.UUID
-	CaptureID   pgtype.UUID
-	Statement   string
-	Quote       []byte
-	QuoteStart  int32
-	QuoteEnd    int32
-	Locator     string
-	Author      pgtype.UUID
-	RecordedAt  pgtype.Timestamptz
+	ID           pgtype.UUID
+	WorkspaceID  pgtype.UUID
+	SourceID     pgtype.UUID
+	CaptureID    pgtype.UUID
+	Statement    string
+	Quote        []byte
+	QuoteStart   int32
+	QuoteEnd     int32
+	Locator      string
+	Author       pgtype.UUID
+	RecordedAt   pgtype.Timestamptz
+	ExtractionID pgtype.UUID
 }
 
 type ObservationObservation struct {

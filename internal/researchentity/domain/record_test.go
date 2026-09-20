@@ -29,3 +29,22 @@ func TestRecordRejectsUnknownKindAndDuplicateObservation(t *testing.T) {
 		t.Fatalf("duplicate observation: %v", err)
 	}
 }
+
+func TestPlaceGeometryIsCitedQualifiedAndCopied(t *testing.T) {
+	at := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	geometry := &PlaceGeometry{Latitude: 41.0082, Longitude: 28.9784, Precision: PlaceApproximate, ObservationIDs: []id.ID{recordID(5)}}
+	one, err := NewWithPlaceGeometry(recordID(1), recordID(2), recordID(3), "place", "East Quay", "A reported place.", []id.ID{recordID(5)}, geometry, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry.ObservationIDs[0] = recordID(9)
+	if one.PlaceGeometry == nil || one.PlaceGeometry.ObservationIDs[0] != recordID(5) || one.PlaceGeometry.Precision != PlaceApproximate {
+		t.Fatalf("geometry was not copied: %+v", one.PlaceGeometry)
+	}
+	if _, err := NewWithPlaceGeometry(recordID(1), recordID(2), recordID(3), "person", "Not a place", "", []id.ID{recordID(5)}, geometry, at); err != ErrPlaceGeometryKind {
+		t.Fatalf("non-place geometry: %v", err)
+	}
+	if _, err := NewWithPlaceGeometry(recordID(1), recordID(2), recordID(3), "place", "Bad point", "", []id.ID{recordID(5)}, &PlaceGeometry{Latitude: 91, Longitude: 0, Precision: PlaceExact, ObservationIDs: []id.ID{recordID(5)}}, at); err != ErrPlaceGeometryCoordinates {
+		t.Fatalf("invalid coordinates: %v", err)
+	}
+}

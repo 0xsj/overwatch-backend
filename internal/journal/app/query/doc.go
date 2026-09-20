@@ -17,12 +17,15 @@
 // it. A renderer that has both can draw the tree without a second query, which
 // is why both are on every line rather than derived.
 //
-// # It has no page, and that is a bound rather than an oversight
+// # A workspace log is paged, but a chain is not
 //
+// `Log.ForWorkspace` reads the newest causal lines with a bounded keyset page.
+// The cursor is `(occurred_at, id)`, so a growing journal cannot re-show rows
+// above page one. It is separate from audit because audit answers who changed
+// what, while the journal keeps origin, depth, attempt, decision and causation.
 // A correlation is one act. `pkg/provenance` bounds depth, so a chain cannot
-// grow without limit, and a chain that somehow did would be a runaway to look at
-// rather than to paginate. Audit pages because a ledger grows forever; a chain
-// does not.
+// grow without limit, and a chain that somehow did would be a runaway to look
+// at rather than to paginate.
 //
 // # This package does not authorise, and a chain crosses domains
 //

@@ -3,7 +3,9 @@ package command
 import (
 	"bytes"
 	"context"
+	stderrors "errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/source/domain"
@@ -18,9 +20,46 @@ type Draft = domain.Draft
 type Repository interface {
 	CreateSource(context.Context, domain.Source) error
 	CreateCapture(context.Context, domain.Capture) error
+	CreateIntakeCandidate(context.Context, domain.IntakeCandidate) error
+	IntakeByID(context.Context, id.ID, id.ID) (domain.IntakeCandidate, error)
+	ReviewIntakeCandidate(context.Context, domain.IntakeCandidate) error
 	SetRetention(context.Context, id.ID, id.ID, id.ID, *time.Time, time.Time) error
 	// NextVersion must lock the source row until the enclosing transaction ends.
 	NextVersion(ctx context.Context, workspace, source id.ID) (int, error)
+}
+
+type WatchRepository interface {
+	WatchBySource(context.Context, id.ID, id.ID) (domain.Watch, error)
+	UpsertWatch(context.Context, domain.Watch) error
+}
+
+type DueWatchRepository interface {
+	ClaimDueWatch(context.Context, id.ID, string, time.Time, time.Time) (domain.Watch, error)
+}
+
+type AlertRepository interface {
+	CreateAlert(context.Context, domain.Alert) error
+	MarkAlertSeen(context.Context, id.ID, id.ID, id.ID, time.Time) error
+	DeactivateQuestionGapAlerts(context.Context, id.ID, []string) error
+}
+
+type DerivedAlertRepository interface {
+	DeactivateDerivedGapAlerts(context.Context, id.ID, []string) error
+}
+
+type QuestionGapAlert struct {
+	QuestionID id.ID
+	DedupeKey  string
+	Title      string
+	Detail     string
+}
+
+type DerivedGapAlert struct {
+	Kind      string
+	TargetID  id.ID
+	DedupeKey string
+	Title     string
+	Detail    string
 }
 
 // LifecycleRepository is optional so the original capture command port stays
@@ -29,8 +68,15 @@ type Repository interface {
 type LifecycleRepository interface {
 	ByID(context.Context, id.ID, id.ID) (domain.Summary, error)
 	LockForPurge(context.Context, id.ID, id.ID) (domain.Summary, domain.PurgeDependencies, error)
+	SetDuplicatePolicy(context.Context, id.ID, id.ID, id.ID, string, time.Time) error
+	SetPublication(context.Context, id.ID, id.ID, id.ID, *time.Time, time.Time) error
 	SetPrivacy(context.Context, id.ID, id.ID, id.ID, string, bool, string, time.Time) error
 	MarkPurged(context.Context, id.ID, id.ID, id.ID, string, time.Time) error
+}
+
+type DuplicateRepository interface {
+	DuplicatePolicy(context.Context, id.ID, id.ID) (string, error)
+	CaptureHashExists(context.Context, id.ID, id.ID, string) (bool, error)
 }
 type Blobs interface {
 	Put(context.Context, io.Reader) (blob.Info, error)
@@ -56,6 +102,17 @@ type Sources struct {
 type PurgeResult struct {
 	Review domain.PurgeReview `json:"review"`
 	Purged bool               `json:"purged"`
+}
+
+type IntakeReviewResult struct {
+	Candidate domain.IntakeCandidate `json:"candidate"`
+	Source    *domain.Summary        `json:"source,omitempty"`
+}
+
+type WatchRunResult struct {
+	Watch   domain.Watch    `json:"watch"`
+	Changed bool            `json:"changed"`
+	Capture *domain.Capture `json:"capture,omitempty"`
 }
 
 func NewSources(repo Repository, blobs Blobs, tx Transactor, publisher events.Publisher, ids Minter, clock Clock) *Sources {
@@ -106,6 +163,317 @@ func (s *Sources) Create(ctx context.Context, workspace, author id.ID, in Draft)
 	return out, nil
 }
 
+func (s *Sources) CreateIntakeCandidate(ctx context.Context, workspace, author id.ID, title, address, note string) (domain.IntakeCandidate, error) {
+	candidate, err := domain.NewIntakeCandidate(s.ids.NewID(), workspace, author, title, address, note, s.clock.Now())
+	if err != nil {
+		return domain.IntakeCandidate{}, err
+	}
+	if err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := s.repo.CreateIntakeCandidate(ctx, candidate); err != nil {
+			return err
+		}
+		return s.emitIntake(ctx, domain.EventIntakeCreated, candidate, author)
+	}); err != nil {
+		return domain.IntakeCandidate{}, err
+	}
+	return candidate, nil
+}
+
+func (s *Sources) CreateImportIntakeCandidate(ctx context.Context, workspace, author id.ID, title, filename, mediaType string, content []byte, note string) (domain.IntakeCandidate, error) {
+	candidate, err := domain.NewImportIntakeCandidate(s.ids.NewID(), workspace, author, title, filename, mediaType, content, note, s.clock.Now())
+	if err != nil {
+		return domain.IntakeCandidate{}, err
+	}
+	if err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := s.repo.CreateIntakeCandidate(ctx, candidate); err != nil {
+			return err
+		}
+		return s.emitIntake(ctx, domain.EventIntakeCreated, candidate, author)
+	}); err != nil {
+		return domain.IntakeCandidate{}, err
+	}
+	return candidate, nil
+}
+
+func (s *Sources) ReadWatch(ctx context.Context, workspace, source id.ID) (domain.Watch, error) {
+	if workspace.IsZero() || source.IsZero() {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	repo, ok := s.repo.(WatchRepository)
+	if !ok {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	return repo.WatchBySource(ctx, workspace, source)
+}
+
+func (s *Sources) ConfigureWatch(ctx context.Context, workspace, source, actor id.ID, enabled bool, intervalSeconds int) (domain.Watch, error) {
+	if workspace.IsZero() || source.IsZero() || actor.IsZero() {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	lifecycle, ok := s.repo.(LifecycleRepository)
+	if !ok {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	repo, ok := s.repo.(WatchRepository)
+	if !ok {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	summary, err := lifecycle.ByID(ctx, workspace, source)
+	if err != nil {
+		return domain.Watch{}, err
+	}
+	if summary.Origin != "reference" || summary.URL == "" || summary.PurgedAt != nil {
+		return domain.Watch{}, domain.ErrWatchSourceInvalid
+	}
+	current, err := repo.WatchBySource(ctx, workspace, source)
+	if err != nil && !stderrors.Is(err, domain.ErrNotFound) {
+		return domain.Watch{}, err
+	}
+	at := s.clock.Now()
+	if stderrors.Is(err, domain.ErrNotFound) {
+		current, err = domain.NewWatch(workspace, source, actor, enabled, intervalSeconds, at)
+	} else {
+		current, err = current.Configure(actor, enabled, intervalSeconds, at)
+	}
+	if err != nil {
+		return domain.Watch{}, err
+	}
+	if err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := repo.UpsertWatch(ctx, current); err != nil {
+			return err
+		}
+		return s.emitWatch(ctx, domain.EventWatchConfigured, current, actor, "")
+	}); err != nil {
+		return domain.Watch{}, err
+	}
+	return current, nil
+}
+
+func (s *Sources) RecordWatchRun(ctx context.Context, workspace, source, actor id.ID, status string, capture id.ID, runError string) (domain.Watch, error) {
+	return s.recordWatchRun(ctx, workspace, source, actor, status, capture, runError, "")
+}
+
+func (s *Sources) RecordClaimedWatchRun(ctx context.Context, workspace, source, actor id.ID, status string, capture id.ID, runError, leaseOwner string) (domain.Watch, error) {
+	return s.recordWatchRun(ctx, workspace, source, actor, status, capture, runError, strings.TrimSpace(leaseOwner))
+}
+
+func (s *Sources) recordWatchRun(ctx context.Context, workspace, source, actor id.ID, status string, capture id.ID, runError, leaseOwner string) (domain.Watch, error) {
+	if workspace.IsZero() || source.IsZero() || actor.IsZero() {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	repo, ok := s.repo.(WatchRepository)
+	if !ok {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	current, err := repo.WatchBySource(ctx, workspace, source)
+	if err != nil {
+		return domain.Watch{}, err
+	}
+	var next domain.Watch
+	if leaseOwner == "" {
+		next, err = current.RecordRun(actor, status, capture, runError, s.clock.Now())
+	} else {
+		next, err = current.RecordClaimedRun(actor, status, capture, runError, leaseOwner, s.clock.Now())
+	}
+	if err != nil {
+		return domain.Watch{}, err
+	}
+	var alert domain.Alert
+	alertRepo, alertsEnabled := s.repo.(AlertRepository)
+	if alertsEnabled && (status == domain.WatchStatusChanged || status == domain.WatchStatusFailed) {
+		kind, title, detail := domain.AlertKindCaptureChanged, "New monitored capture retained", "A monitored URL returned changed bytes and a new immutable capture was retained."
+		if status == domain.WatchStatusFailed {
+			kind, title, detail = domain.AlertKindWatchFailed, "Source monitoring failed", strings.TrimSpace(runError)
+			if detail == "" {
+				detail = "The monitored URL could not be checked."
+			}
+		}
+		alert, err = domain.NewAlert(s.ids.NewID(), workspace, source, capture, actor, kind, title, detail, s.clock.Now())
+		if err != nil {
+			return domain.Watch{}, err
+		}
+	}
+	if err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := repo.UpsertWatch(ctx, next); err != nil {
+			return err
+		}
+		if alertsEnabled {
+			if status == domain.WatchStatusChanged || status == domain.WatchStatusFailed {
+				if err := alertRepo.CreateAlert(ctx, alert); err != nil {
+					return err
+				}
+			}
+		}
+		return s.emitWatch(ctx, domain.EventWatchRun, next, actor, runError)
+	}); err != nil {
+		return domain.Watch{}, err
+	}
+	return next, nil
+}
+
+func (s *Sources) ClaimDueWatch(ctx context.Context, workspace id.ID, owner string, lease time.Duration) (domain.Watch, error) {
+	owner = strings.TrimSpace(owner)
+	if workspace.IsZero() || owner == "" || lease <= 0 {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	repo, ok := s.repo.(DueWatchRepository)
+	if !ok {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	now := s.clock.Now()
+	return repo.ClaimDueWatch(ctx, workspace, owner, now, now.Add(lease))
+}
+
+func (s *Sources) MarkAlertSeen(ctx context.Context, workspace, alert, account id.ID) (time.Time, error) {
+	if workspace.IsZero() || alert.IsZero() || account.IsZero() {
+		return time.Time{}, domain.ErrInvalid
+	}
+	repo, ok := s.repo.(AlertRepository)
+	if !ok {
+		return time.Time{}, domain.ErrInvalid
+	}
+	at := s.clock.Now()
+	if err := repo.MarkAlertSeen(ctx, workspace, alert, account, at); err != nil {
+		return time.Time{}, err
+	}
+	return at, nil
+}
+
+// SyncQuestionGapAlerts materializes the current open-question gap projection
+// as alert rows. The source domain owns persistence and lifecycle; the root
+// layer owns the review/question calculation and supplies only the derived
+// values. A status is part of the dedupe key so a meaningful transition is a
+// fresh alert, while repeated refreshes of the same status remain idempotent.
+func (s *Sources) SyncQuestionGapAlerts(ctx context.Context, workspace, actor id.ID, gaps []QuestionGapAlert) (int, error) {
+	derived := make([]DerivedGapAlert, 0, len(gaps))
+	for _, gap := range gaps {
+		derived = append(derived, DerivedGapAlert{Kind: domain.AlertKindQuestionGap, TargetID: gap.QuestionID, DedupeKey: gap.DedupeKey, Title: gap.Title, Detail: gap.Detail})
+	}
+	return s.syncDerivedGapAlerts(ctx, workspace, actor, derived, false)
+}
+
+// SyncDerivedGapAlerts materializes current record, cluster, and question gap
+// projections into the same durable alert inbox. Target and status are carried
+// by the caller's dedupe key, so repeated refreshes are idempotent and stale
+// projections can be retired atomically.
+func (s *Sources) SyncDerivedGapAlerts(ctx context.Context, workspace, actor id.ID, gaps []DerivedGapAlert) (int, error) {
+	return s.syncDerivedGapAlerts(ctx, workspace, actor, gaps, true)
+}
+
+func (s *Sources) syncDerivedGapAlerts(ctx context.Context, workspace, actor id.ID, gaps []DerivedGapAlert, derived bool) (int, error) {
+	if workspace.IsZero() || actor.IsZero() {
+		return 0, domain.ErrInvalid
+	}
+	repo, ok := s.repo.(AlertRepository)
+	if !ok {
+		return 0, domain.ErrInvalid
+	}
+	if derived {
+		if _, ok := s.repo.(DerivedAlertRepository); !ok {
+			return 0, domain.ErrInvalid
+		}
+	}
+	at := s.clock.Now()
+	alerts := make([]domain.Alert, 0, len(gaps))
+	for _, gap := range gaps {
+		alert, err := domain.NewDerivedGapAlert(s.ids.NewID(), workspace, gap.Kind, gap.TargetID, actor, gap.DedupeKey, gap.Title, gap.Detail, at)
+		if err != nil {
+			return 0, err
+		}
+		alerts = append(alerts, alert)
+	}
+	if err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		activeKeys := make([]string, 0, len(alerts))
+		for _, alert := range alerts {
+			activeKeys = append(activeKeys, alert.DedupeKey)
+		}
+		if derived {
+			if err := s.repo.(DerivedAlertRepository).DeactivateDerivedGapAlerts(ctx, workspace, activeKeys); err != nil {
+				return err
+			}
+		} else if err := repo.DeactivateQuestionGapAlerts(ctx, workspace, activeKeys); err != nil {
+			return err
+		}
+		for _, alert := range alerts {
+			if err := repo.CreateAlert(ctx, alert); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return len(alerts), nil
+}
+
+func (s *Sources) ReviewIntakeCandidate(ctx context.Context, workspace, intake, reviewer id.ID, decision, note string) (IntakeReviewResult, error) {
+	if workspace.IsZero() || intake.IsZero() || reviewer.IsZero() {
+		return IntakeReviewResult{}, domain.ErrInvalid
+	}
+	held, err := s.repo.IntakeByID(ctx, workspace, intake)
+	if err != nil {
+		return IntakeReviewResult{}, err
+	}
+	at := s.clock.Now()
+	var source domain.Source
+	var sourceOut *domain.Summary
+	sourceID := id.ID{}
+	if decision == domain.IntakeApproved {
+		draft := domain.Draft{Title: held.Title, Origin: held.Origin, URL: held.URL, Filename: held.Filename, MediaType: held.MediaType, ContentBytes: held.ContentBytes}
+		if held.MediaType == "text/plain" || held.MediaType == "text/html" || held.MediaType == "application/json" {
+			text := string(held.ContentBytes)
+			draft.Content = &text
+			draft.ContentBytes = nil
+		}
+		source, err = domain.New(s.ids.NewID(), workspace, reviewer, draft, at)
+		if err != nil {
+			return IntakeReviewResult{}, err
+		}
+		sourceID = source.ID
+	}
+	next, err := held.Review(reviewer, decision, note, sourceID, at)
+	if err != nil {
+		return IntakeReviewResult{}, err
+	}
+	if decision == domain.IntakeApproved {
+		summary := domain.Summary{Source: source}
+		if held.Origin == domain.IntakeImport {
+			capture, captureErr := s.captureBytes(ctx, workspace, source.ID, reviewer, 1, held.MediaType, held.ContentBytes)
+			if captureErr != nil {
+				return IntakeReviewResult{}, captureErr
+			}
+			summary.LatestCapture = &capture
+		}
+		sourceOut = &summary
+	}
+	next.ContentBytes = nil
+	if err := s.tx.InTx(ctx, func(ctx context.Context) error {
+		if sourceOut != nil {
+			if err := s.repo.CreateSource(ctx, source); err != nil {
+				return err
+			}
+			if sourceOut.LatestCapture != nil {
+				if err := s.repo.CreateCapture(ctx, *sourceOut.LatestCapture); err != nil {
+					return err
+				}
+				if err := s.indexText(ctx, *sourceOut.LatestCapture, held.ContentBytes); err != nil {
+					return err
+				}
+			}
+			if err := s.emit(ctx, domain.EventCreated, workspace, reviewer, source.ID, sourceOut.LatestCapture); err != nil {
+				return err
+			}
+		}
+		if err := s.repo.ReviewIntakeCandidate(ctx, next); err != nil {
+			return err
+		}
+		return s.emitIntake(ctx, map[string]string{domain.IntakeApproved: domain.EventIntakeApproved, domain.IntakeRejected: domain.EventIntakeRejected}[next.Status], next, reviewer)
+	}); err != nil {
+		return IntakeReviewResult{}, err
+	}
+	return IntakeReviewResult{Candidate: next, Source: sourceOut}, nil
+}
+
 func (s *Sources) AddCapture(ctx context.Context, workspace, source, author id.ID, mediaType, content string) (domain.Capture, error) {
 	// Retain and validate bytes before acquiring the row lock; no external
 	// process or network fetch is held inside the transaction.
@@ -116,6 +484,9 @@ func (s *Sources) AddCapture(ctx context.Context, workspace, source, author id.I
 	err = s.tx.InTx(ctx, func(ctx context.Context) error {
 		version, err := s.repo.NextVersion(ctx, workspace, source)
 		if err != nil {
+			return err
+		}
+		if err := s.rejectDuplicate(ctx, workspace, source, capture.SHA256); err != nil {
 			return err
 		}
 		capture.Version = version
@@ -149,6 +520,9 @@ func (s *Sources) AddBinaryCapture(ctx context.Context, workspace, source, autho
 		if err != nil {
 			return err
 		}
+		if err := s.rejectDuplicate(ctx, workspace, source, capture.SHA256); err != nil {
+			return err
+		}
 		capture.Version = version
 		if err := s.repo.CreateCapture(ctx, capture); err != nil {
 			return err
@@ -164,6 +538,28 @@ func (s *Sources) AddBinaryCapture(ctx context.Context, workspace, source, autho
 	return capture, nil
 }
 
+func (s *Sources) rejectDuplicate(ctx context.Context, workspace, source id.ID, hash string) error {
+	repo, ok := s.repo.(DuplicateRepository)
+	if !ok {
+		return nil
+	}
+	policy, err := repo.DuplicatePolicy(ctx, workspace, source)
+	if err != nil {
+		return err
+	}
+	if policy != domain.DuplicatePolicyBlock {
+		return nil
+	}
+	exists, err := repo.CaptureHashExists(ctx, workspace, source, hash)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return domain.ErrDuplicateCapture
+	}
+	return nil
+}
+
 func (s *Sources) SetRetention(ctx context.Context, workspace, source, editor id.ID, until *time.Time) error {
 	if workspace.IsZero() || source.IsZero() || editor.IsZero() {
 		return domain.ErrInvalid
@@ -177,6 +573,48 @@ func (s *Sources) SetRetention(ctx context.Context, workspace, source, editor id
 			return err
 		}
 		return s.emitRetention(ctx, workspace, source, editor, until)
+	})
+}
+
+func (s *Sources) SetPublication(ctx context.Context, workspace, source, editor id.ID, publishedAt *time.Time) error {
+	if workspace.IsZero() || source.IsZero() || editor.IsZero() {
+		return domain.ErrInvalid
+	}
+	repo, ok := s.repo.(LifecycleRepository)
+	if !ok {
+		return domain.ErrInvalid
+	}
+	at := s.clock.Now()
+	publication, err := (domain.Source{}).SetPublication(editor, publishedAt, at)
+	if err != nil {
+		return err
+	}
+	return s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := repo.SetPublication(ctx, workspace, source, editor, publication.PublishedAt, at); err != nil {
+			return err
+		}
+		return s.emitPublication(ctx, workspace, source, editor, publication.PublishedAt)
+	})
+}
+
+func (s *Sources) SetDuplicatePolicy(ctx context.Context, workspace, source, editor id.ID, policy string) error {
+	if workspace.IsZero() || source.IsZero() || editor.IsZero() {
+		return domain.ErrInvalid
+	}
+	repo, ok := s.repo.(LifecycleRepository)
+	if !ok {
+		return domain.ErrInvalid
+	}
+	at := s.clock.Now()
+	updated, err := (domain.Source{}).SetDuplicatePolicy(editor, policy, at)
+	if err != nil {
+		return err
+	}
+	return s.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := repo.SetDuplicatePolicy(ctx, workspace, source, editor, updated.DuplicatePolicy, at); err != nil {
+			return err
+		}
+		return s.emitDuplicatePolicy(ctx, workspace, source, editor, updated.DuplicatePolicy)
 	})
 }
 
@@ -325,6 +763,59 @@ func (s *Sources) emit(ctx context.Context, name string, workspace, author, sour
 	return s.publisher.Publish(ctx, event)
 }
 
+func (s *Sources) emitIntake(ctx context.Context, name string, candidate domain.IntakeCandidate, actor id.ID) error {
+	prov, ok := provenance.Current(ctx)
+	if !ok {
+		prov = provenance.New(provenance.OriginRequest, s.ids)
+	}
+	prov, err := prov.WithTenant(candidate.WorkspaceID.String())
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"workspace_id": candidate.WorkspaceID.String(), "intake_id": candidate.ID.String(),
+		"actor": actor.String(), "title": candidate.Title, "url": candidate.URL, "status": candidate.Status,
+	}
+	if !candidate.SourceID.IsZero() {
+		payload["source_id"] = candidate.SourceID.String()
+	}
+	if candidate.ReviewNote != "" {
+		payload["review_note"] = candidate.ReviewNote
+	}
+	event, err := events.NewDecision(s.ids, s.clock, name, "workspace:"+candidate.WorkspaceID.String(), prov, payload)
+	if err != nil {
+		return err
+	}
+	return s.publisher.Publish(ctx, event)
+}
+
+func (s *Sources) emitWatch(ctx context.Context, name string, watch domain.Watch, actor id.ID, runError string) error {
+	prov, ok := provenance.Current(ctx)
+	if !ok {
+		prov = provenance.New(provenance.OriginRequest, s.ids)
+	}
+	prov, err := prov.WithTenant(watch.WorkspaceID.String())
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"workspace_id": watch.WorkspaceID.String(), "source_id": watch.SourceID.String(),
+		"actor": actor.String(), "enabled": watch.Enabled, "interval_seconds": watch.IntervalSeconds,
+		"last_status": watch.LastStatus,
+	}
+	if !watch.LastCaptureID.IsZero() {
+		payload["capture_id"] = watch.LastCaptureID.String()
+	}
+	if strings.TrimSpace(runError) != "" {
+		payload["error"] = strings.TrimSpace(runError)
+	}
+	event, err := events.NewDecision(s.ids, s.clock, name, "workspace:"+watch.WorkspaceID.String(), prov, payload)
+	if err != nil {
+		return err
+	}
+	return s.publisher.Publish(ctx, event)
+}
+
 func (s *Sources) emitRetention(ctx context.Context, workspace, source, author id.ID, until *time.Time) error {
 	prov, ok := provenance.Current(ctx)
 	if !ok {
@@ -339,6 +830,45 @@ func (s *Sources) emitRetention(ctx context.Context, workspace, source, author i
 		payload["retention_until"] = until.UTC().Format(time.RFC3339Nano)
 	}
 	event, err := events.NewDecision(s.ids, s.clock, domain.EventRetentionChanged, "workspace:"+workspace.String(), prov, payload)
+	if err != nil {
+		return err
+	}
+	return s.publisher.Publish(ctx, event)
+}
+
+func (s *Sources) emitPublication(ctx context.Context, workspace, source, author id.ID, publishedAt *time.Time) error {
+	prov, ok := provenance.Current(ctx)
+	if !ok {
+		prov = provenance.New(provenance.OriginRequest, s.ids)
+	}
+	prov, err := prov.WithTenant(workspace.String())
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"workspace_id": workspace.String(), "source_id": source.String(), "author": author.String(), "cleared": publishedAt == nil}
+	if publishedAt != nil {
+		payload["published_at"] = publishedAt.UTC().Format(time.RFC3339Nano)
+	} else {
+		payload["published_at"] = nil
+	}
+	event, err := events.NewDecision(s.ids, s.clock, domain.EventPublicationChanged, "workspace:"+workspace.String(), prov, payload)
+	if err != nil {
+		return err
+	}
+	return s.publisher.Publish(ctx, event)
+}
+
+func (s *Sources) emitDuplicatePolicy(ctx context.Context, workspace, source, author id.ID, policy string) error {
+	prov, ok := provenance.Current(ctx)
+	if !ok {
+		prov = provenance.New(provenance.OriginRequest, s.ids)
+	}
+	prov, err := prov.WithTenant(workspace.String())
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"workspace_id": workspace.String(), "source_id": source.String(), "author": author.String(), "duplicate_policy": policy}
+	event, err := events.NewDecision(s.ids, s.clock, domain.EventDuplicatePolicyChanged, "workspace:"+workspace.String(), prov, payload)
 	if err != nil {
 		return err
 	}

@@ -64,6 +64,16 @@ func (s *Store) ForOrigin(ctx context.Context, origin string, limit int32) ([]do
 	return collect(ctx, rows, err, "journal: by origin")
 }
 
+func (s *Store) ForWorkspace(ctx context.Context, workspace string, after time.Time, afterID id.ID, limit int32) ([]domain.Line, error) {
+	rows, err := s.q(ctx).LinesForWorkspace(ctx, journaldb.LinesForWorkspaceParams{
+		WorkspaceID:     workspace,
+		AfterOccurredAt: stamp(after),
+		AfterID:         maybe(afterID),
+		Limit:           limit,
+	})
+	return collect(ctx, rows, err, "journal: by workspace")
+}
+
 // ExpireBefore deletes at most `batch` work lines older than the cutoff and
 // reports how many went. It NEVER deletes a decision — decisions/0022 — and the
 // caller repeats until a pass deletes fewer than a full batch.

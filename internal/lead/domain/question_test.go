@@ -33,7 +33,7 @@ func TestQuestionCanonicalisesCitedObservations(t *testing.T) {
 
 func TestQuestionClosedStatesNeedAResolution(t *testing.T) {
 	at := time.Now()
-	for _, state := range []string{"answered", "dismissed"} {
+	for _, state := range []string{"answered", "dismissed", "deferred"} {
 		if _, err := domain.New(leadID(1), leadID(2), leadID(3), "Question", "", state, "", nil, at); err == nil {
 			t.Fatalf("%s question accepted without a resolution", state)
 		}

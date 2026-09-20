@@ -2,6 +2,10 @@ package command
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/observation/domain"
 	"github.com/0xsj/overwatch-backend/pkg/events"
@@ -11,6 +15,11 @@ import (
 
 type ManualRepository interface {
 	CreateManual(context.Context, domain.Manual) error
+}
+
+type citationShareRepository interface {
+	CreateCitationShare(context.Context, domain.CitationShare) error
+	RevokeCitationShare(context.Context, id.ID, id.ID, id.ID, time.Time) (domain.CitationShare, error)
 }
 type ManualTransactor interface {
 	InTx(context.Context, func(context.Context) error) error
@@ -94,4 +103,96 @@ func (m *ManualObservations) Record(ctx context.Context, workspace, source, auth
 		return domain.Manual{}, err
 	}
 	return fresh, nil
+}
+
+// CreateCitationShare mints an opaque link for one exact observation. The
+// caller receives the raw token once; only its digest enters the repository.
+func (m *ManualObservations) CreateCitationShare(ctx context.Context, workspace, source, observation, createdBy id.ID) (domain.CitationShare, string, error) {
+	if workspace.IsZero() || source.IsZero() || observation.IsZero() || createdBy.IsZero() {
+		return domain.CitationShare{}, "", domain.ErrIDRequired
+	}
+	repo, ok := m.repo.(citationShareRepository)
+	if !ok {
+		return domain.CitationShare{}, "", domain.ErrNotFound
+	}
+	tokenID := m.ids.NewID()
+	token := base64.RawURLEncoding.EncodeToString(tokenID[:])
+	digest := sha256.Sum256([]byte(token))
+	share, err := domain.NewCitationShare(m.ids.NewID(), workspace, source, observation, createdBy, hex.EncodeToString(digest[:]), m.clock.Now())
+	if err != nil {
+		return domain.CitationShare{}, "", err
+	}
+	if err := m.tx.InTx(ctx, func(ctx context.Context) error {
+		if err := repo.CreateCitationShare(ctx, share); err != nil {
+			return err
+		}
+		return m.publishCitationShareCreated(ctx, workspace, share)
+	}); err != nil {
+		return domain.CitationShare{}, "", err
+	}
+	return share, token, nil
+}
+
+func (m *ManualObservations) RevokeCitationShare(ctx context.Context, workspace, share, revokedBy id.ID) (domain.CitationShare, error) {
+	if workspace.IsZero() || share.IsZero() || revokedBy.IsZero() {
+		return domain.CitationShare{}, domain.ErrIDRequired
+	}
+	repo, ok := m.repo.(citationShareRepository)
+	if !ok {
+		return domain.CitationShare{}, domain.ErrNotFound
+	}
+	var revoked domain.CitationShare
+	if err := m.tx.InTx(ctx, func(ctx context.Context) error {
+		var err error
+		revoked, err = repo.RevokeCitationShare(ctx, workspace, share, revokedBy, m.clock.Now())
+		if err != nil {
+			return err
+		}
+		return m.publishCitationShareRevoked(ctx, workspace, revoked)
+	}); err != nil {
+		return domain.CitationShare{}, err
+	}
+	return revoked, nil
+}
+
+func (m *ManualObservations) RecordCitationShareAccess(ctx context.Context, workspace, source, observation, share, accessedBy id.ID, accessMode string) error {
+	if workspace.IsZero() || source.IsZero() || observation.IsZero() || share.IsZero() || accessedBy.IsZero() {
+		return domain.ErrIDRequired
+	}
+	if accessMode != "shared" {
+		return domain.ErrInvalidShareAccessMode
+	}
+	return m.publishCitationShareAccessed(ctx, workspace, source, observation, share, accessMode)
+}
+
+func (m *ManualObservations) publishCitationShareCreated(ctx context.Context, workspace id.ID, share domain.CitationShare) error {
+	return m.publishCitationEvent(ctx, workspace, domain.EventCitationShareCreated, domain.CitationShareCreated{WorkspaceID: workspace.String(), SourceID: share.SourceID.String(), ObservationID: share.ObservationID.String(), ShareID: share.ID.String(), CreatedBy: share.CreatedBy.String()})
+}
+
+func (m *ManualObservations) publishCitationShareRevoked(ctx context.Context, workspace id.ID, share domain.CitationShare) error {
+	revokedBy := ""
+	if share.RevokedBy != nil {
+		revokedBy = share.RevokedBy.String()
+	}
+	return m.publishCitationEvent(ctx, workspace, domain.EventCitationShareRevoked, domain.CitationShareRevoked{WorkspaceID: workspace.String(), SourceID: share.SourceID.String(), ObservationID: share.ObservationID.String(), ShareID: share.ID.String(), RevokedBy: revokedBy})
+}
+
+func (m *ManualObservations) publishCitationShareAccessed(ctx context.Context, workspace, source, observation, share id.ID, accessMode string) error {
+	return m.publishCitationEvent(ctx, workspace, domain.EventCitationShareAccessed, domain.CitationShareAccessed{WorkspaceID: workspace.String(), SourceID: source.String(), ObservationID: observation.String(), ShareID: share.String(), AccessMode: accessMode})
+}
+
+func (m *ManualObservations) publishCitationEvent(ctx context.Context, workspace id.ID, kind string, payload any) error {
+	prov, ok := provenance.Current(ctx)
+	if !ok {
+		prov = provenance.New(provenance.OriginRequest, m.ids)
+	}
+	prov, err := prov.WithTenant(workspace.String())
+	if err != nil {
+		return err
+	}
+	event, err := events.NewDecision(m.ids, m.clock, kind, "workspace:"+workspace.String(), prov, payload)
+	if err != nil {
+		return err
+	}
+	return m.publisher.Publish(ctx, event)
 }

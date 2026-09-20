@@ -24,13 +24,22 @@ type Provider interface {
 	Method() string
 }
 
+// ExternalProvider is implemented by providers that send retained material
+// outside the Overwatch process. Unknown providers fail closed and are treated
+// as external by the policy gate.
+type ExternalProvider interface {
+	External() bool
+}
+
 // LocalSentenceProvider is a deterministic first provider. It identifies
 // sentence-like passages and returns them unchanged, which makes the feature
 // useful without an external model while keeping its output visibly a draft.
 type LocalSentenceProvider struct{}
 
-func (LocalSentenceProvider) Name() string   { return "local" }
-func (LocalSentenceProvider) Method() string { return "sentence-passages-v1" }
+func (LocalSentenceProvider) Name() string            { return "local" }
+func (LocalSentenceProvider) Method() string          { return "sentence-passages-v1" }
+func (LocalSentenceProvider) TemplateVersion() string { return "sentence-passages-v1" }
+func (LocalSentenceProvider) External() bool          { return false }
 
 func (LocalSentenceProvider) Extract(ctx context.Context, in Input) ([]domain.ProposalDraft, error) {
 	if err := ctx.Err(); err != nil {

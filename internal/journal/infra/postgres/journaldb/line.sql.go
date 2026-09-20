@@ -222,6 +222,68 @@ func (q *Queries) LinesForOrigin(ctx context.Context, arg LinesForOriginParams) 
 	return items, nil
 }
 
+const linesForWorkspace = `-- name: LinesForWorkspace :many
+select id, event_id, action, subject, origin, actor, on_behalf_of, workspace_id,
+       depth, attempt, decision, correlation_id, causation_id, detail,
+       occurred_at, recorded_at
+from journal.line
+where workspace_id = $1
+  and ($2::timestamptz is null
+       or occurred_at < $2
+       or (occurred_at = $2 and id < $3))
+order by occurred_at desc, id desc
+limit $4
+`
+
+type LinesForWorkspaceParams struct {
+	WorkspaceID string
+	AfterOccurredAt pgtype.Timestamptz
+	AfterID         pgtype.UUID
+	Limit       int32
+}
+
+func (q *Queries) LinesForWorkspace(ctx context.Context, arg LinesForWorkspaceParams) ([]JournalLine, error) {
+	rows, err := q.db.Query(ctx, linesForWorkspace,
+		arg.WorkspaceID,
+		arg.AfterOccurredAt,
+		arg.AfterID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []JournalLine{}
+	for rows.Next() {
+		var i JournalLine
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Action,
+			&i.Subject,
+			&i.Origin,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.Depth,
+			&i.Attempt,
+			&i.Decision,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recentLines = `-- name: RecentLines :many
 select id, event_id, action, subject, origin, actor, on_behalf_of, workspace_id,
        depth, attempt, decision, correlation_id, causation_id, detail,

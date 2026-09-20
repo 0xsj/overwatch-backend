@@ -24,6 +24,12 @@ create table note.note (
     subject_kind  text,
     subject_value text,
 
+    -- Optional research navigation context. This is metadata, not a
+    -- polymorphic foreign key: a note remains readable if the target changes
+    -- or is no longer available.
+    context_kind  text,
+    context_id    uuid,
+
     body       text        not null,
 
     -- Never moves. An edit changes the body and the timestamp; rewriting the
@@ -47,6 +53,10 @@ create table note.note (
                    and length(subject_value) <= 2000)),
     constraint note_kind_present
         check (subject_kind is null or subject_kind <> ''),
+    constraint note_context_paired
+        check ((context_kind is null) = (context_id is null)),
+    constraint note_context_kind_known
+        check (context_kind is null or context_kind in ('question', 'record', 'event', 'connection', 'brief')),
     constraint note_times_ordered check (updated_at >= created_at)
 );
 
@@ -64,3 +74,6 @@ create index note_for_subject on note.note (workspace_id, subject_kind, subject_
 -- most of them.
 create index note_summary on note.note (workspace_id, created_at)
     where subject_kind is null;
+
+create index note_for_context on note.note (workspace_id, context_kind, context_id)
+    where context_kind is not null;

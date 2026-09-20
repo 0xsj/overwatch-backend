@@ -15,7 +15,11 @@ import (
 
 const ProcessInputPlaceholder = "{input}"
 
-var ErrProcessProviderUnavailable = errors.New("external assistance provider is not configured")
+var (
+	ErrProcessProviderUnavailable = errors.New("external assistance provider is not configured")
+	ErrProcessProviderTimedOut    = errors.New("external assistance provider timed out")
+	ErrProcessProviderOutputLimit = errors.New("external assistance provider output limit exceeded")
+)
 
 type ProcessProviderConfig struct {
 	Binary    string
@@ -63,8 +67,10 @@ func NewProcessProvider(config ProcessProviderConfig) ProcessProvider {
 	return ProcessProvider{config: config}
 }
 
-func (p ProcessProvider) Name() string   { return "external-process" }
-func (p ProcessProvider) Method() string { return "json-passage-proposals-v1" }
+func (p ProcessProvider) Name() string            { return "external-process" }
+func (p ProcessProvider) Method() string          { return "json-passage-proposals-v1" }
+func (p ProcessProvider) TemplateVersion() string { return "json-passage-proposals-v1" }
+func (p ProcessProvider) External() bool          { return true }
 
 func (p ProcessProvider) Extract(ctx context.Context, in Input) ([]domain.ProposalDraft, error) {
 	if p.config.Binary == "" {
@@ -111,10 +117,10 @@ func (p ProcessProvider) Extract(ctx context.Context, in Input) ([]domain.Propos
 		return nil, fmt.Errorf("%w: %v", ErrProcessProviderUnavailable, spawnErr)
 	}
 	if result.Outcome == execx.TimedOut {
-		return nil, fmt.Errorf("assistance provider timed out: %s", result.Reason)
+		return nil, fmt.Errorf("%w: %s", ErrProcessProviderTimedOut, result.Reason)
 	}
 	if result.StdoutTruncated {
-		return nil, fmt.Errorf("assistance provider output exceeded %d bytes", p.config.MaxOutput)
+		return nil, fmt.Errorf("%w: %d bytes", ErrProcessProviderOutputLimit, p.config.MaxOutput)
 	}
 	if result.ExitCode != 0 {
 		return nil, fmt.Errorf("assistance provider exited with code %d", result.ExitCode)

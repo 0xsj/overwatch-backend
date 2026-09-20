@@ -332,6 +332,133 @@ func (q *Queries) EntriesForWorkspace(ctx context.Context, arg EntriesForWorkspa
 	return items, nil
 }
 
+const entriesForWorkspaceDetailFacetPage = `-- name: EntriesForWorkspaceDetailFacetPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where workspace_id = $1
+  and detail ->> $2::text = $3::text
+  and split_part(action, '.', 1) = $4::text
+  and ($5::timestamptz is null or (occurred_at, id) < ($5::timestamptz, $6::uuid))
+order by occurred_at desc, id desc
+limit $7
+`
+
+type EntriesForWorkspaceDetailFacetPageParams struct {
+	WorkspaceID string
+	Column2     string
+	Column3     string
+	Column4     string
+	Column5     pgtype.Timestamptz
+	Column6     pgtype.UUID
+	Limit       int32
+}
+
+func (q *Queries) EntriesForWorkspaceDetailFacetPage(ctx context.Context, arg EntriesForWorkspaceDetailFacetPageParams) ([]AuditEntry, error) {
+	rows, err := q.db.Query(ctx, entriesForWorkspaceDetailFacetPage,
+		arg.WorkspaceID,
+		arg.Column2,
+		arg.Column3,
+		arg.Column4,
+		arg.Column5,
+		arg.Column6,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditEntry{}
+	for rows.Next() {
+		var i AuditEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Scope,
+			&i.Action,
+			&i.Subject,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const entriesForWorkspaceDetailPage = `-- name: EntriesForWorkspaceDetailPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where workspace_id = $1
+  and detail ->> $2::text = $3::text
+  and ($4::timestamptz is null or (occurred_at, id) < ($4::timestamptz, $5::uuid))
+order by occurred_at desc, id desc
+limit $6
+`
+
+type EntriesForWorkspaceDetailPageParams struct {
+	WorkspaceID string
+	Column2     string
+	Column3     string
+	Column4     pgtype.Timestamptz
+	Column5     pgtype.UUID
+	Limit       int32
+}
+
+func (q *Queries) EntriesForWorkspaceDetailPage(ctx context.Context, arg EntriesForWorkspaceDetailPageParams) ([]AuditEntry, error) {
+	rows, err := q.db.Query(ctx, entriesForWorkspaceDetailPage,
+		arg.WorkspaceID,
+		arg.Column2,
+		arg.Column3,
+		arg.Column4,
+		arg.Column5,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditEntry{}
+	for rows.Next() {
+		var i AuditEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventID,
+			&i.Scope,
+			&i.Action,
+			&i.Subject,
+			&i.Actor,
+			&i.OnBehalfOf,
+			&i.WorkspaceID,
+			&i.CorrelationID,
+			&i.CausationID,
+			&i.Detail,
+			&i.OccurredAt,
+			&i.RecordedAt,
+			&i.OrgID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const entriesForWorkspaceFacetPage = `-- name: EntriesForWorkspaceFacetPage :many
 select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
        correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
@@ -570,6 +697,46 @@ func (q *Queries) FacetsForWorkspace(ctx context.Context, workspaceID string) ([
 	items := []FacetsForWorkspaceRow{}
 	for rows.Next() {
 		var i FacetsForWorkspaceRow
+		if err := rows.Scan(&i.Facet, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const facetsForWorkspaceDetail = `-- name: FacetsForWorkspaceDetail :many
+select split_part(action, '.', 1) as facet, count(*) as total
+from audit.entry
+where workspace_id = $1
+  and detail ->> $2::text = $3::text
+group by 1
+order by 2 desc, 1
+`
+
+type FacetsForWorkspaceDetailParams struct {
+	WorkspaceID string
+	Column2     string
+	Column3     string
+}
+
+type FacetsForWorkspaceDetailRow struct {
+	Facet string
+	Total int64
+}
+
+func (q *Queries) FacetsForWorkspaceDetail(ctx context.Context, arg FacetsForWorkspaceDetailParams) ([]FacetsForWorkspaceDetailRow, error) {
+	rows, err := q.db.Query(ctx, facetsForWorkspaceDetail, arg.WorkspaceID, arg.Column2, arg.Column3)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FacetsForWorkspaceDetailRow{}
+	for rows.Next() {
+		var i FacetsForWorkspaceDetailRow
 		if err := rows.Scan(&i.Facet, &i.Total); err != nil {
 			return nil, err
 		}

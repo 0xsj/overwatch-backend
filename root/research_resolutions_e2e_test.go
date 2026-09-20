@@ -27,6 +27,27 @@ func TestResearchResolutionRequiresConfirmationAndCanBeReversed(t *testing.T) {
 	var alias researchRecordResponse
 	decode(t, aliasResponse, &alias)
 
+	connectionResponse := s.post(t, base+"/connections", researchJSON(t, map[string]any{
+		"from_record_id": alias.RecordID, "to_record_id": canonical.RecordID, "kind": "possible_same_subject", "state": "proposed",
+		"rationale":                  "The authored records may describe the same subject and need explicit identity review.",
+		"supporting_observation_ids": []string{}, "opposing_observation_ids": []string{},
+	}), auth)
+	researchStatus(t, connectionResponse, http.StatusCreated)
+	var connection researchConnectionResponse
+	decode(t, connectionResponse, &connection)
+
+	eventResponse := s.post(t, base+"/events", researchJSON(t, map[string]any{
+		"title": "Harborline activity", "description": "An event linked to the alias record.", "reported_time": "2025-01-01", "time_precision": "exact", "sort_date": "2025-01-01", "location": "", "observation_ids": []string{}, "participant_record_ids": []string{alias.RecordID},
+	}), auth)
+	researchStatus(t, eventResponse, http.StatusCreated)
+	var event struct {
+		ID string `json:"event_id"`
+	}
+	decode(t, eventResponse, &event)
+	if connection.ConnectionID == "" || event.ID == "" {
+		t.Fatalf("impact fixtures were not created: connection=%+v event=%+v", connection, event)
+	}
+
 	proposalResponse := s.post(t, base+"/records/"+alias.RecordID+"/resolutions", researchJSON(t, map[string]any{
 		"canonical_record_id": canonical.RecordID,
 		"rationale":           "The same distinctive handle appears in the retained observation; confirm the alias manually.",
@@ -36,6 +57,23 @@ func TestResearchResolutionRequiresConfirmationAndCanBeReversed(t *testing.T) {
 	decode(t, proposalResponse, &proposal)
 	if proposal.State != "proposed" || len(proposal.AddedObservationIDs) != 1 || len(proposal.CanonicalObservationIDsAfter) != 1 || proposal.AliasRecordID != alias.RecordID || proposal.CanonicalRecordID != canonical.RecordID {
 		t.Fatalf("proposal: %+v", proposal)
+	}
+
+	var impact struct {
+		Connections []struct {
+			ID string `json:"connection_id"`
+		} `json:"connections"`
+		Events []struct {
+			ID string `json:"event_id"`
+		} `json:"events"`
+		Briefs    []any `json:"briefs"`
+		Snapshots []any `json:"snapshots"`
+	}
+	impactResponse := s.get(t, base+"/resolutions/"+proposal.ResolutionID+"/impact", auth)
+	researchStatus(t, impactResponse, http.StatusOK)
+	decode(t, impactResponse, &impact)
+	if len(impact.Connections) != 1 || impact.Connections[0].ID != connection.ConnectionID || len(impact.Events) != 1 || impact.Events[0].ID != event.ID || len(impact.Briefs) != 0 || len(impact.Snapshots) != 0 {
+		t.Fatalf("resolution impact: %+v", impact)
 	}
 
 	canonicalBefore := s.get(t, base+"/records/"+canonical.RecordID, auth)

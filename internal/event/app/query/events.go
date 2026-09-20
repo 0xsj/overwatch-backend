@@ -10,6 +10,8 @@ import (
 type Reader interface {
 	Page(context.Context, id.ID, id.ID, int) ([]domain.Event, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Event, error)
+	Revisions(context.Context, id.ID, id.ID) ([]domain.Revision, error)
+	RevisionByID(context.Context, id.ID, id.ID, id.ID) (domain.Revision, error)
 }
 
 type Events struct{ reader Reader }
@@ -62,4 +64,25 @@ func (e *Events) ByID(ctx context.Context, workspace, want id.ID) (domain.Event,
 		return domain.Event{}, domain.ErrIDRequired
 	}
 	return e.reader.ByID(ctx, workspace, want)
+}
+
+func (e *Events) Revisions(ctx context.Context, workspace, want id.ID) ([]domain.Revision, error) {
+	if workspace.IsZero() || want.IsZero() {
+		return nil, domain.ErrIDRequired
+	}
+	rows, err := e.reader.Revisions(ctx, workspace, want)
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		return []domain.Revision{}, nil
+	}
+	return rows, nil
+}
+
+func (e *Events) RevisionByID(ctx context.Context, workspace, event, revision id.ID) (domain.Revision, error) {
+	if workspace.IsZero() || event.IsZero() || revision.IsZero() {
+		return domain.Revision{}, domain.ErrIDRequired
+	}
+	return e.reader.RevisionByID(ctx, workspace, event, revision)
 }

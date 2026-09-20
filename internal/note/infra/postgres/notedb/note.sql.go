@@ -12,7 +12,7 @@ import (
 )
 
 const allSummaryNotes = `-- name: AllSummaryNotes :many
-select id, workspace_id, subject_kind, subject_value, body,
+select id, workspace_id, subject_kind, subject_value, context_kind, context_id, body,
        author_id, created_at, updated_at
 from note.note
 where workspace_id = $1 and subject_kind is null
@@ -34,6 +34,8 @@ func (q *Queries) AllSummaryNotes(ctx context.Context, workspaceID pgtype.UUID) 
 			&i.WorkspaceID,
 			&i.SubjectKind,
 			&i.SubjectValue,
+			&i.ContextKind,
+			&i.ContextID,
 			&i.Body,
 			&i.AuthorID,
 			&i.CreatedAt,
@@ -68,9 +70,9 @@ func (q *Queries) DeleteNote(ctx context.Context, arg DeleteNoteParams) (int64, 
 
 const insertNote = `-- name: InsertNote :exec
 insert into note.note (
-    id, workspace_id, subject_kind, subject_value, body,
+    id, workspace_id, subject_kind, subject_value, context_kind, context_id, body,
     author_id, created_at, updated_at
-) values ($1, $2, $3, $4, $5, $6, $7, $8)
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type InsertNoteParams struct {
@@ -78,6 +80,8 @@ type InsertNoteParams struct {
 	WorkspaceID  pgtype.UUID
 	SubjectKind  pgtype.Text
 	SubjectValue pgtype.Text
+	ContextKind  pgtype.Text
+	ContextID    pgtype.UUID
 	Body         string
 	AuthorID     pgtype.UUID
 	CreatedAt    pgtype.Timestamptz
@@ -90,6 +94,8 @@ func (q *Queries) InsertNote(ctx context.Context, arg InsertNoteParams) error {
 		arg.WorkspaceID,
 		arg.SubjectKind,
 		arg.SubjectValue,
+		arg.ContextKind,
+		arg.ContextID,
 		arg.Body,
 		arg.AuthorID,
 		arg.CreatedAt,
@@ -99,7 +105,7 @@ func (q *Queries) InsertNote(ctx context.Context, arg InsertNoteParams) error {
 }
 
 const noteByID = `-- name: NoteByID :one
-select id, workspace_id, subject_kind, subject_value, body,
+select id, workspace_id, subject_kind, subject_value, context_kind, context_id, body,
        author_id, created_at, updated_at
 from note.note where id = $1 and workspace_id = $2
 `
@@ -118,6 +124,8 @@ func (q *Queries) NoteByID(ctx context.Context, arg NoteByIDParams) (NoteNote, e
 		&i.WorkspaceID,
 		&i.SubjectKind,
 		&i.SubjectValue,
+		&i.ContextKind,
+		&i.ContextID,
 		&i.Body,
 		&i.AuthorID,
 		&i.CreatedAt,
@@ -127,21 +135,23 @@ func (q *Queries) NoteByID(ctx context.Context, arg NoteByIDParams) (NoteNote, e
 }
 
 const notesForWorkspace = `-- name: NotesForWorkspace :many
-select id, workspace_id, subject_kind, subject_value, body,
+select id, workspace_id, subject_kind, subject_value, context_kind, context_id, body,
        author_id, created_at, updated_at
 from note.note
 where workspace_id = $1
   and ($2::text is null or subject_kind = $2::text)
   and ($3::text is null or subject_value = $3::text)
-  and (not $4::boolean or subject_kind is null)
+  and ($4::text is null or context_kind = $4::text)
+  and (not $5::boolean or subject_kind is null)
 order by created_at desc
-limit $5::int
+limit $6::int
 `
 
 type NotesForWorkspaceParams struct {
 	WorkspaceID pgtype.UUID
 	Kind        pgtype.Text
 	Value       pgtype.Text
+	ContextKind pgtype.Text
 	SummaryOnly bool
 	Page        int32
 }
@@ -155,6 +165,7 @@ func (q *Queries) NotesForWorkspace(ctx context.Context, arg NotesForWorkspacePa
 		arg.WorkspaceID,
 		arg.Kind,
 		arg.Value,
+		arg.ContextKind,
 		arg.SummaryOnly,
 		arg.Page,
 	)
@@ -170,6 +181,82 @@ func (q *Queries) NotesForWorkspace(ctx context.Context, arg NotesForWorkspacePa
 			&i.WorkspaceID,
 			&i.SubjectKind,
 			&i.SubjectValue,
+			&i.ContextKind,
+			&i.ContextID,
+			&i.Body,
+			&i.AuthorID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const notesWindow = `-- name: NotesWindow :many
+select id, workspace_id, subject_kind, subject_value, context_kind, context_id, body,
+       author_id, created_at, updated_at
+from note.note
+where workspace_id = $1
+  and ($2::uuid is null or id < $2::uuid)
+  and ($3::text is null or subject_kind = $3::text)
+  and ($4::text is null or subject_value = $4::text)
+  and ($5::text is null or context_kind = $5::text)
+  and (not $6::boolean or subject_kind is null)
+  and ($7::text is null
+       or position(lower($7::text) in lower(body)) > 0
+       or position(lower($7::text) in lower(coalesce(subject_kind, ''))) > 0
+       or position(lower($7::text) in lower(coalesce(subject_value, ''))) > 0
+       or position(lower($7::text) in lower(coalesce(context_kind, ''))) > 0
+       or position(lower($7::text) in lower(coalesce(context_id::text, ''))) > 0
+       or position(lower($7::text) in lower(id::text)) > 0)
+order by id desc
+limit $8::int
+`
+
+type NotesWindowParams struct {
+	WorkspaceID pgtype.UUID
+	Before      pgtype.UUID
+	Kind        pgtype.Text
+	Value       pgtype.Text
+	ContextKind pgtype.Text
+	SummaryOnly bool
+	Search      pgtype.Text
+	Page        int32
+}
+
+// Cursor and search are explicit. `position` keeps user punctuation literal
+// rather than treating `%` and `_` as wildcard operators.
+func (q *Queries) NotesWindow(ctx context.Context, arg NotesWindowParams) ([]NoteNote, error) {
+	rows, err := q.db.Query(ctx, notesWindow,
+		arg.WorkspaceID,
+		arg.Before,
+		arg.Kind,
+		arg.Value,
+		arg.ContextKind,
+		arg.SummaryOnly,
+		arg.Search,
+		arg.Page,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NoteNote{}
+	for rows.Next() {
+		var i NoteNote
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.SubjectKind,
+			&i.SubjectValue,
+			&i.ContextKind,
+			&i.ContextID,
 			&i.Body,
 			&i.AuthorID,
 			&i.CreatedAt,

@@ -49,6 +49,45 @@ type Resolution struct {
 	AddedObservationIDs           []id.ID    `json:"added_observation_ids"`
 }
 
+// Impact is the read-side projection for a resolution review. It deliberately
+// reports references rather than rewriting them: accepting a resolution keeps
+// authored connection, event, brief, and snapshot identifiers intact.
+type Impact struct {
+	Connections []ConnectionImpact `json:"connections"`
+	Events      []EventImpact      `json:"events"`
+	Briefs      []BriefImpact      `json:"briefs"`
+	Snapshots   []SnapshotImpact   `json:"snapshots"`
+}
+
+type ConnectionImpact struct {
+	ID             id.ID  `json:"connection_id"`
+	FromRecordID   id.ID  `json:"from_record_id"`
+	FromRecordName string `json:"from_record_name"`
+	ToRecordID     id.ID  `json:"to_record_id"`
+	ToRecordName   string `json:"to_record_name"`
+	Kind           string `json:"kind"`
+	State          string `json:"state"`
+}
+
+type EventImpact struct {
+	ID       id.ID  `json:"event_id"`
+	Title    string `json:"title"`
+	SortDate string `json:"sort_date,omitempty"`
+}
+
+type BriefImpact struct {
+	ID        id.ID     `json:"brief_id"`
+	Title     string    `json:"title"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type SnapshotImpact struct {
+	ID       id.ID     `json:"snapshot_id"`
+	BriefID  id.ID     `json:"brief_id"`
+	Title    string    `json:"title"`
+	FrozenAt time.Time `json:"frozen_at"`
+}
+
 func (r Resolution) ReviewedAtValue() time.Time {
 	if r.ReviewedAt == nil {
 		return time.Time{}

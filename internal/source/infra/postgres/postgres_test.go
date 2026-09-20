@@ -134,6 +134,64 @@ func TestPostgresConcurrentAppendsAllocateUniqueConsecutiveVersions(t *testing.T
 		t.Fatalf("capture list: %+v err=%v", detail, err)
 	}
 }
+
+func TestPostgresDueWatchClaimHasOneWinnerAndPersistsLease(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	source, err := f.writes.Create(ctx, f.ws, f.author, command.Draft{Title: "Due page", Origin: "reference", URL: "https://example.test/due"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.writes.ConfigureWatch(ctx, f.ws, source.ID, f.author, true, domain.MinWatchIntervalSeconds); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 11, 0, 30, 0, 0, time.UTC)
+	if _, err := f.pool.DB(ctx).Exec(ctx, `update source.watch set next_run_at=$3 where workspace_id=$1 and source_id=$2`, f.ws, source.ID, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	owners := []string{"worker-a", "worker-b"}
+	results := make([]domain.Watch, len(owners))
+	errs := make([]error, len(owners))
+	var group sync.WaitGroup
+	for index, owner := range owners {
+		group.Add(1)
+		go func(index int, owner string) {
+			defer group.Done()
+			results[index], errs[index] = f.store.ClaimDueWatch(ctx, f.ws, owner, now, now.Add(2*time.Minute))
+		}(index, owner)
+	}
+	group.Wait()
+	winners := 0
+	for index, err := range errs {
+		if err == nil {
+			winners++
+			if results[index].LeaseOwner != owners[index] || results[index].LeaseUntil == nil {
+				t.Fatalf("claim %d lost lease metadata: %+v", index, results[index])
+			}
+			continue
+		}
+		if !errors.Is(err, domain.ErrWatchNotDue) {
+			t.Fatalf("claim %d failed unexpectedly: %v", index, err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("expected one claim winner, got %d (errors=%v)", winners, errs)
+	}
+
+	held, err := f.store.WatchBySource(ctx, f.ws, source.ID)
+	if err != nil || held.LeaseOwner == "" || held.LeaseUntil == nil {
+		t.Fatalf("persisted lease missing: %+v err=%v", held, err)
+	}
+	if _, err := f.writes.RecordClaimedWatchRun(ctx, f.ws, source.ID, f.author, domain.WatchStatusUnchanged, id.ID{}, "", held.LeaseOwner); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := f.store.WatchBySource(ctx, f.ws, source.ID)
+	if err != nil || cleared.LeaseOwner != "" || cleared.LeaseUntil != nil {
+		t.Fatalf("run did not clear persisted lease: %+v err=%v", cleared, err)
+	}
+}
+
 func TestPostgresSourcePaginationIsolationAndExactContent(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()

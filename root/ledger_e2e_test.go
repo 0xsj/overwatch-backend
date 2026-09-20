@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
 )
 
 type entryRow struct {
@@ -130,6 +132,34 @@ func TestTheEngagementAuditLogIsGatedByTheGrant(t *testing.T) {
 		if res := s.get(t, path, strangerAuth); res.StatusCode != http.StatusNotFound {
 			t.Errorf("%s answered %d, want 404", name, res.StatusCode)
 		}
+	}
+}
+
+func TestTheEngagementCausalLogIsGatedAndWorkspaceScoped(t *testing.T) {
+	s := tracedSystem(t)
+	_, workspace, _, _, ownerAuth, strangerAuth := firm(t, s, orgdomain.RoleMember)
+	base := "/v1/workspaces/" + workspace.String()
+	if res := s.post(t, base+"/targets", `{"name":"Northbeam","kind":"organisation"}`, ownerAuth); res.StatusCode != http.StatusCreated {
+		t.Fatalf("create target: %d", res.StatusCode)
+	}
+	s.drain(t)
+
+	var log pageRow
+	res := s.get(t, base+"/logs?limit=1", ownerAuth)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("causal log: %d", res.StatusCode)
+	}
+	decode(t, res, &log)
+	if len(log.Entries) == 0 {
+		t.Fatal("workspace work did not reach the causal journal")
+	}
+	for _, entry := range log.Entries {
+		if entry.WorkspaceID != workspace.String() {
+			t.Fatalf("causal line crossed workspace boundary: %+v", entry)
+		}
+	}
+	if res := s.get(t, base+"/logs", strangerAuth); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("stranger read causal log: %d", res.StatusCode)
 	}
 }
 

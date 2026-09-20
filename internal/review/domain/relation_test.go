@@ -69,3 +69,33 @@ func TestRelationEditChangesTheAssessmentButKeepsItsIdentity(t *testing.T) {
 		t.Fatalf("edit changed creation time: %v", got.CreatedAt)
 	}
 }
+
+func TestClusterKeepsAnOrderedUniqueObservationSet(t *testing.T) {
+	at := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+	got, err := domain.NewCluster(reviewID(1), reviewID(2), reviewID(3), " claim ", "  East Quay account  ", "  A qualified grouping for review.  ", []id.ID{reviewID(9), reviewID(4)}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != domain.ClaimCluster || got.Title != "East Quay account" || got.Description != "A qualified grouping for review." || len(got.ObservationIDs) != 2 || got.ObservationIDs[0] != reviewID(9) {
+		t.Fatalf("cluster normalisation: %+v", got)
+	}
+}
+
+func TestClusterRejectsInvalidGroupingFields(t *testing.T) {
+	at := time.Now()
+	for _, tc := range []struct {
+		name, kind, title string
+		observations     []id.ID
+	}{
+		{"unknown kind", "person", "A cluster", []id.ID{reviewID(4)}},
+		{"empty title", "claim", " ", []id.ID{reviewID(4)}},
+		{"no observations", "claim", "A cluster", nil},
+		{"duplicate observations", "claim", "A cluster", []id.ID{reviewID(4), reviewID(4)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := domain.NewCluster(reviewID(1), reviewID(2), reviewID(3), tc.kind, tc.title, "description", tc.observations, at); err == nil {
+				t.Fatal("accepted invalid cluster")
+			}
+		})
+	}
+}

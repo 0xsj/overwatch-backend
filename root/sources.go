@@ -3,7 +3,12 @@ package root
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -34,6 +39,7 @@ import (
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
 	connectioncmd "github.com/0xsj/overwatch-backend/internal/researchconnection/app/command"
 	connectionquery "github.com/0xsj/overwatch-backend/internal/researchconnection/app/query"
+	connectiondomain "github.com/0xsj/overwatch-backend/internal/researchconnection/domain"
 	connectionpg "github.com/0xsj/overwatch-backend/internal/researchconnection/infra/postgres"
 	recordcmd "github.com/0xsj/overwatch-backend/internal/researchentity/app/command"
 	recordquery "github.com/0xsj/overwatch-backend/internal/researchentity/app/query"
@@ -65,32 +71,54 @@ import (
 // research groups one source-to-citation flow at the composition boundary.
 // Sources own retained material; observations own the statements citing it.
 type research struct {
-	sources        *sourcequery.Sources
-	sourceCmd      *sourcecmd.Sources
-	observations   *obsquery.ManualObservations
-	observationCmd *obscmd.ManualObservations
-	relations      *reviewquery.Relations
-	relationCmd    *reviewcmd.Relations
-	questions      *leadquery.Questions
-	questionCmd    *leadcmd.Questions
-	assistance     *assistquery.Operations
-	assistanceCmd  *assistcmd.Operations
-	syntheses      *assistquery.Syntheses
-	synthesisCmd   *assistcmd.Syntheses
-	events         *eventquery.Events
-	eventCmd       *eventcmd.Events
-	brief          *briefquery.Briefs
-	briefCmd       *briefcmd.Briefs
-	records        *recordquery.Records
-	recordCmd      *recordcmd.Records
-	resolutions    *resolutionquery.Resolutions
-	resolutionCmd  *resolutioncmd.Resolutions
-	connections    *connectionquery.Connections
-	connectionCmd  *connectioncmd.Connections
-	extractions    *extractionquery.Extractions
-	extractionCmd  *extractioncmd.Extractions
-	cleanup        *cleanupapp.Service
-	fetcher        referenceFetcher
+	sources               *sourcequery.Sources
+	sourceCmd             *sourcecmd.Sources
+	observations          *obsquery.ManualObservations
+	observationCmd        *obscmd.ManualObservations
+	relations             *reviewquery.Relations
+	board                 *reviewquery.Board
+	sourceLinks           *reviewquery.SourceLinks
+	relationCmd           *reviewcmd.Relations
+	sourceLinkCmd         *reviewcmd.SourceLinks
+	clusters              *reviewquery.Clusters
+	clusterCoverage       *reviewquery.ClusterCoverage
+	clusterCmd            *reviewcmd.Clusters
+	questions             *leadquery.Questions
+	questionCmd           *leadcmd.Questions
+	assistance            *assistquery.Operations
+	assistanceCmd         *assistcmd.Operations
+	providerPolicy        *assistquery.ProviderPolicies
+	providerPolicyCmd     *assistcmd.ProviderPolicies
+	comparisons           *assistquery.Comparisons
+	comparisonCmd         *assistcmd.Comparisons
+	questionSuggestions   *assistquery.QuestionSuggestions
+	questionSuggestionCmd *assistcmd.QuestionSuggestions
+	briefDrafts           *assistquery.BriefDrafts
+	briefDraftCmd         *assistcmd.BriefDrafts
+	connectionReviews     *assistquery.ConnectionReviews
+	connectionReviewCmd   *assistcmd.ConnectionReviews
+	syntheses             *assistquery.Syntheses
+	synthesisCmd          *assistcmd.Syntheses
+	events                *eventquery.Events
+	eventCmd              *eventcmd.Events
+	eventAccounts         *eventquery.Accounts
+	eventAccountCmd       *eventcmd.Accounts
+	eventClusters         *eventquery.Clusters
+	eventClusterCmd       *eventcmd.Clusters
+	eventRelationships    *eventquery.Relationships
+	eventRelationshipCmd  *eventcmd.Relationships
+	brief                 *briefquery.Briefs
+	briefCmd              *briefcmd.Briefs
+	records               *recordquery.Records
+	recordCmd             *recordcmd.Records
+	resolutions           *resolutionquery.Resolutions
+	resolutionCmd         *resolutioncmd.Resolutions
+	connections           *connectionquery.Connections
+	connectionCmd         *connectioncmd.Connections
+	extractions           *extractionquery.Extractions
+	extractionCmd         *extractioncmd.Extractions
+	cleanup               *cleanupapp.Service
+	fetcher               referenceFetcher
 }
 
 func newResearch(db *postgres.Pool, bytes *blob.Store, publisher events.Publisher, ids *id.V7, clk clock.System) *research {
@@ -170,43 +198,83 @@ func newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db *postgres.Pool, by
 	assistanceStore := assistpg.NewStore(db)
 	eventStore := eventpg.NewStore(db)
 	briefStore := briefpg.NewStore(db)
+	briefReads := briefquery.NewBriefs(briefStore)
 	recordStore := recordpg.NewStore(db)
 	connectionStore := connectionpg.NewStore(db)
+	connections := connectionquery.NewConnections(connectionStore)
 	resolutionStore := resolutionpg.NewStore(db)
 	extractionStore := extractionpg.NewStore(db)
 	extractionReads := extractionquery.NewExtractions(extractionStore, bytes)
 	relations := reviewquery.NewRelations(reviewStore)
+	board := reviewquery.NewBoard(reviewStore)
+	sourceLinks := reviewquery.NewSourceLinks(reviewStore)
+	clusters := reviewquery.NewClusters(reviewStore)
+	clusterCoverage := reviewquery.NewClusterCoverage(reviewStore)
+	providerPolicy := assistquery.NewProviderPolicies(assistanceStore)
 	return &research{
-		sources:        reads,
-		sourceCmd:      sourcecmd.NewSources(sourceStore, bytes, db, publisher, ids, clk),
-		observations:   obsquery.NewManualObservations(observations),
-		observationCmd: obscmd.NewManualObservations(observations, retainedSources{sources: reads, extractions: extractionReads}, db, publisher, ids, clk),
-		relations:      relations,
-		relationCmd:    reviewcmd.NewRelations(reviewStore, db, publisher, ids, clk),
-		questions:      leadquery.NewQuestions(leadStore),
-		questionCmd:    leadcmd.NewQuestions(leadStore, db, publisher, ids, clk),
-		assistance:     assistquery.NewOperations(assistanceStore),
-		assistanceCmd:  assistcmd.NewOperations(assistanceStore, assistanceCaptures{sources: reads, extractions: extractionReads}, provider, db, publisher, ids, clk),
-		syntheses:      assistquery.NewSyntheses(assistanceStore),
-		synthesisCmd:   assistcmd.NewSyntheses(assistanceStore, synthesisEvidence{relations: relations}, synthesisProvider, db, publisher, ids, clk),
-		events:         eventquery.NewEvents(eventStore),
-		eventCmd:       eventcmd.NewEvents(eventStore, db, publisher, ids, clk),
-		brief:          briefquery.NewBriefs(briefStore),
-		briefCmd:       briefcmd.NewBriefs(briefStore, db, publisher, ids, clk),
-		records:        recordquery.NewRecords(recordStore),
-		recordCmd:      recordcmd.NewRecords(recordStore, db, publisher, ids, clk),
-		resolutions:    resolutionquery.NewResolutions(resolutionStore),
-		resolutionCmd:  resolutioncmd.NewResolutions(resolutionStore, recordStore, db, publisher, ids, clk),
-		connections:    connectionquery.NewConnections(connectionStore),
-		connectionCmd:  connectioncmd.NewConnections(connectionStore, db, publisher, ids, clk),
-		extractions:    extractionReads,
-		extractionCmd:  extractioncmd.NewExtractionsWithOCR(extractionStore, bytes, extractionCaptures{reads}, db, publisher, ids, clk, ocr),
-		cleanup:        cleanupapp.New(cleanuppg.NewStore(db), bytes, publisher, ids, clk),
-		fetcher:        fetcher,
+		sources:               reads,
+		sourceCmd:             sourcecmd.NewSources(sourceStore, bytes, db, publisher, ids, clk),
+		observations:          obsquery.NewManualObservations(observations),
+		observationCmd:        obscmd.NewManualObservations(observations, retainedSources{sources: reads, extractions: extractionReads}, db, publisher, ids, clk),
+		relations:             relations,
+		board:                 board,
+		sourceLinks:           sourceLinks,
+		relationCmd:           reviewcmd.NewRelations(reviewStore, db, publisher, ids, clk),
+		sourceLinkCmd:         reviewcmd.NewSourceLinks(reviewStore, db, publisher, ids, clk),
+		clusters:              clusters,
+		clusterCoverage:       clusterCoverage,
+		clusterCmd:            reviewcmd.NewClusters(reviewStore, db, publisher, ids, clk),
+		questions:             leadquery.NewQuestions(leadStore),
+		questionCmd:           leadcmd.NewQuestions(leadStore, db, publisher, ids, clk),
+		assistance:            assistquery.NewOperations(assistanceStore),
+		providerPolicy:        providerPolicy,
+		providerPolicyCmd:     assistcmd.NewProviderPolicies(assistanceStore, db, publisher, ids, clk),
+		assistanceCmd:         assistcmd.NewOperations(assistanceStore, assistanceCaptures{sources: reads, extractions: extractionReads}, provider, providerPolicy, db, publisher, ids, clk),
+		comparisons:           assistquery.NewComparisons(assistanceStore),
+		comparisonCmd:         assistcmd.NewComparisons(assistanceStore, comparisonEvidence{relations: relations}, assistapp.LocalComparisonProvider{}, db, publisher, ids, clk),
+		questionSuggestions:   assistquery.NewQuestionSuggestions(assistanceStore),
+		questionSuggestionCmd: assistcmd.NewQuestionSuggestions(assistanceStore, questionSuggestionEvidence{relations: relations}, assistapp.LocalQuestionSuggestionProvider{}, db, publisher, ids, clk),
+		briefDrafts:           assistquery.NewBriefDrafts(assistanceStore),
+		briefDraftCmd:         assistcmd.NewBriefDrafts(assistanceStore, briefDraftEvidence{brief: briefReads, relations: relations}, assistapp.LocalBriefDraftProvider{}, db, publisher, ids, clk),
+		connectionReviews:     assistquery.NewConnectionReviews(assistanceStore),
+		connectionReviewCmd:   assistcmd.NewConnectionReviews(assistanceStore, connections, connectionReviewEvidence{relations: relations}, assistapp.LocalConnectionReviewProvider{}, db, publisher, ids, clk),
+		syntheses:             assistquery.NewSyntheses(assistanceStore),
+		synthesisCmd:          assistcmd.NewSyntheses(assistanceStore, synthesisEvidence{relations: relations}, synthesisProvider, db, publisher, ids, clk),
+		events:                eventquery.NewEvents(eventStore),
+		eventCmd:              eventcmd.NewEvents(eventStore, recordStore, db, publisher, ids, clk),
+		eventAccounts:         eventquery.NewAccounts(eventStore),
+		eventAccountCmd:       eventcmd.NewAccounts(eventStore, eventquery.NewEvents(eventStore), recordStore, db, publisher, ids, clk),
+		eventClusters:         eventquery.NewClusters(eventStore),
+		eventClusterCmd:       eventcmd.NewClusters(eventStore, eventquery.NewEvents(eventStore), db, publisher, ids, clk),
+		eventRelationships:    eventquery.NewRelationships(eventStore),
+		eventRelationshipCmd:  eventcmd.NewRelationships(eventStore, eventquery.NewEvents(eventStore), relations, db, publisher, ids, clk),
+		brief:                 briefReads,
+		briefCmd:              briefcmd.NewBriefs(briefStore, db, publisher, ids, clk),
+		records:               recordquery.NewRecords(recordStore),
+		recordCmd:             recordcmd.NewRecords(recordStore, db, publisher, ids, clk),
+		resolutions:           resolutionquery.NewResolutions(resolutionStore, resolutionStore),
+		resolutionCmd:         resolutioncmd.NewResolutions(resolutionStore, recordStore, db, publisher, ids, clk, resolutionStore),
+		connections:           connections,
+		connectionCmd:         connectioncmd.NewConnections(connectionStore, db, publisher, ids, clk),
+		extractions:           extractionReads,
+		extractionCmd:         extractioncmd.NewExtractionsWithOCR(extractionStore, bytes, extractionCaptures{reads}, db, publisher, ids, clk, ocr),
+		cleanup:               cleanupapp.New(cleanuppg.NewStore(db), bytes, publisher, ids, clk),
+		fetcher:               fetcher,
 	}
 }
 
 type synthesisEvidence struct{ relations *reviewquery.Relations }
+
+type comparisonEvidence struct{ relations *reviewquery.Relations }
+
+type questionSuggestionEvidence struct{ relations *reviewquery.Relations }
+
+type briefDraftEvidence struct {
+	brief     *briefquery.Briefs
+	relations *reviewquery.Relations
+}
+
+type connectionReviewEvidence struct{ relations *reviewquery.Relations }
 
 func (s synthesisEvidence) Evidence(ctx context.Context, workspace, observation id.ID) (assistapp.Observation, error) {
 	found, err := s.relations.EvidenceByID(ctx, workspace, observation)
@@ -214,6 +282,135 @@ func (s synthesisEvidence) Evidence(ctx context.Context, workspace, observation 
 		return assistapp.Observation{}, err
 	}
 	return assistapp.Observation{ID: found.ID, WorkspaceID: found.WorkspaceID, SourceTitle: found.SourceTitle, Statement: found.Statement, Quote: found.Quote}, nil
+}
+
+func (s comparisonEvidence) LoadComparisonInput(ctx context.Context, workspace id.ID, observations []id.ID) (assistapp.ComparisonInput, error) {
+	inputs := make([]assistapp.Observation, 0, len(observations))
+	selected := make(map[id.ID]struct{}, len(observations))
+	for _, observation := range observations {
+		found, err := s.relations.EvidenceByID(ctx, workspace, observation)
+		if err != nil {
+			return assistapp.ComparisonInput{}, err
+		}
+		selected[observation] = struct{}{}
+		inputs = append(inputs, assistapp.Observation{ID: found.ID, WorkspaceID: found.WorkspaceID, SourceTitle: found.SourceTitle, Statement: found.Statement, Quote: found.Quote})
+	}
+	decisions := make([]assistapp.ComparisonDecision, 0)
+	var before id.ID
+	for {
+		page, err := s.relations.Relations(ctx, workspace, before, 100)
+		if err != nil {
+			return assistapp.ComparisonInput{}, err
+		}
+		for _, relation := range page.Items {
+			if _, left := selected[relation.LeftObservationID]; !left {
+				continue
+			}
+			if _, right := selected[relation.RightObservationID]; !right {
+				continue
+			}
+			decisions = append(decisions, assistapp.ComparisonDecision{LeftObservationID: relation.LeftObservationID, RightObservationID: relation.RightObservationID, Kind: relation.Kind.String(), Rationale: relation.Rationale})
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		before = *page.NextCursor
+	}
+	return assistapp.ComparisonInput{Observations: inputs, Decisions: decisions}, nil
+}
+
+func (s questionSuggestionEvidence) LoadQuestionSuggestionInput(ctx context.Context, workspace id.ID, gaps []assistdomain.QuestionSuggestionGap) (assistapp.QuestionSuggestionInput, error) {
+	loaded := make(map[id.ID]assistapp.Observation)
+	for _, gap := range gaps {
+		for _, observation := range gap.ObservationIDs {
+			if _, ok := loaded[observation]; ok {
+				continue
+			}
+			found, err := s.relations.EvidenceByID(ctx, workspace, observation)
+			if err != nil {
+				return assistapp.QuestionSuggestionInput{}, err
+			}
+			loaded[observation] = assistapp.Observation{ID: found.ID, WorkspaceID: found.WorkspaceID, SourceTitle: found.SourceTitle, Statement: found.Statement, Quote: found.Quote}
+		}
+	}
+	input := assistapp.QuestionSuggestionInput{Gaps: make([]assistapp.QuestionSuggestionGapInput, 0, len(gaps))}
+	for _, gap := range gaps {
+		observations := make([]assistapp.Observation, 0, len(gap.ObservationIDs))
+		for _, observation := range gap.ObservationIDs {
+			observations = append(observations, loaded[observation])
+		}
+		input.Gaps = append(input.Gaps, assistapp.QuestionSuggestionGapInput{Kind: gap.Kind, Label: gap.Label, Detail: gap.Detail, ObservationIDs: append([]id.ID(nil), gap.ObservationIDs...), Observations: observations})
+	}
+	return input, nil
+}
+
+func (s briefDraftEvidence) LoadBriefDraftInput(ctx context.Context, workspace id.ID, observations []id.ID) (assistapp.BriefDraftInput, error) {
+	brief, err := s.brief.ByWorkspace(ctx, workspace)
+	if err != nil {
+		return assistapp.BriefDraftInput{}, err
+	}
+	input := assistapp.BriefDraftInput{Brief: assistdomain.BriefDraftInput{BriefID: brief.ID, Title: brief.Title, Question: brief.Question, CurrentAccount: brief.CurrentAccount, Alternatives: brief.Alternatives, Limitations: brief.Limitations, NextSteps: brief.NextSteps, ObservationIDs: append([]id.ID(nil), observations...)}, Observations: make([]assistapp.BriefDraftObservation, 0, len(observations))}
+	for _, observation := range observations {
+		found, err := s.relations.EvidenceByID(ctx, workspace, observation)
+		if err != nil {
+			return assistapp.BriefDraftInput{}, err
+		}
+		input.Observations = append(input.Observations, assistapp.BriefDraftObservation{ID: found.ID, SourceTitle: found.SourceTitle, Statement: found.Statement, Quote: found.Quote})
+	}
+	return input, nil
+}
+
+func (s connectionReviewEvidence) LoadConnectionReviewInput(ctx context.Context, connection connectiondomain.Connection) (assistapp.ConnectionReviewInput, error) {
+	load := func(observations []id.ID) ([]assistapp.Observation, error) {
+		out := make([]assistapp.Observation, 0, len(observations))
+		for _, observation := range observations {
+			found, err := s.relations.EvidenceByID(ctx, connection.WorkspaceID, observation)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, assistapp.Observation{ID: found.ID, WorkspaceID: found.WorkspaceID, SourceTitle: found.SourceTitle, Statement: found.Statement, Quote: found.Quote})
+		}
+		return out, nil
+	}
+	supporting, err := load(connection.SupportingObservationIDs)
+	if err != nil {
+		return assistapp.ConnectionReviewInput{}, err
+	}
+	opposing, err := load(connection.OpposingObservationIDs)
+	if err != nil {
+		return assistapp.ConnectionReviewInput{}, err
+	}
+	selected := make(map[id.ID]struct{}, len(connection.SupportingObservationIDs)+len(connection.OpposingObservationIDs))
+	for _, observation := range append(append([]id.ID{}, connection.SupportingObservationIDs...), connection.OpposingObservationIDs...) {
+		selected[observation] = struct{}{}
+	}
+	decisions := make([]assistapp.ComparisonDecision, 0)
+	var before id.ID
+	for {
+		page, err := s.relations.Relations(ctx, connection.WorkspaceID, before, 100)
+		if err != nil {
+			return assistapp.ConnectionReviewInput{}, err
+		}
+		for _, relation := range page.Items {
+			if _, ok := selected[relation.LeftObservationID]; !ok {
+				continue
+			}
+			if _, ok := selected[relation.RightObservationID]; !ok {
+				continue
+			}
+			decisions = append(decisions, assistapp.ComparisonDecision{LeftObservationID: relation.LeftObservationID, RightObservationID: relation.RightObservationID, Kind: relation.Kind.String(), Rationale: relation.Rationale})
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		before = *page.NextCursor
+	}
+	return assistapp.ConnectionReviewInput{
+		ConnectionID: connection.ID, FromRecordID: connection.FromRecordID, ToRecordID: connection.ToRecordID,
+		ConnectionKind: connection.Kind.String(), ConnectionState: connection.State.String(), ConnectionRationale: connection.Rationale,
+		SupportingObservationIDs: append([]id.ID(nil), connection.SupportingObservationIDs...), OpposingObservationIDs: append([]id.ID(nil), connection.OpposingObservationIDs...),
+		SupportingObservations: supporting, OpposingObservations: opposing, Decisions: decisions,
+	}, nil
 }
 
 type retainedSources struct {
@@ -257,7 +454,7 @@ func (s assistanceCaptures) Retained(ctx context.Context, workspace, source, cap
 		return assistcmd.RetainedCapture{}, err
 	}
 	if derived.Status != extractiondomain.Succeeded {
-		return assistcmd.RetainedCapture{}, extractiondomain.ErrUnsupported
+		return assistcmd.RetainedCapture{}, fmt.Errorf("%w: %v", assistdomain.ErrUnsupported, extractiondomain.ErrUnsupported)
 	}
 	return assistcmd.RetainedCapture{WorkspaceID: derived.WorkspaceID, SourceID: derived.SourceID, CaptureID: derived.CaptureID, ExtractionID: derived.ID, MediaType: "text/plain", Content: derived.Text}, nil
 }
@@ -273,6 +470,10 @@ func (s extractionCaptures) Retained(ctx context.Context, workspace, source, cap
 func (m *me) registerResearch(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/search", m.searchResearch)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources", m.listSources)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/source-intake", m.listSourceIntake)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/source-intake", m.createSourceIntake)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/source-intake/{intake}", m.readSourceIntake)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/source-intake/{intake}/review", m.reviewSourceIntake)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/retention-review", m.listRetentionReview)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/retention-cleanup/review", m.readRetentionCleanupReview)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/retention-cleanup/review", m.saveRetentionCleanupReview)
@@ -284,6 +485,8 @@ func (m *me) registerResearch(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources", m.createSource)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}", m.readSource)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/sources/{source}/retention", m.setSourceRetention)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/sources/{source}/publication", m.setSourcePublication)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/sources/{source}/duplicate-policy", m.setSourceDuplicatePolicy)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/sources/{source}/privacy", m.setSourcePrivacy)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/retention-review", m.reviewSourceRetention)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/purge", m.purgeSource)
@@ -293,23 +496,66 @@ func (m *me) registerResearch(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/captures/{capture}/extractions/{extraction}", m.readSourceExtraction)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/captures", m.captureSource)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/fetch", m.fetchSource)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/watch", m.readSourceWatch)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/sources/{source}/watch", m.setSourceWatch)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/watch/run", m.runSourceWatch)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/source-watches/run-due", m.runDueSourceWatch)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/source-alerts", m.listSourceAlerts)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/source-alerts/refresh-gaps", m.refreshSourceGapAlerts)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/source-alerts/{alert}/seen", m.markSourceAlertSeen)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/observations", m.listSourceObservations)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/observations", m.recordSourceObservation)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/observations/{observation}/shares", m.listCitationShares)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/observations/{observation}/shares", m.createCitationShare)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/shares/{share}/revoke", m.revokeCitationShare)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/observations/{observation}", m.readSourceObservation)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/observations/shared/{token}", m.readSharedCitation)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/questions", m.listQuestions)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/questions", m.createQuestion)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/questions/{question}", m.readQuestion)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/questions/{question}", m.editQuestion)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/events", m.listTimelineEvents)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/events", m.createTimelineEvent)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/events/{event}/revisions", m.listTimelineEventRevisions)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/events/{event}/revisions/{revision}", m.readTimelineEventRevision)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/events/{event}", m.readTimelineEvent)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/events/{event}", m.editTimelineEvent)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/events/{event}/accounts", m.listTimelineEventAccounts)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/events/{event}/accounts", m.createTimelineEventAccount)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/events/{event}/accounts/reconciliation", m.reconcileTimelineEventAccounts)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/event-clusters", m.listTimelineEventClusters)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/event-clusters", m.createTimelineEventCluster)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/event-clusters/{cluster}", m.readTimelineEventCluster)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/event-clusters/{cluster}", m.editTimelineEventCluster)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/event-clusters/{cluster}/review", m.reviewTimelineEventCluster)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/event-relationships", m.listTimelineEventRelationships)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/event-relationships", m.createTimelineEventRelationship)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/event-relationships/{relationship}", m.readTimelineEventRelationship)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/event-relationships/{relationship}/review", m.reviewTimelineEventRelationship)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief", m.readWorkingBrief)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/brief", m.saveWorkingBrief)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/drafts", m.listBriefDrafts)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/drafts/{draft}", m.readBriefDraft)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/brief/drafts", m.createBriefDraft)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/handoffs", m.listBriefRecipientHandoffs)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/handoffs/{snapshot}", m.readBriefRecipientHandoff)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/handoffs/{snapshot}/export", m.readBriefRecipientHandoffExport)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/shared/{token}", m.readBriefSharedHandoff)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/shared/{token}/export", m.readBriefSharedHandoffExport)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/snapshots", m.listBriefSnapshots)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/brief/snapshots", m.createBriefSnapshot)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/snapshots/{snapshot}", m.readBriefSnapshot)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/activity", m.briefSnapshotActivity)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/shares", m.listBriefSnapshotShares)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/shares", m.createBriefSnapshotShare)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/brief/shares/{share}/revoke", m.revokeBriefSnapshotShare)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/comments", m.listBriefSnapshotComments)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/comments", m.addBriefSnapshotComment)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/review", m.readBriefSnapshotReview)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/review/assignment", m.assignBriefSnapshotReviewer)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/brief/snapshots/{snapshot}/review/decisions", m.decideBriefSnapshotReview)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/records", m.listResearchRecords)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/records/summary", m.summarizeResearchRecords)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/records", m.createResearchRecord)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/records/{record}", m.readResearchRecord)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/records/{record}", m.editResearchRecord)
@@ -317,15 +563,28 @@ func (m *me) registerResearch(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/records/{record}/resolutions", m.createRecordResolution)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/resolutions", m.listResearchResolutions)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/resolutions/{resolution}", m.readResearchResolution)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/resolutions/{resolution}/impact", m.readResearchResolutionImpact)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/resolutions/{resolution}", m.reviewResearchResolution)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/resolutions/{resolution}/reverse", m.reverseResearchResolution)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/resolution-sets", m.listResearchResolutionSets)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/resolution-sets", m.createResearchResolutionSet)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/resolution-sets/{resolution_set}", m.readResearchResolutionSet)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/resolution-sets/{resolution_set}/impact", m.readResearchResolutionSetImpact)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/resolution-sets/{resolution_set}", m.reviewResearchResolutionSet)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/resolution-sets/{resolution_set}/reverse", m.reverseResearchResolutionSet)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/connections", m.listResearchConnections)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/connections/summary", m.summarizeResearchConnections)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/connections", m.createResearchConnection)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/connections/{connection}/revisions", m.listResearchConnectionRevisions)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/connections/{connection}/revisions/{revision}", m.readResearchConnectionRevision)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/connections/{connection}/reviews", m.listResearchConnectionReviews)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/connections/{connection}/reviews", m.createResearchConnectionReview)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/connections/{connection}/reviews/{review}", m.readResearchConnectionReview)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/connections/{connection}", m.readResearchConnection)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/connections/{connection}", m.editResearchConnection)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/captures/{capture}/assistance", m.generateAssistance)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/assistance/policy", m.readAssistancePolicy)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/assistance/policy", m.updateAssistancePolicy)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/captures/{capture}/assistance", m.readLatestAssistance)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/captures/{capture}/assistance/history", m.readAssistanceHistory)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/assistance/{operation}", m.readAssistance)
@@ -405,6 +664,113 @@ func (m *me) listSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	found, err := m.research.sources.List(r.Context(), workspace, before, query, size)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, found)
+}
+
+func (m *me) listSourceIntake(w http.ResponseWriter, r *http.Request) {
+	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	before, size, ok := researchPage(w, r)
+	if !ok {
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	found, err := m.research.sources.ListIntake(r.Context(), workspace, before, status, size)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, found)
+}
+
+type sourceIntakeRequest struct {
+	Title         string `json:"title"`
+	Origin        string `json:"origin"`
+	URL           string `json:"url"`
+	Filename      string `json:"filename"`
+	MediaType     string `json:"media_type"`
+	Content       string `json:"content"`
+	ContentBase64 string `json:"content_base64"`
+	Note          string `json:"note"`
+}
+
+func (m *me) createSourceIntake(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	var in sourceIntakeRequest
+	if !decodeResearchBody(w, r, &in) {
+		return
+	}
+	var fresh sourcedomain.IntakeCandidate
+	var err error
+	switch strings.TrimSpace(in.Origin) {
+	case "", sourcedomain.IntakeReference:
+		fresh, err = m.research.sourceCmd.CreateIntakeCandidate(r.Context(), workspace, caller, in.Title, in.URL, in.Note)
+	case sourcedomain.IntakeImport:
+		content := []byte(in.Content)
+		if strings.TrimSpace(in.ContentBase64) != "" {
+			content, err = base64.StdEncoding.DecodeString(strings.TrimSpace(in.ContentBase64))
+			if err != nil {
+				httpx.WriteError(w, r, errors.New(errors.Invalid, "import content must be valid base64"))
+				return
+			}
+		}
+		fresh, err = m.research.sourceCmd.CreateImportIntakeCandidate(r.Context(), workspace, caller, in.Title, in.Filename, in.MediaType, content, in.Note)
+	default:
+		httpx.WriteError(w, r, errors.New(errors.Invalid, "source intake origin must be reference or import"))
+		return
+	}
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusCreated, fresh)
+}
+
+func (m *me) readSourceIntake(w http.ResponseWriter, r *http.Request) {
+	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	intake, ok := m.sourceID(w, r, "intake")
+	if !ok {
+		return
+	}
+	found, err := m.research.sources.ReadIntake(r.Context(), workspace, intake)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, found)
+}
+
+type sourceIntakeReviewRequest struct {
+	Decision string `json:"decision"`
+	Note     string `json:"note"`
+}
+
+func (m *me) reviewSourceIntake(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	intake, ok := m.sourceID(w, r, "intake")
+	if !ok {
+		return
+	}
+	var in sourceIntakeReviewRequest
+	if !decodeResearchBody(w, r, &in) {
+		return
+	}
+	found, err := m.research.sourceCmd.ReviewIntakeCandidate(r.Context(), workspace, intake, caller, strings.TrimSpace(in.Decision), in.Note)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -704,6 +1070,73 @@ type sourcePrivacyRequest struct {
 	LegalHoldReason string `json:"legal_hold_reason"`
 }
 
+type sourcePublicationRequest struct {
+	PublishedAt *string `json:"published_at"`
+}
+
+func (m *me) setSourcePublication(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	source, ok := m.sourceID(w, r, "source")
+	if !ok {
+		return
+	}
+	var in sourcePublicationRequest
+	if !decodeResearchBody(w, r, &in) {
+		return
+	}
+	var publishedAt *time.Time
+	if in.PublishedAt != nil {
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*in.PublishedAt))
+		if err != nil {
+			httpx.Fail(m.log, w, r, sourcedomain.ErrPublicationInvalid)
+			return
+		}
+		publishedAt = &parsed
+	}
+	if err := m.research.sourceCmd.SetPublication(r.Context(), workspace, source, caller, publishedAt); err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.sources.Read(r.Context(), workspace, source)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, found)
+}
+
+type sourceDuplicatePolicyRequest struct {
+	DuplicatePolicy string `json:"duplicate_policy"`
+}
+
+func (m *me) setSourceDuplicatePolicy(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	source, ok := m.sourceID(w, r, "source")
+	if !ok {
+		return
+	}
+	var in sourceDuplicatePolicyRequest
+	if !decodeResearchBody(w, r, &in) {
+		return
+	}
+	if err := m.research.sourceCmd.SetDuplicatePolicy(r.Context(), workspace, source, caller, strings.TrimSpace(in.DuplicatePolicy)); err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.sources.Read(r.Context(), workspace, source)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, found)
+}
+
 func (m *me) setSourcePrivacy(w http.ResponseWriter, r *http.Request) {
 	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
 	if !ok {
@@ -955,6 +1388,238 @@ func (m *me) fetchSource(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusCreated, captured)
 }
 
+type sourceWatchRequest struct {
+	Enabled         bool `json:"enabled"`
+	IntervalSeconds int  `json:"interval_seconds"`
+}
+
+func (m *me) readSourceWatch(w http.ResponseWriter, r *http.Request) {
+	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	source, ok := m.sourceID(w, r, "source")
+	if !ok {
+		return
+	}
+	if _, err := m.research.sources.Read(r.Context(), workspace, source); err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	watch, err := m.research.sources.Watch(r.Context(), workspace, source)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, watch)
+}
+
+func (m *me) setSourceWatch(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	source, ok := m.sourceID(w, r, "source")
+	if !ok {
+		return
+	}
+	var in sourceWatchRequest
+	if !decodeResearchBody(w, r, &in) {
+		return
+	}
+	watch, err := m.research.sourceCmd.ConfigureWatch(r.Context(), workspace, source, caller, in.Enabled, in.IntervalSeconds)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, watch)
+}
+
+func (m *me) listSourceAlerts(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	before, size, ok := researchPage(w, r)
+	if !ok {
+		return
+	}
+	alerts, err := m.research.sources.Alerts(r.Context(), workspace, caller, before, size)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, alerts)
+}
+
+type sourceAlertSeenResponse struct {
+	SeenAt string `json:"seen_at"`
+}
+
+func (m *me) markSourceAlertSeen(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	alert, ok := m.sourceID(w, r, "alert")
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		return
+	}
+	at, err := m.research.sourceCmd.MarkAlertSeen(r.Context(), workspace, alert, caller)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, sourceAlertSeenResponse{SeenAt: at.UTC().Format(time.RFC3339Nano)})
+}
+
+func (m *me) runSourceWatch(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	source, ok := m.sourceID(w, r, "source")
+	if !ok {
+		return
+	}
+	result, err := m.executeSourceWatch(r.Context(), workspace, source, caller, "")
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, result)
+}
+
+type dueSourceWatchResponse struct {
+	Claimed bool                      `json:"claimed"`
+	Run     *sourcecmd.WatchRunResult `json:"run,omitempty"`
+}
+
+func (m *me) runDueSourceWatch(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	owner := "watch-worker/" + caller.String() + "/" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10)
+	claimed, err := m.research.sourceCmd.ClaimDueWatch(r.Context(), workspace, owner, 2*time.Minute)
+	if stderrors.Is(err, sourcedomain.ErrWatchNotDue) {
+		httpx.WriteJSON(w, r, http.StatusOK, dueSourceWatchResponse{Claimed: false})
+		return
+	}
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	run, err := m.executeSourceWatch(r.Context(), workspace, claimed.SourceID, caller, owner)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, dueSourceWatchResponse{Claimed: true, Run: &run})
+}
+
+func (m *me) executeSourceWatch(ctx context.Context, workspace, source, caller id.ID, leaseOwner string) (sourcecmd.WatchRunResult, error) {
+	detail, err := m.research.sources.Read(ctx, workspace, source)
+	if err != nil {
+		return sourcecmd.WatchRunResult{}, err
+	}
+	watch, err := m.research.sources.Watch(ctx, workspace, source)
+	if err != nil {
+		return sourcecmd.WatchRunResult{}, err
+	}
+	if !watch.Enabled {
+		return sourcecmd.WatchRunResult{}, errors.New(errors.Invalid, "enable source monitoring before running a watch")
+	}
+	if watch.LeaseOwner != "" && watch.LeaseOwner != leaseOwner {
+		return sourcecmd.WatchRunResult{}, sourcedomain.ErrWatchLeased
+	}
+	fail := func(runErr error) {
+		var persistErr error
+		if leaseOwner == "" {
+			_, persistErr = m.research.sourceCmd.RecordWatchRun(ctx, workspace, source, caller, sourcedomain.WatchStatusFailed, id.ID{}, boundedWatchError(runErr))
+		} else {
+			_, persistErr = m.research.sourceCmd.RecordClaimedWatchRun(ctx, workspace, source, caller, sourcedomain.WatchStatusFailed, id.ID{}, boundedWatchError(runErr), leaseOwner)
+		}
+		if persistErr != nil {
+			runErr = persistErr
+		}
+		err = runErr
+	}
+	response, err := m.research.fetcher.Get(ctx, detail.Source.URL)
+	if err != nil {
+		fail(err)
+		return sourcecmd.WatchRunResult{}, err
+	}
+	if response.Status < http.StatusOK || response.Status >= http.StatusMultipleChoices {
+		err = errors.Newf(errors.Unavailable, "reference returned HTTP status %d", response.Status)
+		fail(err)
+		return sourcecmd.WatchRunResult{}, err
+	}
+	mediaType, err := fetchedMediaType(response.Header.Get("Content-Type"))
+	if err != nil {
+		fail(err)
+		return sourcecmd.WatchRunResult{}, err
+	}
+	if response.Truncated {
+		err = egress.ErrTooLarge
+		fail(err)
+		return sourcecmd.WatchRunResult{}, err
+	}
+	digest := sha256.Sum256(response.Body)
+	sha := hex.EncodeToString(digest[:])
+	// Re-read after the network call. A lease can expire while a slow reference
+	// responds; another worker may have completed the same capture in the
+	// meantime, and the latest retained hash is the authoritative change check.
+	latest, latestErr := m.research.sources.Read(ctx, workspace, source)
+	if latestErr != nil {
+		fail(latestErr)
+		return sourcecmd.WatchRunResult{}, latestErr
+	}
+	if latest.Source.LatestCapture != nil && latest.Source.LatestCapture.SHA256 == sha {
+		var updated sourcedomain.Watch
+		if leaseOwner == "" {
+			updated, err = m.research.sourceCmd.RecordWatchRun(ctx, workspace, source, caller, sourcedomain.WatchStatusUnchanged, id.ID{}, "")
+		} else {
+			updated, err = m.research.sourceCmd.RecordClaimedWatchRun(ctx, workspace, source, caller, sourcedomain.WatchStatusUnchanged, id.ID{}, "", leaseOwner)
+		}
+		if err != nil {
+			return sourcecmd.WatchRunResult{}, err
+		}
+		return sourcecmd.WatchRunResult{Watch: updated, Changed: false}, nil
+	}
+	var captured sourcedomain.Capture
+	if mediaType == "application/pdf" || mediaType == "image/png" || mediaType == "image/jpeg" || mediaType == "image/webp" {
+		captured, err = m.research.sourceCmd.AddBinaryCapture(ctx, workspace, source, caller, mediaType, response.Body)
+	} else {
+		captured, err = m.research.sourceCmd.AddCapture(ctx, workspace, source, caller, mediaType, string(response.Body))
+	}
+	if err != nil {
+		fail(err)
+		return sourcecmd.WatchRunResult{}, err
+	}
+	var updated sourcedomain.Watch
+	if leaseOwner == "" {
+		updated, err = m.research.sourceCmd.RecordWatchRun(ctx, workspace, source, caller, sourcedomain.WatchStatusChanged, captured.ID, "")
+	} else {
+		updated, err = m.research.sourceCmd.RecordClaimedWatchRun(ctx, workspace, source, caller, sourcedomain.WatchStatusChanged, captured.ID, "", leaseOwner)
+	}
+	if err != nil {
+		return sourcecmd.WatchRunResult{}, err
+	}
+	return sourcecmd.WatchRunResult{Watch: updated, Changed: true, Capture: &captured}, nil
+}
+
+func boundedWatchError(err error) string {
+	message := strings.TrimSpace(err.Error())
+	if len(message) > 2000 {
+		return message[:2000]
+	}
+	return message
+}
+
 func fetchedMediaType(raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return "text/plain", nil
@@ -1029,17 +1694,63 @@ func (m *me) generateAssistance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		ExtractionID id.ID `json:"extraction_id,omitempty"`
+		ExtractionID     id.ID `json:"extraction_id,omitempty"`
+		RetryOperationID id.ID `json:"retry_operation_id,omitempty"`
 	}
 	if !decodeResearchBody(w, r, &in) {
 		return
 	}
-	operation, proposals, err := m.research.assistanceCmd.Generate(r.Context(), workspace, source, capture, in.ExtractionID, caller)
+	var operation assistdomain.Operation
+	var proposals []assistdomain.Proposal
+	var err error
+	if !in.RetryOperationID.IsZero() {
+		operation, proposals, err = m.research.assistanceCmd.Retry(r.Context(), workspace, source, capture, in.RetryOperationID, caller)
+	} else {
+		operation, proposals, err = m.research.assistanceCmd.Generate(r.Context(), workspace, source, capture, in.ExtractionID, caller)
+	}
 	if err != nil {
+		if !operation.ID.IsZero() {
+			httpx.WriteJSON(w, r, http.StatusCreated, assistquery.Detail{Operation: operation, Proposals: proposals})
+			return
+		}
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	httpx.WriteJSON(w, r, http.StatusCreated, assistquery.Detail{Operation: operation, Proposals: proposals})
+}
+
+type assistancePolicyRequest struct {
+	AllowExternal bool `json:"allow_external"`
+}
+
+func (m *me) readAssistancePolicy(w http.ResponseWriter, r *http.Request) {
+	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	policy, err := m.research.providerPolicy.Current(r.Context(), workspace)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, policy)
+}
+
+func (m *me) updateAssistancePolicy(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelAdmin)
+	if !ok {
+		return
+	}
+	var in assistancePolicyRequest
+	if !decodeResearchBody(w, r, &in) {
+		return
+	}
+	policy, err := m.research.providerPolicyCmd.Set(r.Context(), workspace, caller, in.AllowExternal)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, policy)
 }
 
 func (m *me) readLatestAssistance(w http.ResponseWriter, r *http.Request) {

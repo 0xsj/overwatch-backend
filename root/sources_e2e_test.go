@@ -15,6 +15,7 @@ import (
 	cleanupdomain "github.com/0xsj/overwatch-backend/internal/artifactcleanup/domain"
 	assistquery "github.com/0xsj/overwatch-backend/internal/assistance/app/query"
 	assistdomain "github.com/0xsj/overwatch-backend/internal/assistance/domain"
+	eventquery "github.com/0xsj/overwatch-backend/internal/event/app/query"
 	eventdomain "github.com/0xsj/overwatch-backend/internal/event/domain"
 	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	obsdomain "github.com/0xsj/overwatch-backend/internal/observation/domain"
@@ -116,6 +117,58 @@ func TestResearchSourceCitationKeepsTheExactCaptureAfterANewVersion(t *testing.T
 	}
 }
 
+func TestResearchCitationShareIsRecipientSafeAndRevocable(t *testing.T) {
+	s := tracedSystem(t)
+	org, ws, _, client, ownerAuth, clientAuth := firm(t, s, orgdomain.RoleClient)
+	s.grant(t, org, client, ws, orgdomain.LevelRead)
+	source := addResearchSource(t, s, ws, ownerAuth, "A public notice with a private retained body.")
+	base := "/v1/workspaces/" + ws.String() + "/sources/" + source.ID.String()
+	observation := recordResearchObservation(t, s, base, ownerAuth, source.LatestCapture.ID, "public notice")
+
+	res := s.post(t, base+"/observations/"+observation.ID.String()+"/shares", `{}`, ownerAuth)
+	researchStatus(t, res, http.StatusCreated)
+	var created struct {
+		ShareID string `json:"share_id"`
+		Token   string `json:"token"`
+	}
+	decode(t, res, &created)
+	if created.ShareID == "" || created.Token == "" {
+		t.Fatalf("share did not return an opaque token once: %+v", created)
+	}
+
+	res = s.get(t, base+"/observations/"+observation.ID.String()+"/shares", ownerAuth)
+	researchStatus(t, res, http.StatusOK)
+	var listed []map[string]any
+	decode(t, res, &listed)
+	if len(listed) != 1 {
+		t.Fatalf("share list=%v", listed)
+	}
+	if _, exists := listed[0]["token"]; exists {
+		t.Fatal("share list returned the raw token after creation")
+	}
+
+	res = s.get(t, "/v1/workspaces/"+ws.String()+"/observations/shared/"+created.Token, clientAuth)
+	researchStatus(t, res, http.StatusOK)
+	var safe map[string]any
+	decode(t, res, &safe)
+	for _, forbidden := range []string{"source_id", "observation_id", "capture_id", "author", "raw_source_bytes"} {
+		if _, exists := safe[forbidden]; exists {
+			t.Fatalf("recipient projection leaked %q: %v", forbidden, safe)
+		}
+	}
+	if safe["statement"] != observation.Statement || safe["quote"] != observation.Quote || safe["source_title"] != source.Title {
+		t.Fatalf("recipient projection lost citation context: %v", safe)
+	}
+	if res = s.get(t, base+"/observations/"+observation.ID.String()+"/shares", clientAuth); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("client reached internal share management: %d", res.StatusCode)
+	}
+
+	researchStatus(t, s.post(t, "/v1/workspaces/"+ws.String()+"/sources/shares/"+created.ShareID+"/revoke", `{}`, ownerAuth), http.StatusOK)
+	if res = s.get(t, "/v1/workspaces/"+ws.String()+"/observations/shared/"+created.Token, clientAuth); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("revoked citation share remained readable: %d", res.StatusCode)
+	}
+}
+
 func TestResearchSourceRetentionScheduleIsAuditableAndClearable(t *testing.T) {
 	s := tracedSystem(t)
 	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
@@ -134,6 +187,125 @@ func TestResearchSourceRetentionScheduleIsAuditableAndClearable(t *testing.T) {
 	decode(t, res, &detail)
 	if detail.Source.RetentionUntil != nil || detail.Source.RetentionUpdatedBy.IsZero() {
 		t.Fatalf("retention schedule was not clearable: %+v", detail.Source)
+	}
+}
+
+func TestResearchSourcePublicationMetadataIsCorrectableWithoutChangingCaptures(t *testing.T) {
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	source := addResearchSource(t, s, ws, auth, "A notice with a publication date.")
+	base := "/v1/workspaces/" + ws.String() + "/sources/" + source.ID.String()
+	want := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+	res := s.put(t, base+"/publication", researchJSON(t, map[string]any{"published_at": want.Format(time.RFC3339Nano)}), auth)
+	researchStatus(t, res, http.StatusOK)
+	var detail sourcequery.Detail
+	decode(t, res, &detail)
+	if detail.Source.PublishedAt == nil || !detail.Source.PublishedAt.Equal(want) || detail.Source.LatestCapture == nil {
+		t.Fatalf("publication metadata was not persisted: %+v", detail.Source)
+	}
+	captureID := detail.Source.LatestCapture.ID
+	res = s.put(t, base+"/publication", `{"published_at":null}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &detail)
+	if detail.Source.PublishedAt != nil || detail.Source.LatestCapture == nil || detail.Source.LatestCapture.ID != captureID {
+		t.Fatalf("publication clear changed retained capture context: %+v", detail)
+	}
+}
+
+func TestResearchSourceDuplicatePolicyCanBlockIdenticalCapture(t *testing.T) {
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	content := "A notice whose bytes repeat."
+	source := addResearchSource(t, s, ws, auth, content)
+	base := "/v1/workspaces/" + ws.String() + "/sources/" + source.ID.String()
+	res := s.put(t, base+"/duplicate-policy", researchJSON(t, map[string]any{"duplicate_policy": "block"}), auth)
+	researchStatus(t, res, http.StatusOK)
+	var detail sourcequery.Detail
+	decode(t, res, &detail)
+	if detail.Source.DuplicatePolicy != sourcedomain.DuplicatePolicyBlock {
+		t.Fatalf("duplicate policy was not persisted: %+v", detail.Source)
+	}
+	res = s.post(t, base+"/captures", researchJSON(t, map[string]string{"content": content, "media_type": "text/plain"}), auth)
+	researchStatus(t, res, http.StatusConflict)
+	res = s.put(t, base+"/duplicate-policy", researchJSON(t, map[string]any{"duplicate_policy": "allow"}), auth)
+	researchStatus(t, res, http.StatusOK)
+	res = s.post(t, base+"/captures", researchJSON(t, map[string]string{"content": content, "media_type": "text/plain"}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	res = s.get(t, base, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &detail)
+	if len(detail.Captures) != 2 || detail.Captures[0].SHA256 != detail.Captures[1].SHA256 {
+		t.Fatalf("allow policy did not retain duplicate history: %+v", detail.Captures)
+	}
+}
+
+func TestResearchSourceIntakeRequiresReviewBeforeReferenceCreation(t *testing.T) {
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	path := "/v1/workspaces/" + ws.String() + "/source-intake"
+	res := s.post(t, path, researchJSON(t, map[string]string{"title": "Harbor bulletin", "url": "https://example.test/harbor", "note": "Discovered in a monitored public feed."}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var candidate sourcedomain.IntakeCandidate
+	decode(t, res, &candidate)
+	if candidate.Status != sourcedomain.IntakePending || candidate.SourceID != (id.ID{}) {
+		t.Fatalf("candidate was retained as a source before review: %+v", candidate)
+	}
+	res = s.get(t, path+"?status=pending", auth)
+	researchStatus(t, res, http.StatusOK)
+	var queue sourcequery.IntakePage
+	decode(t, res, &queue)
+	if len(queue.Items) != 1 || queue.Items[0].ID != candidate.ID {
+		t.Fatalf("pending intake queue=%+v", queue)
+	}
+	res = s.put(t, path+"/"+candidate.ID.String()+"/review", researchJSON(t, map[string]string{"decision": "approved", "note": "Relevant to the active investigation."}), auth)
+	researchStatus(t, res, http.StatusOK)
+	var result sourcecmd.IntakeReviewResult
+	decode(t, res, &result)
+	if result.Source == nil || result.Source.Origin != "reference" || result.Source.URL != candidate.URL || result.Candidate.Status != sourcedomain.IntakeApproved || result.Candidate.SourceID != result.Source.ID {
+		t.Fatalf("approved intake did not create a linked reference: %+v", result)
+	}
+	var detail sourcequery.Detail
+	res = s.get(t, "/v1/workspaces/"+ws.String()+"/sources/"+result.Source.ID.String(), auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &detail)
+	if detail.Source.Origin != "reference" || len(detail.Captures) != 0 {
+		t.Fatalf("approval retained bytes unexpectedly: %+v", detail)
+	}
+	res = s.put(t, path+"/"+candidate.ID.String()+"/review", researchJSON(t, map[string]string{"decision": "rejected", "note": "The candidate is no longer needed."}), auth)
+	researchStatus(t, res, http.StatusConflict)
+}
+
+func TestResearchImportedIntakeRetainsFileOnlyAfterApproval(t *testing.T) {
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	path := "/v1/workspaces/" + ws.String() + "/source-intake"
+	content := []byte("%PDF-1.7\nretained only after review")
+	res := s.post(t, path, researchJSON(t, map[string]any{"origin": "import", "title": "Notice PDF", "filename": "notice.pdf", "media_type": "application/pdf", "content_base64": base64.StdEncoding.EncodeToString(content), "note": "Imported from a reviewed case bundle."}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var candidate sourcedomain.IntakeCandidate
+	decode(t, res, &candidate)
+	if candidate.Origin != sourcedomain.IntakeImport || candidate.Filename != "notice.pdf" || candidate.Status != sourcedomain.IntakePending {
+		t.Fatalf("import candidate: %+v", candidate)
+	}
+	res = s.get(t, path+"/"+candidate.ID.String(), auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &candidate)
+	if candidate.ContentBytes != nil {
+		t.Fatal("staged import bytes leaked through the intake response")
+	}
+	res = s.put(t, path+"/"+candidate.ID.String()+"/review", researchJSON(t, map[string]string{"decision": "approved", "note": "The imported document belongs to this investigation."}), auth)
+	researchStatus(t, res, http.StatusOK)
+	var result sourcecmd.IntakeReviewResult
+	decode(t, res, &result)
+	if result.Source == nil || result.Source.Origin != sourcedomain.IntakeImport || result.Source.LatestCapture == nil || result.Source.LatestCapture.MediaType != "application/pdf" {
+		t.Fatalf("approved import did not create capture: %+v", result)
+	}
+	var captured sourcequery.Captured
+	res = s.get(t, "/v1/workspaces/"+ws.String()+"/sources/"+result.Source.ID.String()+"/captures/"+result.Source.LatestCapture.ID.String(), auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &captured)
+	if captured.ContentBase64 != base64.StdEncoding.EncodeToString(content) {
+		t.Fatalf("approved import changed bytes: %+v", captured)
 	}
 }
 
@@ -419,6 +591,240 @@ func TestResearchURLReferenceFetchCreatesAnImmutableCapture(t *testing.T) {
 	}
 }
 
+func TestResearchSourceWatchCapturesOnlyChangedBytes(t *testing.T) {
+	body := "<article>Initial monitored notice.</article>"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	base := "/v1/workspaces/" + ws.String() + "/sources"
+	res := s.post(t, base, researchJSON(t, map[string]any{"title": "Monitored notice", "origin": "reference", "url": server.URL}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var source sourcedomain.Summary
+	decode(t, res, &source)
+
+	res = s.get(t, base+"/"+source.ID.String()+"/watch", auth)
+	researchStatus(t, res, http.StatusOK)
+	var watch sourcedomain.Watch
+	decode(t, res, &watch)
+	if watch.Enabled || watch.LastStatus != sourcedomain.WatchStatusNever || watch.IntervalSeconds != sourcedomain.DefaultWatchIntervalSeconds {
+		t.Fatalf("unexpected default watch: %+v", watch)
+	}
+	res = s.put(t, base+"/"+source.ID.String()+"/watch", researchJSON(t, map[string]any{"enabled": true, "interval_seconds": 900}), auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &watch)
+	if !watch.Enabled || watch.NextRunAt == nil || watch.IntervalSeconds != 900 {
+		t.Fatalf("watch was not enabled: %+v", watch)
+	}
+	if _, err := s.pool.DB(t.Context()).Exec(t.Context(), `update source.watch set next_run_at=$3 where workspace_id=$1 and source_id=$2`, ws, source.ID, time.Now().UTC().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	res = s.post(t, "/v1/workspaces/"+ws.String()+"/source-watches/run-due", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	var due dueSourceWatchResponse
+	decode(t, res, &due)
+	if !due.Claimed || due.Run == nil || !due.Run.Changed || due.Run.Capture == nil || due.Run.Capture.Version != 1 || due.Run.Watch.LastStatus != sourcedomain.WatchStatusChanged {
+		t.Fatalf("due watch worker did not retain a changed capture: %+v", due)
+	}
+	if due.Run.Watch.LeaseOwner != "" || due.Run.Watch.LeaseUntil != nil {
+		t.Fatalf("due watch lease was not released: %+v", due.Run.Watch)
+	}
+	alertsPath := "/v1/workspaces/" + ws.String() + "/source-alerts"
+	res = s.get(t, alertsPath, auth)
+	researchStatus(t, res, http.StatusOK)
+	var alerts sourcequery.AlertPage
+	decode(t, res, &alerts)
+	if len(alerts.Items) != 1 || alerts.Items[0].Kind != sourcedomain.AlertKindCaptureChanged || alerts.Items[0].CaptureID == nil || *alerts.Items[0].CaptureID != due.Run.Capture.ID || alerts.Items[0].SourceTitle != "Monitored notice" || alerts.Items[0].SeenAt != nil {
+		t.Fatalf("changed watch alert was not durable and unread: %+v", alerts)
+	}
+	res = s.post(t, alertsPath+"/"+alerts.Items[0].ID.String()+"/seen", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	res = s.get(t, alertsPath, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &alerts)
+	if len(alerts.Items) != 1 || alerts.Items[0].SeenAt == nil {
+		t.Fatalf("alert seen state was not account-scoped and durable: %+v", alerts)
+	}
+	run := *due.Run
+	res = s.post(t, base+"/"+source.ID.String()+"/watch/run", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &run)
+	if run.Changed || run.Capture != nil || run.Watch.LastStatus != sourcedomain.WatchStatusUnchanged {
+		t.Fatalf("unchanged watch run created a capture: %+v", run)
+	}
+
+	res = s.post(t, base+"/"+source.ID.String()+"/watch/run", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &run)
+	if run.Changed || run.Capture != nil || run.Watch.LastStatus != sourcedomain.WatchStatusUnchanged {
+		t.Fatalf("repeated unchanged watch run created a capture: %+v", run)
+	}
+
+	body = "<article>Updated monitored notice.</article>"
+	res = s.post(t, base+"/"+source.ID.String()+"/watch/run", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &run)
+	if !run.Changed || run.Capture == nil || run.Capture.Version != 2 || run.Watch.LastStatus != sourcedomain.WatchStatusChanged {
+		t.Fatalf("changed watch run did not create version two: %+v", run)
+	}
+	var detail sourcequery.Detail
+	res = s.get(t, base+"/"+source.ID.String(), auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &detail)
+	if len(detail.Captures) != 2 || detail.Source.LatestCapture == nil || detail.Source.LatestCapture.ID != run.Capture.ID {
+		t.Fatalf("watch capture history was not immutable: %+v", detail)
+	}
+}
+
+func TestResearchQuestionGapAlertsRefreshAndRetireWithCurrentReview(t *testing.T) {
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	first := addResearchSource(t, s, ws, auth, "The first notice names East Quay café.")
+	second := addResearchSource(t, s, ws, auth, "The second notice names East Quay café at 18:00.")
+	left := recordResearchObservation(t, s, "/v1/workspaces/"+ws.String()+"/sources/"+first.ID.String(), auth, first.LatestCapture.ID, "East Quay café")
+	right := recordResearchObservation(t, s, "/v1/workspaces/"+ws.String()+"/sources/"+second.ID.String(), auth, second.LatestCapture.ID, "East Quay café")
+	base := "/v1/workspaces/" + ws.String()
+	researchStatus(t, s.put(t, base+"/evidence/relations", researchJSON(t, map[string]any{
+		"left_observation_id": left.ID, "right_observation_id": right.ID,
+		"kind": "unresolved", "rationale": "The timing still needs another source.",
+	}), auth), http.StatusOK)
+	res := s.post(t, base+"/questions", researchJSON(t, map[string]any{
+		"question": "Which notice timing is reliable?", "context": "Compare the two retained notices.",
+		"state": "open", "observation_ids": []id.ID{left.ID, right.ID},
+	}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var question map[string]any
+	decode(t, res, &question)
+	questionID, ok := question["question_id"].(string)
+	if !ok || questionID == "" {
+		t.Fatalf("question fixture: %+v", question)
+	}
+
+	alertsPath := base + "/source-alerts"
+	res = s.post(t, alertsPath+"/refresh-gaps", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	var refreshed sourceGapAlertsResponse
+	decode(t, res, &refreshed)
+	if refreshed.ActiveGapCount != 1 {
+		t.Fatalf("expected one active question gap: %+v", refreshed)
+	}
+	var alerts sourcequery.AlertPage
+	res = s.get(t, alertsPath, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &alerts)
+	if len(alerts.Items) != 1 || alerts.Items[0].Kind != sourcedomain.AlertKindQuestionGap || alerts.Items[0].QuestionID == nil || alerts.Items[0].QuestionID.String() != questionID || alerts.Items[0].SourceID != nil || alerts.Items[0].SeenAt != nil {
+		t.Fatalf("question gap alert projection: %+v", alerts)
+	}
+
+	res = s.post(t, alertsPath+"/refresh-gaps", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &refreshed)
+	if refreshed.ActiveGapCount != 1 {
+		t.Fatalf("refresh duplicated or lost the current gap: %+v", refreshed)
+	}
+	res = s.put(t, base+"/evidence/relations", researchJSON(t, map[string]any{
+		"left_observation_id": left.ID, "right_observation_id": right.ID,
+		"kind": "supports", "rationale": "The retained notices support the same conclusion.",
+	}), auth)
+	researchStatus(t, res, http.StatusOK)
+	res = s.post(t, alertsPath+"/refresh-gaps", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &refreshed)
+	if refreshed.ActiveGapCount != 0 {
+		t.Fatalf("resolved question gap remained active: %+v", refreshed)
+	}
+	res = s.get(t, alertsPath, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &alerts)
+	if len(alerts.Items) != 0 {
+		t.Fatalf("retired question gap remained in the active inbox: %+v", alerts)
+	}
+}
+
+func TestResearchRecordAndClusterGapAlertsRefreshAndRetireWithCurrentReview(t *testing.T) {
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	first := addResearchSource(t, s, ws, auth, "The first notice names East Quay café.")
+	second := addResearchSource(t, s, ws, auth, "The second notice names East Quay café at 18:00.")
+	left := recordResearchObservation(t, s, "/v1/workspaces/"+ws.String()+"/sources/"+first.ID.String(), auth, first.LatestCapture.ID, "East Quay café")
+	right := recordResearchObservation(t, s, "/v1/workspaces/"+ws.String()+"/sources/"+second.ID.String(), auth, second.LatestCapture.ID, "East Quay café")
+	base := "/v1/workspaces/" + ws.String()
+	res := s.put(t, base+"/evidence/relations", researchJSON(t, map[string]any{
+		"left_observation_id": left.ID, "right_observation_id": right.ID,
+		"kind": "unresolved", "rationale": "The timing still needs another source.",
+	}), auth)
+	researchStatus(t, res, http.StatusOK)
+	researchStatus(t, s.post(t, base+"/records", researchJSON(t, map[string]any{
+		"kind": "account", "name": "East Quay account", "description": "A provisional authored record.", "observation_ids": []id.ID{left.ID, right.ID},
+	}), auth), http.StatusCreated)
+	researchStatus(t, s.post(t, base+"/evidence/clusters", researchJSON(t, map[string]any{
+		"kind": "claim", "title": "East Quay timing claim", "description": "A provisional evidence grouping.", "observation_ids": []id.ID{left.ID, right.ID},
+	}), auth), http.StatusCreated)
+
+	alertsPath := base + "/source-alerts"
+	res = s.post(t, alertsPath+"/refresh-gaps", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	var refreshed sourceGapAlertsResponse
+	decode(t, res, &refreshed)
+	if refreshed.ActiveGapCount != 2 {
+		t.Fatalf("expected record and cluster gaps: %+v", refreshed)
+	}
+	var alerts sourcequery.AlertPage
+	res = s.get(t, alertsPath, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &alerts)
+	if len(alerts.Items) != 2 {
+		t.Fatalf("expected two derived gap alerts: %+v", alerts)
+	}
+	kinds := map[string]bool{}
+	for _, alert := range alerts.Items {
+		kinds[alert.Kind] = true
+		if alert.Kind == sourcedomain.AlertKindRecordGap && (alert.RecordID == nil || alert.ClusterID != nil || alert.SourceID != nil) {
+			t.Fatalf("record gap target shape: %+v", alert)
+		}
+		if alert.Kind == sourcedomain.AlertKindClusterGap && (alert.ClusterID == nil || alert.RecordID != nil || alert.SourceID != nil) {
+			t.Fatalf("cluster gap target shape: %+v", alert)
+		}
+	}
+	if !kinds[sourcedomain.AlertKindRecordGap] || !kinds[sourcedomain.AlertKindClusterGap] {
+		t.Fatalf("derived gap kinds: %+v", kinds)
+	}
+
+	res = s.put(t, base+"/evidence/relations", researchJSON(t, map[string]any{
+		"left_observation_id": left.ID, "right_observation_id": right.ID,
+		"kind": "supports", "rationale": "The retained notices support the same conclusion.",
+	}), auth)
+	researchStatus(t, res, http.StatusOK)
+	res = s.post(t, alertsPath+"/refresh-gaps", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &refreshed)
+	if refreshed.ActiveGapCount != 0 {
+		t.Fatalf("resolved record and cluster gaps remained active: %+v", refreshed)
+	}
+	res = s.get(t, alertsPath, auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &alerts)
+	if len(alerts.Items) != 0 {
+		t.Fatalf("retired derived gap remained in the active inbox: %+v", alerts)
+	}
+}
+
+func TestResearchDueWatchWorkerReturnsNoWorkWhenNothingIsDue(t *testing.T) {
+	s := tracedSystem(t)
+	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	res := s.post(t, "/v1/workspaces/"+ws.String()+"/source-watches/run-due", `{}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	var due dueSourceWatchResponse
+	decode(t, res, &due)
+	if due.Claimed || due.Run != nil {
+		t.Fatalf("worker claimed unexpected work: %+v", due)
+	}
+}
+
 func TestResearchBinarySourceImportRetainsBytesWithoutTextContent(t *testing.T) {
 	s := tracedSystem(t)
 	_, ws, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
@@ -440,7 +846,20 @@ func TestResearchBinarySourceImportRetainsBytesWithoutTextContent(t *testing.T) 
 		t.Fatalf("binary content crossed the text boundary: %+v", held)
 	}
 	base := "/v1/workspaces/" + ws.String() + "/sources/" + source.ID.String()
-	researchStatus(t, s.post(t, base+"/captures/"+source.LatestCapture.ID.String()+"/assistance", `{}`, auth), http.StatusBadRequest)
+	assistanceResponse := s.post(t, base+"/captures/"+source.LatestCapture.ID.String()+"/assistance", `{}`, auth)
+	researchStatus(t, assistanceResponse, http.StatusCreated)
+	var unsupported assistquery.Detail
+	decode(t, assistanceResponse, &unsupported)
+	if unsupported.Operation.Status != assistdomain.OperationUnsupported || unsupported.Operation.Error == "" || len(unsupported.Proposals) != 0 {
+		t.Fatalf("binary assistance outcome was not retained: %+v", unsupported)
+	}
+	retryResponse := s.post(t, base+"/captures/"+source.LatestCapture.ID.String()+"/assistance", researchJSON(t, map[string]any{"retry_operation_id": unsupported.Operation.ID}), auth)
+	researchStatus(t, retryResponse, http.StatusCreated)
+	var retried assistquery.Detail
+	decode(t, retryResponse, &retried)
+	if retried.Operation.Status != assistdomain.OperationUnsupported || retried.Operation.RetryOf == nil || *retried.Operation.RetryOf != unsupported.Operation.ID {
+		t.Fatalf("unsupported assistance retry lost lineage: %+v", retried.Operation)
+	}
 	researchStatus(t, s.post(t, base+"/observations", researchJSON(t, map[string]any{"capture_id": source.LatestCapture.ID, "statement": "A binary claim", "quote": "PDF bytes"}), auth), http.StatusBadRequest)
 }
 
@@ -674,7 +1093,7 @@ func TestResearchAssistanceGeneratesReviewablePassagesFromOneRetainedCapture(t *
 	researchStatus(t, res, http.StatusCreated)
 	var detail assistquery.Detail
 	decode(t, res, &detail)
-	if detail.Operation.SourceID != source.ID || detail.Operation.CaptureID != source.LatestCapture.ID || detail.Operation.Provider != "local" || detail.Operation.Method != "sentence-passages-v1" || len(detail.Proposals) != 2 {
+	if detail.Operation.SourceID != source.ID || detail.Operation.CaptureID != source.LatestCapture.ID || detail.Operation.Provider != "local" || detail.Operation.Method != "sentence-passages-v1" || detail.Operation.TemplateVersion != "sentence-passages-v1" || detail.Operation.InputBytes == 0 || detail.Operation.OutputBytes == 0 || detail.Operation.TimedOut || len(detail.Proposals) != 2 {
 		t.Fatalf("unexpected assistance output: %+v", detail)
 	}
 	res = s.get(t, base, auth)
@@ -799,25 +1218,62 @@ func TestResearchTimelineEventKeepsReportedTimeSeparateFromCapture(t *testing.T)
 	base := "/v1/workspaces/" + ws.String() + "/sources/" + source.ID.String()
 	observation := recordResearchObservation(t, s, base, auth, source.LatestCapture.ID, "disruption at East Quay")
 	events := "/v1/workspaces/" + ws.String() + "/events"
-	res := s.post(t, events, researchJSON(t, map[string]any{
+	records := "/v1/workspaces/" + ws.String() + "/records"
+	res := s.post(t, records, `{"kind":"person","name":"Harborline author","description":"The named author in the reports.","observation_ids":[]}`, auth)
+	researchStatus(t, res, http.StatusCreated)
+	var participant researchRecordResponse
+	decode(t, res, &participant)
+	res = s.post(t, records, `{"kind":"place","name":"East Quay","description":"The named location in the reports.","observation_ids":[]}`, auth)
+	researchStatus(t, res, http.StatusCreated)
+	var place researchRecordResponse
+	decode(t, res, &place)
+	participantID, err := id.Parse(participant.RecordID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeID, err := id.Parse(place.RecordID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = s.post(t, events, researchJSON(t, map[string]any{
 		"title": "East Quay disruption", "description": "The reports may describe one incident.",
 		"reported_time": "around 18:00", "time_precision": "approximate", "sort_date": "2026-09-17",
-		"location": "East Quay", "observation_ids": []id.ID{observation.ID},
+		"location": "East Quay", "observation_ids": []id.ID{observation.ID}, "participant_record_ids": []id.ID{participantID}, "participant_links": []eventdomain.ParticipantLink{{RecordID: participantID, Role: eventdomain.ParticipantActor}}, "location_record_id": placeID,
 	}), auth)
 	researchStatus(t, res, http.StatusCreated)
 	var created eventdomain.Event
 	decode(t, res, &created)
-	if created.Author != owner || created.UpdatedBy != owner || created.TimePrecision != eventdomain.TimeApproximate || created.ReportedTime != "around 18:00" || created.ObservationIDs[0] != observation.ID {
+	if created.Author != owner || created.UpdatedBy != owner || created.TimePrecision != eventdomain.TimeApproximate || created.ReportedTime != "around 18:00" || created.ObservationIDs[0] != observation.ID || len(created.ParticipantRecordIDs) != 1 || created.ParticipantRecordIDs[0] != participantID || len(created.ParticipantLinks) != 1 || created.ParticipantLinks[0].Role != eventdomain.ParticipantActor || created.LocationRecordID == nil || *created.LocationRecordID != placeID {
 		t.Fatalf("unexpected timeline event: %+v", created)
+	}
+	res = s.get(t, events+"/"+created.ID.String()+"/revisions", auth)
+	researchStatus(t, res, http.StatusOK)
+	var initialHistory struct {
+		Items []struct {
+			RevisionID         string `json:"revision_id"`
+			Revision           int    `json:"revision"`
+			Title              string `json:"title"`
+			ReportedTime       string `json:"reported_time"`
+			ParticipantRecords []struct {
+				Name string `json:"name"`
+			} `json:"participant_records"`
+			LocationRecord *struct {
+				Name string `json:"name"`
+			} `json:"location_record"`
+		} `json:"items"`
+	}
+	decode(t, res, &initialHistory)
+	if len(initialHistory.Items) != 1 || initialHistory.Items[0].Revision != 1 || initialHistory.Items[0].Title != "East Quay disruption" || initialHistory.Items[0].ReportedTime != "around 18:00" || len(initialHistory.Items[0].ParticipantRecords) != 1 || initialHistory.Items[0].ParticipantRecords[0].Name != "Harborline author" || initialHistory.Items[0].LocationRecord == nil || initialHistory.Items[0].LocationRecord.Name != "East Quay" {
+		t.Fatalf("unexpected initial event history: %+v", initialHistory)
 	}
 	res = s.put(t, events+"/"+created.ID.String(), researchJSON(t, map[string]any{
 		"title": "East Quay disruption", "description": "The account remains provisional.",
-		"reported_time": "", "time_precision": "unknown", "sort_date": "", "location": "East Quay", "observation_ids": []id.ID{observation.ID},
+		"reported_time": "", "time_precision": "unknown", "sort_date": "", "location": "East Quay", "observation_ids": []id.ID{observation.ID}, "participant_record_ids": []id.ID{participantID}, "participant_links": []eventdomain.ParticipantLink{{RecordID: participantID, Role: eventdomain.ParticipantActor}}, "location_record_id": placeID,
 	}), auth)
 	researchStatus(t, res, http.StatusOK)
 	var updated eventdomain.Event
 	decode(t, res, &updated)
-	if updated.Author != owner || updated.UpdatedBy != owner || updated.TimePrecision != eventdomain.TimeUnknown || updated.Description != "The account remains provisional." || updated.ObservationIDs[0] != observation.ID {
+	if updated.Author != owner || updated.UpdatedBy != owner || updated.TimePrecision != eventdomain.TimeUnknown || updated.Description != "The account remains provisional." || updated.ObservationIDs[0] != observation.ID || len(updated.ParticipantRecordIDs) != 1 || updated.LocationRecordID == nil || *updated.LocationRecordID != placeID {
 		t.Fatalf("unexpected edited event: %+v", updated)
 	}
 	res = s.get(t, events+"/"+created.ID.String(), auth)
@@ -825,6 +1281,130 @@ func TestResearchTimelineEventKeepsReportedTimeSeparateFromCapture(t *testing.T)
 	decode(t, res, &updated)
 	if updated.TimePrecision != eventdomain.TimeUnknown || updated.ReportedTime != "" {
 		t.Fatalf("event did not persist its uncertain time: %+v", updated)
+	}
+	res = s.get(t, events+"/"+created.ID.String()+"/revisions", auth)
+	researchStatus(t, res, http.StatusOK)
+	var history struct {
+		Items []struct {
+			Revision      int    `json:"revision"`
+			Title         string `json:"title"`
+			ReportedTime  string `json:"reported_time"`
+			TimePrecision string `json:"time_precision"`
+		} `json:"items"`
+	}
+	decode(t, res, &history)
+	if len(history.Items) != 2 || history.Items[0].Revision != 1 || history.Items[0].ReportedTime != "around 18:00" || history.Items[1].Revision != 2 || history.Items[1].TimePrecision != "unknown" {
+		t.Fatalf("event history did not preserve both revisions: %+v", history)
+	}
+	res = s.put(t, records+"/"+participant.RecordID, `{"kind":"person","name":"Harborline author revised","description":"A later record edit.","observation_ids":[]}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	res = s.put(t, records+"/"+place.RecordID, `{"kind":"place","name":"East Quay revised","description":"A later place edit.","observation_ids":[]}`, auth)
+	researchStatus(t, res, http.StatusOK)
+	res = s.get(t, events+"/"+created.ID.String()+"/revisions", auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &initialHistory)
+	if len(initialHistory.Items) != 2 {
+		t.Fatalf("history changed after linked record edits: %+v", initialHistory)
+	}
+	res = s.get(t, events+"/"+created.ID.String()+"/revisions/"+initialHistory.Items[0].RevisionID, auth)
+	researchStatus(t, res, http.StatusOK)
+	var firstRevision struct {
+		Title              string `json:"title"`
+		ReportedTime       string `json:"reported_time"`
+		ParticipantRecords []struct {
+			Name string `json:"name"`
+		} `json:"participant_records"`
+		LocationRecord *struct {
+			Name string `json:"name"`
+		} `json:"location_record"`
+	}
+	decode(t, res, &firstRevision)
+	if firstRevision.Title != "East Quay disruption" || firstRevision.ReportedTime != "around 18:00" || len(firstRevision.ParticipantRecords) != 1 || firstRevision.ParticipantRecords[0].Name != "Harborline author" || firstRevision.LocationRecord == nil || firstRevision.LocationRecord.Name != "East Quay" {
+		t.Fatalf("event revision was reconstructed from mutable records: %+v", firstRevision)
+	}
+	accounts := events + "/" + created.ID.String() + "/accounts"
+	res = s.post(t, accounts, researchJSON(t, map[string]any{
+		"title": "Harborline notice account", "description": "The notice places the disruption at 18:20.",
+		"reported_time": "18:20", "time_precision": "exact", "sort_date": "2026-09-17", "location": "East Quay", "observation_ids": []id.ID{observation.ID}, "participant_record_ids": []id.ID{participantID}, "participant_links": []eventdomain.ParticipantLink{{RecordID: participantID, Role: eventdomain.ParticipantAffected}},
+	}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var account eventdomain.Account
+	decode(t, res, &account)
+	if account.EventID != created.ID || account.TimePrecision != eventdomain.TimeExact || account.ReportedTime != "18:20" || len(account.ObservationIDs) != 1 {
+		t.Fatalf("unexpected competing event account: %+v", account)
+	}
+	res = s.get(t, accounts, auth)
+	researchStatus(t, res, http.StatusOK)
+	var accountPage eventdomain.AccountPage
+	decode(t, res, &accountPage)
+	if len(accountPage.Items) != 1 || accountPage.Reconciliation != nil {
+		t.Fatalf("unexpected competing-account page: %+v", accountPage)
+	}
+	res = s.put(t, accounts+"/reconciliation", researchJSON(t, map[string]any{
+		"decision": "prefer_account", "selected_account_id": account.ID, "rationale": "The cited notice gives a more precise reported time; retain the authored reconstruction and source account separately.",
+	}), auth)
+	researchStatus(t, res, http.StatusOK)
+	var reconciliation eventdomain.Reconciliation
+	decode(t, res, &reconciliation)
+	if reconciliation.Decision != eventdomain.DecisionPreferAccount || reconciliation.SelectedAccountID == nil || *reconciliation.SelectedAccountID != account.ID {
+		t.Fatalf("unexpected event reconciliation: %+v", reconciliation)
+	}
+	res = s.post(t, events, researchJSON(t, map[string]any{
+		"title": "East Quay timing account", "description": "A second authored reconstruction retains a different timing interpretation.",
+		"reported_time": "18:20", "time_precision": "exact", "sort_date": "2026-09-17", "location": "East Quay", "observation_ids": []id.ID{observation.ID}, "participant_record_ids": []id.ID{participantID},
+	}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var second eventdomain.Event
+	decode(t, res, &second)
+	clusters := "/v1/workspaces/" + ws.String() + "/event-clusters"
+	res = s.post(t, clusters, researchJSON(t, map[string]any{
+		"title": "Possible same East Quay occurrence", "description": "Group authored event reconstructions for analyst review without asserting causality.", "event_ids": []id.ID{created.ID, second.ID},
+	}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var cluster eventdomain.Cluster
+	decode(t, res, &cluster)
+	if cluster.State != eventdomain.ClusterProposed || len(cluster.EventIDs) != 2 || cluster.EventIDs[0] != created.ID || cluster.EventIDs[1] != second.ID {
+		t.Fatalf("unexpected event cluster: %+v", cluster)
+	}
+	res = s.get(t, clusters, auth)
+	researchStatus(t, res, http.StatusOK)
+	var clusterPage eventquery.ClusterPage
+	decode(t, res, &clusterPage)
+	if len(clusterPage.Items) != 1 || clusterPage.Items[0].ID != cluster.ID {
+		t.Fatalf("unexpected event cluster page: %+v", clusterPage)
+	}
+	res = s.put(t, clusters+"/"+cluster.ID.String()+"/review", researchJSON(t, map[string]any{
+		"state": "accepted", "note": "The retained observations support one bounded same-occurrence hypothesis.",
+	}), auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &cluster)
+	if cluster.State != eventdomain.ClusterAccepted || cluster.ReviewedBy == nil || *cluster.ReviewedBy != owner || cluster.ReviewNote == "" {
+		t.Fatalf("unexpected reviewed event cluster: %+v", cluster)
+	}
+	relationships := "/v1/workspaces/" + ws.String() + "/event-relationships"
+	res = s.post(t, relationships, researchJSON(t, map[string]any{
+		"from_event_id": created.ID, "to_event_id": second.ID, "kind": "possibly_causes", "rationale": "The earlier disruption may explain the later account, but the evidence remains contested.", "supporting_observation_ids": []id.ID{observation.ID},
+	}), auth)
+	researchStatus(t, res, http.StatusCreated)
+	var relationship eventdomain.Relationship
+	decode(t, res, &relationship)
+	if relationship.State != eventdomain.RelationshipProposed || relationship.Kind != eventdomain.RelationshipPossiblyCauses || relationship.FromEventID != created.ID || relationship.ToEventID != second.ID || len(relationship.SupportingObservationIDs) != 1 || relationship.SupportingObservationIDs[0] != observation.ID {
+		t.Fatalf("unexpected event relationship: %+v", relationship)
+	}
+	res = s.get(t, relationships, auth)
+	researchStatus(t, res, http.StatusOK)
+	var relationshipPage eventquery.RelationshipPage
+	decode(t, res, &relationshipPage)
+	if len(relationshipPage.Items) != 1 || relationshipPage.Items[0].ID != relationship.ID {
+		t.Fatalf("unexpected event relationship page: %+v", relationshipPage)
+	}
+	res = s.put(t, relationships+"/"+relationship.ID.String()+"/review", researchJSON(t, map[string]any{
+		"state": "accepted", "note": "The sequence is accepted for this investigation.",
+	}), auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &relationship)
+	if relationship.State != eventdomain.RelationshipAccepted || relationship.ReviewedBy == nil || *relationship.ReviewedBy != owner {
+		t.Fatalf("unexpected reviewed event relationship: %+v", relationship)
 	}
 }
 

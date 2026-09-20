@@ -54,9 +54,9 @@ func openReport(t *testing.T, s traced, ws, target id.ID, auth map[string]string
 	return out
 }
 
-// **THE test of decisions/0042 §5.** A client reaches a report and nothing else,
-// and every refusal is a 404 — a client learning that an invocation log exists
-// is a client learning what was run against them.
+// **THE test of decisions/0042 §5.** A client reaches a deliverable and nothing
+// in the research workspace; every refusal is a 404 — a client learning that an
+// invocation log exists is a client learning what was run against them.
 func TestAClientReachesReportsAndNothingElse(t *testing.T) {
 	s := tracedSystem(t)
 	ws, target, owner, client := engagementWithAClient(t, s)

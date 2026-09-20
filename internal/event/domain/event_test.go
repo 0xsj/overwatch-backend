@@ -33,3 +33,18 @@ func TestEventRejectsMalformedOrderingDateAndDuplicateCitations(t *testing.T) {
 		t.Fatalf("duplicate citation error=%v, want duplicate error", err)
 	}
 }
+
+func TestEventCarriesReviewedParticipantAndPlaceRecordLinks(t *testing.T) {
+	at := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+	place := eid(20)
+	one, err := domain.NewWithLinks(eid(21), eid(22), eid(23), "East Quay disruption", "", "around 18:00", "approximate", "2026-09-17", "East Quay", nil, []id.ID{eid(25), eid(24)}, &place, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one.ParticipantRecordIDs) != 2 || one.ParticipantRecordIDs[0] != eid(24) || one.LocationRecordID == nil || *one.LocationRecordID != place {
+		t.Fatalf("unexpected record links: %+v", one)
+	}
+	if _, err := domain.NewWithLinks(eid(26), eid(22), eid(23), "Event", "", "", "unknown", "", "", nil, []id.ID{eid(27), eid(27)}, nil, at); err != domain.ErrDuplicateParticipant {
+		t.Fatalf("duplicate participant error=%v, want duplicate participant", err)
+	}
+}

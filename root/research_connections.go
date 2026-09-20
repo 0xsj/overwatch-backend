@@ -2,28 +2,45 @@ package root
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
+	assistdomain "github.com/0xsj/overwatch-backend/internal/assistance/domain"
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
 	connectiondomain "github.com/0xsj/overwatch-backend/internal/researchconnection/domain"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
+type researchConnectionReviewFlags struct {
+	Open       bool `json:"open"`
+	Conflicted bool `json:"conflicted"`
+	Uncited    bool `json:"uncited"`
+}
+
 type researchConnectionResponse struct {
-	ConnectionID             string   `json:"connection_id"`
-	WorkspaceID              string   `json:"workspace_id"`
-	FromRecordID             string   `json:"from_record_id"`
-	ToRecordID               string   `json:"to_record_id"`
-	Kind                     string   `json:"kind"`
-	State                    string   `json:"state"`
-	Rationale                string   `json:"rationale"`
-	SupportingObservationIDs []string `json:"supporting_observation_ids"`
-	OpposingObservationIDs   []string `json:"opposing_observation_ids"`
-	Author                   string   `json:"author"`
-	UpdatedBy                string   `json:"updated_by"`
-	CreatedAt                string   `json:"created_at"`
-	UpdatedAt                string   `json:"updated_at"`
+	ConnectionID             string                        `json:"connection_id"`
+	WorkspaceID              string                        `json:"workspace_id"`
+	FromRecordID             string                        `json:"from_record_id"`
+	ToRecordID               string                        `json:"to_record_id"`
+	Kind                     string                        `json:"kind"`
+	State                    string                        `json:"state"`
+	Rationale                string                        `json:"rationale"`
+	SupportingObservationIDs []string                      `json:"supporting_observation_ids"`
+	OpposingObservationIDs   []string                      `json:"opposing_observation_ids"`
+	Author                   string                        `json:"author"`
+	UpdatedBy                string                        `json:"updated_by"`
+	CreatedAt                string                        `json:"created_at"`
+	UpdatedAt                string                        `json:"updated_at"`
+	ReviewFlags              researchConnectionReviewFlags `json:"review_flags"`
+}
+
+type researchConnectionSummaryResponse struct {
+	ConnectionCount int            `json:"connection_count"`
+	StateCounts     map[string]int `json:"state_counts"`
+	OpenCount       int            `json:"open_count"`
+	ConflictedCount int            `json:"conflicted_count"`
+	UncitedCount    int            `json:"uncited_count"`
 }
 
 type researchConnectionRevisionResponse struct {
@@ -50,6 +67,27 @@ type researchConnectionRevisionResponse struct {
 	ChangedAt                string   `json:"changed_at"`
 }
 
+type researchConnectionReviewResponse struct {
+	ConnectionReviewID       string                                 `json:"connection_review_id"`
+	WorkspaceID              string                                 `json:"workspace_id"`
+	ConnectionID             string                                 `json:"connection_id"`
+	FromRecordID             string                                 `json:"from_record_id"`
+	ToRecordID               string                                 `json:"to_record_id"`
+	ConnectionKind           string                                 `json:"connection_kind"`
+	ConnectionState          string                                 `json:"connection_state"`
+	ConnectionRationale      string                                 `json:"connection_rationale"`
+	SupportingObservationIDs []string                               `json:"supporting_observation_ids"`
+	OpposingObservationIDs   []string                               `json:"opposing_observation_ids"`
+	Provider                 string                                 `json:"provider"`
+	Method                   string                                 `json:"method"`
+	TemplateVersion          string                                 `json:"template_version"`
+	Status                   string                                 `json:"status"`
+	Output                   string                                 `json:"output"`
+	Findings                 []assistdomain.ConnectionReviewFinding `json:"findings"`
+	CreatedBy                string                                 `json:"created_by"`
+	CreatedAt                string                                 `json:"created_at"`
+}
+
 func asResearchConnection(connection connectiondomain.Connection) researchConnectionResponse {
 	ids := func(input []id.ID) []string {
 		out := make([]string, 0, len(input))
@@ -58,6 +96,7 @@ func asResearchConnection(connection connectiondomain.Connection) researchConnec
 		}
 		return out
 	}
+	flags := connection.ReviewFlags()
 	return researchConnectionResponse{
 		ConnectionID: connection.ID.String(), WorkspaceID: connection.WorkspaceID.String(),
 		FromRecordID: connection.FromRecordID.String(), ToRecordID: connection.ToRecordID.String(),
@@ -65,7 +104,16 @@ func asResearchConnection(connection connectiondomain.Connection) researchConnec
 		SupportingObservationIDs: ids(connection.SupportingObservationIDs), OpposingObservationIDs: ids(connection.OpposingObservationIDs),
 		Author: connection.Author.String(), UpdatedBy: connection.UpdatedBy.String(),
 		CreatedAt: connection.CreatedAt.UTC().Format(time.RFC3339Nano), UpdatedAt: connection.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		ReviewFlags: researchConnectionReviewFlags{Open: flags.Open, Conflicted: flags.Conflicted, Uncited: flags.Uncited},
 	}
+}
+
+func asResearchConnectionSummary(summary connectiondomain.BrowseSummary) researchConnectionSummaryResponse {
+	states := map[string]int{}
+	for _, state := range []connectiondomain.State{connectiondomain.Proposed, connectiondomain.Accepted, connectiondomain.Rejected, connectiondomain.Deferred} {
+		states[state.String()] = summary.StateCounts[state]
+	}
+	return researchConnectionSummaryResponse{ConnectionCount: summary.ConnectionCount, StateCounts: states, OpenCount: summary.OpenCount, ConflictedCount: summary.ConflictedCount, UncitedCount: summary.UncitedCount}
 }
 
 func asResearchConnectionRevision(revision connectiondomain.Revision) researchConnectionRevisionResponse {
@@ -88,6 +136,22 @@ func asResearchConnectionRevision(revision connectiondomain.Revision) researchCo
 	}
 }
 
+func asResearchConnectionReview(review assistdomain.ConnectionReview) researchConnectionReviewResponse {
+	ids := func(input []id.ID) []string {
+		out := make([]string, 0, len(input))
+		for _, one := range input {
+			out = append(out, one.String())
+		}
+		return out
+	}
+	return researchConnectionReviewResponse{
+		ConnectionReviewID: review.ID.String(), WorkspaceID: review.WorkspaceID.String(), ConnectionID: review.ConnectionID.String(),
+		FromRecordID: review.FromRecordID.String(), ToRecordID: review.ToRecordID.String(), ConnectionKind: review.ConnectionKind.String(), ConnectionState: review.ConnectionState.String(), ConnectionRationale: review.ConnectionRationale,
+		SupportingObservationIDs: ids(review.SupportingObservationIDs), OpposingObservationIDs: ids(review.OpposingObservationIDs), Provider: review.Provider, Method: review.Method, TemplateVersion: review.TemplateVersion,
+		Status: review.Status.String(), Output: review.Output, Findings: review.Findings, CreatedBy: review.CreatedBy.String(), CreatedAt: review.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+}
+
 type researchConnectionRequest struct {
 	FromRecordID             id.ID   `json:"from_record_id"`
 	ToRecordID               id.ID   `json:"to_record_id"`
@@ -103,11 +167,25 @@ func (m *me) listResearchConnections(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	state := connectiondomain.State(strings.TrimSpace(r.URL.Query().Get("state")))
+	if state != "" {
+		parsed, err := connectiondomain.ParseState(state.String())
+		if err != nil {
+			httpx.Fail(m.log, w, r, err)
+			return
+		}
+		state = parsed
+	}
+	review, err := connectiondomain.ParseReviewFilter(r.URL.Query().Get("review"))
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
 	before, size, ok := researchPage(w, r)
 	if !ok {
 		return
 	}
-	found, err := m.research.connections.List(r.Context(), workspace, before, size)
+	found, err := m.research.connections.List(r.Context(), workspace, before, state, review, size)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -120,6 +198,19 @@ func (m *me) listResearchConnections(w http.ResponseWriter, r *http.Request) {
 		Items      []researchConnectionResponse `json:"items"`
 		NextCursor *id.ID                       `json:"next_cursor"`
 	}{Items: items, NextCursor: found.NextCursor})
+}
+
+func (m *me) summarizeResearchConnections(w http.ResponseWriter, r *http.Request) {
+	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	found, err := m.research.connections.Summary(r.Context(), workspace)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, asResearchConnectionSummary(found))
 }
 
 func (m *me) readResearchConnection(w http.ResponseWriter, r *http.Request) {
@@ -228,4 +319,78 @@ func (m *me) editResearchConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, asResearchConnection(updated))
+}
+
+func (m *me) listResearchConnectionReviews(w http.ResponseWriter, r *http.Request) {
+	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	connection, err := id.Parse(r.PathValue("connection"))
+	if err != nil || connection.IsZero() {
+		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
+		return
+	}
+	if _, err := m.research.connections.ByID(r.Context(), workspace, connection); err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	before, size, ok := researchPage(w, r)
+	if !ok {
+		return
+	}
+	found, err := m.research.connectionReviews.List(r.Context(), workspace, connection, before, size)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	items := make([]researchConnectionReviewResponse, 0, len(found.Items))
+	for _, one := range found.Items {
+		items = append(items, asResearchConnectionReview(one))
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, struct {
+		Items      []researchConnectionReviewResponse `json:"items"`
+		NextCursor *id.ID                             `json:"next_cursor"`
+	}{Items: items, NextCursor: found.NextCursor})
+}
+
+func (m *me) readResearchConnectionReview(w http.ResponseWriter, r *http.Request) {
+	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	connection, err := id.Parse(r.PathValue("connection"))
+	if err != nil || connection.IsZero() {
+		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
+		return
+	}
+	review, err := id.Parse(r.PathValue("review"))
+	if err != nil || review.IsZero() {
+		httpx.Fail(m.log, w, r, assistdomain.ErrNotFound)
+		return
+	}
+	found, err := m.research.connectionReviews.ByID(r.Context(), workspace, connection, review)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, asResearchConnectionReview(found))
+}
+
+func (m *me) createResearchConnectionReview(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	connection, err := id.Parse(r.PathValue("connection"))
+	if err != nil || connection.IsZero() {
+		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
+		return
+	}
+	fresh, err := m.research.connectionReviewCmd.Generate(r.Context(), workspace, connection, caller)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusCreated, asResearchConnectionReview(fresh))
 }

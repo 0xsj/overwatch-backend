@@ -54,6 +54,9 @@ import (
 	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
 	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
 	scopepg "github.com/0xsj/overwatch-backend/internal/scope/infra/postgres"
+	seencmd "github.com/0xsj/overwatch-backend/internal/seen/app/command"
+	seenquery "github.com/0xsj/overwatch-backend/internal/seen/app/query"
+	seenpg "github.com/0xsj/overwatch-backend/internal/seen/infra/postgres"
 	sourcedomain "github.com/0xsj/overwatch-backend/internal/source/domain"
 	extractioncmd "github.com/0xsj/overwatch-backend/internal/source/extraction/app/command"
 	extractionpg "github.com/0xsj/overwatch-backend/internal/source/extraction/infra/postgres"
@@ -135,6 +138,7 @@ func tracedSystemWithFetcherAndOCR(t *testing.T, fetcher referenceFetcher, ocr e
 		testx.Schema{Name: identitypg.Schema, Migrations: identitypg.Migrations},
 		testx.Schema{Name: orgpg.Schema, Migrations: orgpg.Migrations},
 		testx.Schema{Name: workspacepg.Schema, Migrations: workspacepg.Migrations},
+		testx.Schema{Name: seenpg.Schema, Migrations: seenpg.Migrations},
 		testx.Schema{Name: journalpg.Schema, Migrations: journalpg.Migrations},
 		testx.Schema{Name: auditpg.Schema, Migrations: auditpg.Migrations},
 		testx.Schema{Name: targetpg.Schema, Migrations: targetpg.Migrations},
@@ -295,6 +299,9 @@ func tracedSystemWithFetcherAndOCR(t *testing.T, fetcher referenceFetcher, ocr e
 		newResearchWithFetcherAndOCR(p, bytes, publisher, ids, clk, fetcher, ocr),
 		auditquery.NewLedger(auditpg.NewStore(p)),
 		journalquery.NewTrail(journalpg.NewStore(p)),
+		journalquery.NewLog(journalpg.NewStore(p)),
+		seenquery.NewMarkers(seenpg.NewStore(p)),
+		seencmd.NewMarkers(seenpg.NewStore(p), clk),
 		logger.Nop()).register(mux)
 	identityhttp.NewAPI(
 		identitycmd.NewRegistrar(accounts, p, publisher, hasher, ids, clk),

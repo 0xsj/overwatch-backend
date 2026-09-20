@@ -17,11 +17,13 @@ import (
 const MaxCaptureBytes = 256 * 1024
 const MaxBinaryCaptureBytes = 8 << 20
 const (
-	EventCreated          = "source.created"
-	EventCaptured         = "source.captured"
-	EventRetentionChanged = "source.retention.changed"
-	EventPrivacyChanged   = "source.privacy.changed"
-	EventPurged           = "source.purged"
+	EventCreated                = "source.created"
+	EventCaptured               = "source.captured"
+	EventPublicationChanged     = "source.publication.changed"
+	EventDuplicatePolicyChanged = "source.duplicate_policy.changed"
+	EventRetentionChanged       = "source.retention.changed"
+	EventPrivacyChanged         = "source.privacy.changed"
+	EventPurged                 = "source.purged"
 
 	SensitivityPublic     = "public"
 	SensitivityInternal   = "internal"
@@ -33,17 +35,24 @@ const (
 	RetentionBlocked     = "blocked"
 	RetentionHeld        = "held"
 	RetentionPurged      = "purged"
+
+	DuplicatePolicyAllow = "allow"
+	DuplicatePolicyWarn  = "warn"
+	DuplicatePolicyBlock = "block"
 )
 
 var (
-	ErrInvalid               = errors.New(errors.Invalid, "invalid source")
-	ErrNotFound              = errors.New(errors.NotFound, "source or capture")
-	ErrContent               = errors.New(errors.Invalid, "capture requires nonempty UTF-8 text up to 256 KiB; JSON captures must contain valid JSON")
-	ErrRetentionInvalid      = errors.New(errors.Invalid, "retention must be cleared or set to a valid timestamp")
-	ErrPrivacyInvalid        = errors.New(errors.Invalid, "source privacy settings are invalid")
-	ErrPurgeInvalid          = errors.New(errors.Invalid, "purge requires a nonempty audit reason")
-	ErrRetentionStateInvalid = errors.New(errors.Invalid, "retention review state is invalid")
-	ErrPurged                = errors.New(errors.Conflict, "source content has been purged")
+	ErrInvalid                = errors.New(errors.Invalid, "invalid source")
+	ErrNotFound               = errors.New(errors.NotFound, "source or capture")
+	ErrContent                = errors.New(errors.Invalid, "capture requires nonempty UTF-8 text up to 256 KiB; JSON captures must contain valid JSON")
+	ErrDuplicateCapture       = errors.New(errors.Conflict, "capture bytes already exist for this source")
+	ErrDuplicatePolicyInvalid = errors.New(errors.Invalid, "duplicate capture policy must be allow, warn, or block")
+	ErrPublicationInvalid     = errors.New(errors.Invalid, "publication time must be cleared or set to a valid timestamp")
+	ErrRetentionInvalid       = errors.New(errors.Invalid, "retention must be cleared or set to a valid timestamp")
+	ErrPrivacyInvalid         = errors.New(errors.Invalid, "source privacy settings are invalid")
+	ErrPurgeInvalid           = errors.New(errors.Invalid, "purge requires a nonempty audit reason")
+	ErrRetentionStateInvalid  = errors.New(errors.Invalid, "retention review state is invalid")
+	ErrPurged                 = errors.New(errors.Conflict, "source content has been purged")
 )
 
 type Source struct {
@@ -53,6 +62,8 @@ type Source struct {
 	Origin             string     `json:"origin"`
 	URL                string     `json:"url,omitempty"`
 	Filename           string     `json:"filename,omitempty"`
+	PublishedAt        *time.Time `json:"published_at,omitempty"`
+	DuplicatePolicy    string     `json:"duplicate_policy"`
 	CreatedBy          id.ID      `json:"created_by"`
 	CreatedAt          time.Time  `json:"created_at"`
 	RetentionUntil     *time.Time `json:"retention_until,omitempty"`
@@ -103,13 +114,14 @@ type Summary struct {
 }
 
 type Draft struct {
-	Title        string  `json:"title"`
-	Origin       string  `json:"origin"`
-	URL          string  `json:"url,omitempty"`
-	Filename     string  `json:"filename,omitempty"`
-	MediaType    string  `json:"media_type,omitempty"`
-	Content      *string `json:"content,omitempty"`
-	ContentBytes []byte  `json:"content_base64,omitempty"`
+	Title        string     `json:"title"`
+	Origin       string     `json:"origin"`
+	URL          string     `json:"url,omitempty"`
+	Filename     string     `json:"filename,omitempty"`
+	PublishedAt  *time.Time `json:"published_at,omitempty"`
+	MediaType    string     `json:"media_type,omitempty"`
+	Content      *string    `json:"content,omitempty"`
+	ContentBytes []byte     `json:"content_base64,omitempty"`
 }
 
 func New(want, workspace, author id.ID, in Draft, at time.Time) (Source, error) {
@@ -118,6 +130,9 @@ func New(want, workspace, author id.ID, in Draft, at time.Time) (Source, error) 
 	}
 	title, filename, address := strings.TrimSpace(in.Title), strings.TrimSpace(in.Filename), strings.TrimSpace(in.URL)
 	if !metadata(title, 400) || title == "" || !metadata(filename, 400) || !metadata(address, 4000) {
+		return Source{}, ErrInvalid
+	}
+	if in.PublishedAt != nil && in.PublishedAt.IsZero() {
 		return Source{}, ErrInvalid
 	}
 	if address != "" {
@@ -152,7 +167,12 @@ func New(want, workspace, author id.ID, in Draft, at time.Time) (Source, error) 
 			return Source{}, err
 		}
 	}
-	return Source{ID: want, WorkspaceID: workspace, Title: title, Origin: in.Origin, URL: address, Filename: filename, CreatedBy: author, CreatedAt: at, Sensitivity: SensitivityInternal}, nil
+	var publishedAt *time.Time
+	if in.PublishedAt != nil {
+		value := in.PublishedAt.UTC()
+		publishedAt = &value
+	}
+	return Source{ID: want, WorkspaceID: workspace, Title: title, Origin: in.Origin, URL: address, Filename: filename, PublishedAt: publishedAt, DuplicatePolicy: DuplicatePolicyWarn, CreatedBy: author, CreatedAt: at, Sensitivity: SensitivityInternal}, nil
 }
 
 func (s Source) SetRetention(by id.ID, until *time.Time, at time.Time) (Source, error) {
@@ -166,6 +186,31 @@ func (s Source) SetRetention(by id.ID, until *time.Time, at time.Time) (Source, 
 	next.RetentionUntil = until
 	next.RetentionUpdatedBy = by
 	next.RetentionUpdatedAt = &at
+	return next, nil
+}
+
+func (s Source) SetPublication(by id.ID, publishedAt *time.Time, at time.Time) (Source, error) {
+	if by.IsZero() || at.IsZero() {
+		return s, ErrInvalid
+	}
+	if publishedAt != nil {
+		if publishedAt.IsZero() {
+			return s, ErrPublicationInvalid
+		}
+		value := publishedAt.UTC()
+		publishedAt = &value
+	}
+	next := s
+	next.PublishedAt = publishedAt
+	return next, nil
+}
+
+func (s Source) SetDuplicatePolicy(by id.ID, policy string, at time.Time) (Source, error) {
+	if by.IsZero() || at.IsZero() || !validDuplicatePolicy(policy) {
+		return s, ErrDuplicatePolicyInvalid
+	}
+	next := s
+	next.DuplicatePolicy = policy
 	return next, nil
 }
 
@@ -272,6 +317,10 @@ func (s Source) Purge(by id.ID, reason string, at time.Time) (Source, error) {
 
 func validSensitivity(value string) bool {
 	return value == SensitivityPublic || value == SensitivityInternal || value == SensitivityRestricted
+}
+
+func validDuplicatePolicy(value string) bool {
+	return value == DuplicatePolicyAllow || value == DuplicatePolicyWarn || value == DuplicatePolicyBlock
 }
 
 func metadata(s string, limit int) bool {

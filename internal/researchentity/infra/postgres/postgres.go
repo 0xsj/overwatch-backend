@@ -40,6 +40,14 @@ func NewStore(db *postgres.Pool) *Store {
 
 func uuid(i id.ID) pgtype.UUID { return pgtype.UUID{Bytes: i, Valid: !i.IsZero()} }
 
+func stringIDs(values []id.ID) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, value.String())
+	}
+	return out
+}
+
 func translate(ctx context.Context, err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
@@ -52,6 +60,8 @@ select r.id,r.workspace_id,r.kind,r.name,r.description,
        r.author,r.updated_by,r.created_at,r.updated_at,
        coalesce(json_agg(ro.observation_id order by ro.observation_id)
          filter (where ro.observation_id is not null), '[]'::json)::text
+       ,coalesce((select json_build_object('latitude',g.latitude,'longitude',g.longitude,'precision',g.precision,'observation_ids',g.observation_ids)::text
+          from research.record_place_geometry g where g.record_id=r.id and g.workspace_id=r.workspace_id), 'null')
 from research.record r
 left join research.record_observation ro
   on ro.record_id=r.id and ro.workspace_id=r.workspace_id`
@@ -62,9 +72,9 @@ func scanRecord(row scanner) (domain.Record, error) {
 	var out domain.Record
 	var recordID, workspace, author, updatedBy pgtype.UUID
 	var kind string
-	var raw []byte
+	var raw, geometryRaw []byte
 	if err := row.Scan(&recordID, &workspace, &kind, &out.Name, &out.Description,
-		&author, &updatedBy, &out.CreatedAt, &out.UpdatedAt, &raw); err != nil {
+		&author, &updatedBy, &out.CreatedAt, &out.UpdatedAt, &raw, &geometryRaw); err != nil {
 		return domain.Record{}, err
 	}
 	parsed, err := domain.ParseKind(kind)
@@ -84,6 +94,30 @@ func scanRecord(row scanner) (domain.Record, error) {
 			return domain.Record{}, err
 		}
 		out.ObservationIDs = append(out.ObservationIDs, one)
+	}
+	if len(geometryRaw) > 0 && string(geometryRaw) != "null" {
+		var stored struct {
+			Latitude       float64  `json:"latitude"`
+			Longitude      float64  `json:"longitude"`
+			Precision      string   `json:"precision"`
+			ObservationIDs []string `json:"observation_ids"`
+		}
+		if err := json.Unmarshal(geometryRaw, &stored); err != nil {
+			return domain.Record{}, err
+		}
+		precision, err := domain.ParsePlacePrecision(stored.Precision)
+		if err != nil {
+			return domain.Record{}, err
+		}
+		place := &domain.PlaceGeometry{Latitude: stored.Latitude, Longitude: stored.Longitude, Precision: precision, ObservationIDs: make([]id.ID, 0, len(stored.ObservationIDs))}
+		for _, rawID := range stored.ObservationIDs {
+			one, err := id.Parse(rawID)
+			if err != nil {
+				return domain.Record{}, err
+			}
+			place.ObservationIDs = append(place.ObservationIDs, one)
+		}
+		out.PlaceGeometry = place
 	}
 	return out, nil
 }
@@ -143,11 +177,64 @@ where exists (select 1 from research.record where id=$2 and workspace_id=$1)
 	return nil
 }
 
-func (s *Store) Page(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Record, error) {
+func (s *Store) ReplacePlaceGeometry(ctx context.Context, record domain.Record) error {
+	if _, err := s.db.DB(ctx).Exec(ctx, `delete from research.record_place_geometry where workspace_id=$1 and record_id=$2`, uuid(record.WorkspaceID), uuid(record.ID)); err != nil {
+		return translate(ctx, err)
+	}
+	if record.PlaceGeometry == nil {
+		return nil
+	}
+	observationIDs, err := json.Marshal(stringIDs(record.PlaceGeometry.ObservationIDs))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.DB(ctx).Exec(ctx, `
+insert into research.record_place_geometry
+ (workspace_id,record_id,latitude,longitude,precision,observation_ids,updated_by,updated_at)
+values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`, uuid(record.WorkspaceID), uuid(record.ID), record.PlaceGeometry.Latitude, record.PlaceGeometry.Longitude, record.PlaceGeometry.Precision.String(), string(observationIDs), uuid(record.UpdatedBy), record.UpdatedAt)
+	return translate(ctx, err)
+}
+
+func (s *Store) Page(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int) ([]domain.Record, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, recordSelect+`
 where r.workspace_id=$1 and ($2::uuid is null or r.id < $2)
+  and ($3 = '' or position(lower($3) in lower(r.id::text)) > 0
+    or position(lower($3) in lower(r.name)) > 0
+    or position(lower($3) in lower(coalesce(r.description, ''))) > 0
+    or exists (select 1
+       from research.record_observation searched_ro
+       join observation.manual searched_o
+         on searched_o.id=searched_ro.observation_id
+        and searched_o.workspace_id=searched_ro.workspace_id
+       where searched_ro.record_id=r.id
+         and searched_ro.workspace_id=r.workspace_id
+         and (position(lower($3) in lower(searched_o.statement)) > 0
+           or position(lower($3) in lower(convert_from(searched_o.quote, 'UTF8'))) > 0
+           or position(lower($3) in lower(coalesce(searched_o.locator, ''))) > 0))
+  and ($4 = '' or r.kind = $4)
+  and ($5 = '' or ($5 = 'cited' and exists (
+       select 1 from research.record_observation citation_ro
+       where citation_ro.record_id=r.id and citation_ro.workspace_id=r.workspace_id))
+    or ($5 = 'uncited' and not exists (
+       select 1 from research.record_observation citation_ro
+       where citation_ro.record_id=r.id and citation_ro.workspace_id=r.workspace_id)))
+  and ($6 = '' or ($6 = 'open' and exists (
+       select 1 from research.record_resolution open_rr
+       where open_rr.workspace_id=r.workspace_id
+         and (open_rr.alias_record_id=r.id or open_rr.canonical_record_id=r.id)
+         and open_rr.state='proposed'))
+    or ($6 = 'accepted' and exists (
+       select 1 from research.record_resolution accepted_rr
+       where accepted_rr.workspace_id=r.workspace_id
+         and (accepted_rr.alias_record_id=r.id or accepted_rr.canonical_record_id=r.id)
+         and accepted_rr.state='accepted'))
+    or ($6 = 'none' and not exists (
+       select 1 from research.record_resolution active_rr
+       where active_rr.workspace_id=r.workspace_id
+         and (active_rr.alias_record_id=r.id or active_rr.canonical_record_id=r.id)
+         and active_rr.state in ('proposed','accepted'))))
 group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at
-order by r.id desc limit $3`, uuid(workspace), uuid(before), limit)
+order by r.id desc limit $7`, uuid(workspace), uuid(before), search, kind.String(), citation.String(), resolution.String(), limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -161,4 +248,43 @@ order by r.id desc limit $3`, uuid(workspace), uuid(before), limit)
 		out = append(out, one)
 	}
 	return out, translate(ctx, rows.Err())
+}
+
+func (s *Store) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
+	var out domain.BrowseSummary
+	var total, people, accounts, organisations, places, cited, uncited, citations, openResolutions, acceptedResolutions int64
+	err := s.db.DB(ctx).QueryRow(ctx, `
+select count(*)::bigint,
+       count(*) filter (where r.kind='person')::bigint,
+       count(*) filter (where r.kind='account')::bigint,
+       count(*) filter (where r.kind='organisation')::bigint,
+       count(*) filter (where r.kind='place')::bigint,
+       count(distinct r.id) filter (where ro.observation_id is not null)::bigint,
+       count(distinct r.id) filter (where ro.observation_id is null)::bigint,
+       count(ro.observation_id)::bigint,
+       count(distinct r.id) filter (where exists (
+         select 1 from research.record_resolution rr
+         where rr.workspace_id=r.workspace_id
+           and (rr.alias_record_id=r.id or rr.canonical_record_id=r.id)
+           and rr.state='proposed'))::bigint,
+       count(distinct r.id) filter (where exists (
+         select 1 from research.record_resolution rr
+         where rr.workspace_id=r.workspace_id
+           and (rr.alias_record_id=r.id or rr.canonical_record_id=r.id)
+           and rr.state='accepted'))::bigint
+from research.record r
+left join research.record_observation ro
+  on ro.record_id=r.id and ro.workspace_id=r.workspace_id
+where r.workspace_id=$1`, uuid(workspace)).Scan(&total, &people, &accounts, &organisations, &places, &cited, &uncited, &citations, &openResolutions, &acceptedResolutions)
+	if err != nil {
+		return domain.BrowseSummary{}, translate(ctx, err)
+	}
+	out.RecordCount = int(total)
+	out.KindCounts = map[domain.Kind]int{
+		domain.Person: int(people), domain.Account: int(accounts),
+		domain.Organisation: int(organisations), domain.Place: int(places),
+	}
+	out.CitedRecordCount, out.UncitedRecordCount, out.CitationCount = int(cited), int(uncited), int(citations)
+	out.OpenResolutionRecordCount, out.AcceptedResolutionRecordCount = int(openResolutions), int(acceptedResolutions)
+	return out, nil
 }

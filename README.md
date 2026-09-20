@@ -22,6 +22,14 @@ bounded assistance, and the audit and retention machinery around them.
   handoffs.
 - Retention review, source privacy/legal hold, explicit purge gates, artifact
   cleanup review, audit entries, journal lines, and an outbox dispatcher.
+- Workspace-scoped causal Logs (`GET /v1/workspaces/{workspace}/logs`) with
+  keyset pagination and correlation/causation provenance, kept separate from
+  the governance audit trail.
+- A workspace-scoped change projection (`GET /v1/workspaces/{workspace}/changes`)
+  that compares the latest two completed runs per target and never calls an
+  unmeasured subject gone. The paired `POST
+  /v1/workspaces/{workspace}/changes/seen` stores a server-timestamped watermark
+  per account and workspace.
 - The existing operational surfaces for targets, tools, checks, runs, findings,
   and reports remain available alongside the investigation model.
 
@@ -30,6 +38,11 @@ remain available when no external binary is configured. Assistance and
 synthesis receive bounded, selected material and return reviewable output;
 they do not silently create observations, resolve identities, accept
 relationships, or publish conclusions.
+
+External assistance is denied by default at the workspace level. An admin must
+explicitly opt a workspace in before a configured external provider can receive
+retained material; local providers remain available, and policy changes are
+persisted and emitted into the audit/event stream.
 
 ## Architecture
 

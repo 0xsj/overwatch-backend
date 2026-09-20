@@ -6,7 +6,7 @@ alter table source.source add constraint source_sensitivity_check check (sensiti
 alter table source.source add column privacy_updated_by uuid;
 alter table source.source add column privacy_updated_at timestamptz;
 alter table source.source add column legal_hold boolean not null default false;
-alter table source.source add column legal_hold_reason text not null default '' check (octet_length(legal_hold_reason) <= 2000);
+alter table source.source add column legal_hold_reason text not null default '';
 alter table source.source add column purged_at timestamptz;
 alter table source.source add column purged_by uuid;
 alter table source.source add column purge_reason text not null default '' check (octet_length(purge_reason) <= 2000);

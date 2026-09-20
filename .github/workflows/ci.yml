@@ -1,0 +1,40 @@
+name: Backend CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: overwatch
+          POSTGRES_PASSWORD: overwatch
+          POSTGRES_DB: overwatch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U overwatch -d overwatch_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      OVERWATCH_TEST_DSN: postgres://overwatch:overwatch@127.0.0.1:5432/overwatch_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify formatting
+        shell: bash
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Tests with database
+        run: go test ./... -count=1 -timeout 120s
+      - name: Race tests with database
+        run: go test -race ./... -count=1 -timeout 180s

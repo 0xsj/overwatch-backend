@@ -11,6 +11,10 @@ type Reader interface {
 	ByWorkspace(context.Context, id.ID) (domain.Brief, error)
 	SnapshotPage(context.Context, id.ID, id.ID, int) ([]domain.Snapshot, error)
 	SnapshotByID(context.Context, id.ID, id.ID) (domain.Snapshot, error)
+	SnapshotReview(context.Context, id.ID, id.ID) (domain.SnapshotReview, error)
+	SnapshotComments(context.Context, id.ID, id.ID) ([]domain.SnapshotComment, error)
+	SnapshotHandoffShares(context.Context, id.ID, id.ID) ([]domain.HandoffShare, error)
+	SnapshotByHandoffShare(context.Context, id.ID, string) (domain.Snapshot, error)
 }
 type Briefs struct{ reader Reader }
 
@@ -69,4 +73,32 @@ func (b *Briefs) SnapshotByID(ctx context.Context, workspace, snapshot id.ID) (d
 		return domain.Snapshot{}, domain.ErrIDRequired
 	}
 	return b.reader.SnapshotByID(ctx, workspace, snapshot)
+}
+
+func (b *Briefs) SnapshotReview(ctx context.Context, workspace, snapshot id.ID) (domain.SnapshotReview, error) {
+	if workspace.IsZero() || snapshot.IsZero() {
+		return domain.SnapshotReview{}, domain.ErrIDRequired
+	}
+	return b.reader.SnapshotReview(ctx, workspace, snapshot)
+}
+
+func (b *Briefs) SnapshotComments(ctx context.Context, workspace, snapshot id.ID) ([]domain.SnapshotComment, error) {
+	if workspace.IsZero() || snapshot.IsZero() {
+		return nil, domain.ErrIDRequired
+	}
+	return b.reader.SnapshotComments(ctx, workspace, snapshot)
+}
+
+func (b *Briefs) SnapshotHandoffShares(ctx context.Context, workspace, snapshot id.ID) ([]domain.HandoffShare, error) {
+	if workspace.IsZero() || snapshot.IsZero() {
+		return nil, domain.ErrIDRequired
+	}
+	return b.reader.SnapshotHandoffShares(ctx, workspace, snapshot)
+}
+
+func (b *Briefs) SnapshotByHandoffShare(ctx context.Context, workspace id.ID, tokenDigest string) (domain.Snapshot, error) {
+	if workspace.IsZero() || tokenDigest == "" {
+		return domain.Snapshot{}, domain.ErrIDRequired
+	}
+	return b.reader.SnapshotByHandoffShare(ctx, workspace, tokenDigest)
 }

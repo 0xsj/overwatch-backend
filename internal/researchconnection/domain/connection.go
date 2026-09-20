@@ -57,6 +57,40 @@ func ParseState(raw string) (State, error) {
 	}
 }
 
+type ReviewFilter string
+
+const (
+	ReviewAny        ReviewFilter = ""
+	ReviewOpen       ReviewFilter = "open"
+	ReviewConflicted ReviewFilter = "conflicted"
+	ReviewUncited    ReviewFilter = "uncited"
+)
+
+func (f ReviewFilter) String() string { return string(f) }
+
+func ParseReviewFilter(raw string) (ReviewFilter, error) {
+	switch ReviewFilter(strings.TrimSpace(raw)) {
+	case ReviewAny, ReviewOpen, ReviewConflicted, ReviewUncited:
+		return ReviewFilter(strings.TrimSpace(raw)), nil
+	default:
+		return "", ErrReviewFilterUnknown
+	}
+}
+
+type BrowseSummary struct {
+	ConnectionCount int
+	StateCounts     map[State]int
+	OpenCount       int
+	ConflictedCount int
+	UncitedCount    int
+}
+
+type ReviewFlags struct {
+	Open       bool
+	Conflicted bool
+	Uncited    bool
+}
+
 // Connection is a current human assessment between two research records.
 // State describes the investigation assessment, not verified real-world truth.
 type Connection struct {
@@ -73,6 +107,14 @@ type Connection struct {
 	UpdatedBy                id.ID
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
+}
+
+func (c Connection) ReviewFlags() ReviewFlags {
+	return ReviewFlags{
+		Open:       c.State == Proposed || c.State == Deferred,
+		Conflicted: len(c.SupportingObservationIDs) > 0 && len(c.OpposingObservationIDs) > 0,
+		Uncited:    len(c.SupportingObservationIDs) == 0 && len(c.OpposingObservationIDs) == 0,
+	}
 }
 
 // Revision is an append-only copy of a connection assessment. It records what

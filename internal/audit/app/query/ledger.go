@@ -25,12 +25,15 @@ type Reader interface {
 
 	PageForSubjectFacet(ctx context.Context, subject, facet string, after auditpg.Cursor, limit int32) ([]domain.Entry, error)
 	PageForWorkspaceFacet(ctx context.Context, workspace, facet string, after auditpg.Cursor, limit int32) ([]domain.Entry, error)
+	PageForWorkspaceDetail(ctx context.Context, workspace, key, value string, after auditpg.Cursor, limit int32) ([]domain.Entry, error)
+	PageForWorkspaceDetailFacet(ctx context.Context, workspace, key, value, facet string, after auditpg.Cursor, limit int32) ([]domain.Entry, error)
 
 	PageForOrg(ctx context.Context, org string, after auditpg.Cursor, limit int32) ([]domain.Entry, error)
 	FacetsForOrg(ctx context.Context, org string) ([]auditpg.Facet, error)
 
 	FacetsForSubject(ctx context.Context, subject string) ([]auditpg.Facet, error)
 	FacetsForWorkspace(ctx context.Context, workspace string) ([]auditpg.Facet, error)
+	FacetsForWorkspaceDetail(ctx context.Context, workspace, key, value string) ([]auditpg.Facet, error)
 }
 
 // Facet is one bucket of the action's first segment. It is COMPUTED from the
@@ -144,6 +147,34 @@ func (l *Ledger) ForWorkspace(ctx context.Context, workspace id.ID, facet string
 	if after.IsZero() {
 		if out.Facets, err = l.reader.FacetsForWorkspace(ctx, key); err != nil {
 			return Page{}, fmt.Errorf("audit: facets: %w", err)
+		}
+	}
+	return out, nil
+}
+
+// ForWorkspaceDetail is the bounded view used by a feature aggregate that
+// stores its identity in the event detail. The audit package remains generic:
+// callers supply the JSON detail key rather than teaching the ledger about
+// briefs, handoffs, or any other domain.
+func (l *Ledger) ForWorkspaceDetail(ctx context.Context, workspace id.ID, key, value, facet string, after Cursor, size int) (Page, error) {
+	if workspace.IsZero() || key == "" || value == "" {
+		return Page{}, domain.ErrSubjectRequired
+	}
+	limit := clamp(size)
+	var found []domain.Entry
+	var err error
+	if facet == "" {
+		found, err = l.reader.PageForWorkspaceDetail(ctx, workspace.String(), key, value, after, limit+1)
+	} else {
+		found, err = l.reader.PageForWorkspaceDetailFacet(ctx, workspace.String(), key, value, facet, after, limit+1)
+	}
+	if err != nil {
+		return Page{}, fmt.Errorf("audit: for workspace detail: %w", err)
+	}
+	out := page(found, int(limit))
+	if after.IsZero() {
+		if out.Facets, err = l.reader.FacetsForWorkspaceDetail(ctx, workspace.String(), key, value); err != nil {
+			return Page{}, fmt.Errorf("audit: detail facets: %w", err)
 		}
 	}
 	return out, nil

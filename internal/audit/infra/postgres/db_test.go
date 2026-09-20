@@ -153,6 +153,41 @@ func TestScopeIsDerivedFromTheEnvelopeAndNeverDeclared(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDetailPagesFilterOneFrozenSnapshot(t *testing.T) {
+	s, _ := store(t)
+	ctx := context.Background()
+	m := ids()
+	sub := auditapp.NewSubscriber(s, m, clock.System{})
+	p, err := actor(t, m, "acct_sj").WithTenant("ws_activity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []events.Event{
+		decision(t, m, "brief.snapshot.review.assigned", "workspace:ws_activity", p, map[string]string{"snapshot_id": "snap_one"}),
+		decision(t, m, "brief.snapshot.comment.created", "workspace:ws_activity", p, map[string]string{"snapshot_id": "snap_one"}),
+		decision(t, m, "brief.snapshot.share.created", "workspace:ws_activity", p, map[string]string{"snapshot_id": "snap_other"}),
+	} {
+		if err := sub.Handle(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.PageForWorkspaceDetail(ctx, "ws_activity", "snapshot_id", "snap_one", auditpg.Cursor{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Action != "brief.snapshot.comment.created" || rows[1].Action != "brief.snapshot.review.assigned" {
+		t.Fatalf("snapshot detail rows: %+v", rows)
+	}
+	facets, err := s.FacetsForWorkspaceDetail(ctx, "ws_activity", "snapshot_id", "snap_one")
+	if err != nil || len(facets) != 1 || facets[0].Name != "brief" || facets[0].Total != 2 {
+		t.Fatalf("snapshot detail facets: %+v, %v", facets, err)
+	}
+	rows, err = s.PageForWorkspaceDetailFacet(ctx, "ws_activity", "snapshot_id", "snap_one", "brief", auditpg.Cursor{}, 1)
+	if err != nil || len(rows) != 1 || rows[0].Action != "brief.snapshot.comment.created" {
+		t.Fatalf("snapshot detail facet page: %+v, %v", rows, err)
+	}
+}
+
 // The at-least-once gate. decisions/0007 promises redelivery; the unique index
 // is what stops it becoming a second claim that the thing happened.
 func TestARedeliveredEventWritesOneRow(t *testing.T) {

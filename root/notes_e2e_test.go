@@ -63,6 +63,105 @@ func TestANoteIsEitherAboutSomethingOrTheEngagementSummary(t *testing.T) {
 	}
 }
 
+// The notebook's newer page contract is cursor-addressed and searches on the
+// server. The old array-shaped list above remains intact for older clients.
+func TestWorkingNotePageSearchesAndResumesBeyondTheFirstWindow(t *testing.T) {
+	s := tracedSystem(t)
+	_, workspace, _, _, owner, _ := firm(t, s, orgdomain.RoleMember)
+	base := "/v1/workspaces/" + workspace.String() + "/notes"
+	writeNote(t, s, workspace, `{"body":"first research thread"}`, owner)
+	writeNote(t, s, workspace, `{"body":"second research thread"}`, owner)
+	writeNote(t, s, workspace, `{"body":"third unique corroboration"}`, owner)
+
+	var first struct {
+		Items      []noteResponse `json:"items"`
+		NextCursor *string        `json:"next_cursor"`
+	}
+	decode(t, s.get(t, base+"?page=true&summary=true&limit=2", owner), &first)
+	if len(first.Items) != 2 || first.NextCursor == nil {
+		t.Fatalf("first page must be bounded and resumable: %+v", first)
+	}
+
+	var second struct {
+		Items      []noteResponse `json:"items"`
+		NextCursor *string        `json:"next_cursor"`
+	}
+	decode(t, s.get(t, base+"?page=true&summary=true&limit=2&before="+*first.NextCursor, owner), &second)
+	if len(second.Items) != 1 || second.Items[0].NoteID == first.Items[0].NoteID || second.NextCursor != nil {
+		t.Fatalf("cursor must continue after the first window: %+v", second)
+	}
+
+	var searched struct {
+		Items []noteResponse `json:"items"`
+	}
+	decode(t, s.get(t, base+"?page=true&summary=true&q=unique", owner), &searched)
+	if len(searched.Items) != 1 || searched.Items[0].Body != "third unique corroboration" {
+		t.Fatalf("server search must return the matching note: %+v", searched)
+	}
+}
+
+func TestWorkingNoteCanPreserveResearchContext(t *testing.T) {
+	s := tracedSystem(t)
+	_, workspace, _, _, owner, _ := firm(t, s, orgdomain.RoleMember)
+	base := "/v1/workspaces/" + workspace.String()
+	questionResponse := s.post(t, base+"/questions", researchJSON(t, map[string]any{
+		"question": "Which account needs corroboration?", "state": "open", "observation_ids": []id.ID{},
+	}), owner)
+	researchStatus(t, questionResponse, http.StatusCreated)
+	var question struct {
+		ID id.ID `json:"question_id"`
+	}
+	decode(t, questionResponse, &question)
+
+	createdResponse := s.post(t, base+"/notes", researchJSON(t, map[string]any{
+		"body": "Find a second account before closing this question.", "context_kind": "question", "context_id": question.ID.String(),
+	}), owner)
+	researchStatus(t, createdResponse, http.StatusCreated)
+	var note noteResponse
+	decode(t, createdResponse, &note)
+	var filtered struct {
+		Items []noteResponse `json:"items"`
+	}
+	decode(t, s.get(t, base+"/notes?page=true&summary=true&context_kind=question", owner), &filtered)
+	if len(filtered.Items) != 1 || filtered.Items[0].NoteID != note.NoteID {
+		t.Fatalf("context filter must return the linked note: %+v", filtered)
+	}
+	var legacyFiltered []noteResponse
+	decode(t, s.get(t, base+"/notes?context_kind=question", owner), &legacyFiltered)
+	if len(legacyFiltered) != 1 || legacyFiltered[0].NoteID != note.NoteID {
+		t.Fatalf("legacy context filter must return the linked note: %+v", legacyFiltered)
+	}
+	if res := s.get(t, base+"/notes?page=true&summary=true&context_kind=unknown", owner); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown context filter must be rejected: %d", res.StatusCode)
+	}
+	if note.ContextKind != "question" || note.ContextID != question.ID.String() {
+		t.Fatalf("note context was not retained: %+v", note)
+	}
+
+	var page struct {
+		Items []noteResponse `json:"items"`
+	}
+	decode(t, s.get(t, base+"/notes?page=true&summary=true", owner), &page)
+	if len(page.Items) != 1 || page.Items[0].ContextKind != "question" || page.Items[0].ContextID != question.ID.String() {
+		t.Fatalf("paged note context was not retained: %+v", page)
+	}
+	var searched struct {
+		Items []noteResponse `json:"items"`
+	}
+	decode(t, s.get(t, base+"/notes?page=true&summary=true&q=question", owner), &searched)
+	if len(searched.Items) != 1 || searched.Items[0].NoteID != note.NoteID {
+		t.Fatalf("note context was not searchable: %+v", searched)
+	}
+	for _, body := range []string{
+		`{"body":"missing context id","context_kind":"question"}`,
+		`{"body":"unknown context","context_kind":"tool","context_id":"` + question.ID.String() + `"}`,
+	} {
+		if res := s.post(t, base+"/notes", body, owner); res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("invalid note context got %d", res.StatusCode)
+		}
+	}
+}
+
 // **A HALF-SET FILTER is refused rather than ignored.** Asking for
 // `subject_kind=host` with no value is a question about every host, which is not
 // the question this endpoint answers — and silently answering the OTHER question

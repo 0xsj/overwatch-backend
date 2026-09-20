@@ -64,6 +64,29 @@ func TestResearchQuestionsKeepUncertaintySeparateAndCanResolveIt(t *testing.T) {
 	}), auth), http.StatusConflict)
 }
 
+func TestResearchQuestionsCanBeDeferredAndFilteredByState(t *testing.T) {
+	s := tracedSystem(t)
+	_, workspace, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
+	path := "/v1/workspaces/" + workspace.String() + "/questions"
+
+	for _, body := range []string{
+		`{"question":"What should we verify next?","state":"open"}`,
+		`{"question":"What can wait for another source?","state":"deferred","resolution":"Revisit after the archive request returns."}`,
+	} {
+		researchStatus(t, s.post(t, path, body, auth), http.StatusCreated)
+	}
+
+	var filtered leadquery.Page
+	res := s.get(t, path+"?state=deferred", auth)
+	researchStatus(t, res, http.StatusOK)
+	decode(t, res, &filtered)
+	if len(filtered.Items) != 1 || filtered.Items[0].State != leaddomain.Deferred || filtered.Items[0].Resolution == "" {
+		t.Fatalf("deferred state filter: %+v", filtered)
+	}
+
+	researchStatus(t, s.get(t, path+"?state=paused", auth), http.StatusBadRequest)
+}
+
 func TestResearchQuestionCannotLinkAnObservationFromOutsideItsWorkspace(t *testing.T) {
 	s := tracedSystem(t)
 	_, workspace, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)

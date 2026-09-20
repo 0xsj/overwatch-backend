@@ -79,6 +79,30 @@ func TestASubjectValueIsFolded(t *testing.T) {
 	}
 }
 
+func TestAResearchContextIsTypedAndPaired(t *testing.T) {
+	contextID := an(7)
+	got, err := domain.NewWithContext(an(1), an(2), an(3), "", "", "question", contextID, "follow up", written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ContextKind != "question" || got.ContextID != contextID {
+		t.Fatalf("context: %+v", got)
+	}
+	for _, tc := range []struct {
+		kind string
+		id   id.ID
+		want error
+	}{
+		{kind: "question", want: domain.ErrContextHalfSet},
+		{id: contextID, want: domain.ErrContextHalfSet},
+		{kind: "tool", id: contextID, want: domain.ErrContextKindUnknown},
+	} {
+		if _, err := domain.NewWithContext(an(1), an(2), an(3), "", "", tc.kind, tc.id, "text", written); !errors.Is(err, tc.want) {
+			t.Fatalf("%q/%v: want %v, got %v", tc.kind, tc.id, tc.want, err)
+		}
+	}
+}
+
 // **ONLY THE AUTHOR EDITS.** Anybody on the engagement may read a note — that is
 // what makes it useful — but somebody else changing the words under a person's
 // name is the one thing that would make it untrustworthy.

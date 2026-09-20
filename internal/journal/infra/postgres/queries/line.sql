@@ -38,6 +38,18 @@ where origin = $1
 order by occurred_at desc
 limit $2;
 
+-- name: LinesForWorkspace :many
+select id, event_id, action, subject, origin, actor, on_behalf_of, workspace_id,
+       depth, attempt, decision, correlation_id, causation_id, detail,
+       occurred_at, recorded_at
+from journal.line
+where workspace_id = $1
+  and ($2::timestamptz is null
+       or occurred_at < $2
+       or (occurred_at = $2 and id < $3))
+order by occurred_at desc, id desc
+limit $4;
+
 -- name: ExpireLinesBefore :execrows
 -- BATCHED, and the batch is a bound on the transaction rather than a throughput
 -- knob — decisions/0022. An unbounded delete against a year of accumulated rows

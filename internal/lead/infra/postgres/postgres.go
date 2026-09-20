@@ -171,3 +171,24 @@ order by q.id desc limit $3`, uuid(workspace), uuid(before), limit)
 	}
 	return out, translate(ctx, rows.Err())
 }
+
+func (s *Store) PageByState(ctx context.Context, workspace, before id.ID, state domain.State, limit int) ([]domain.Question, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, questionSelect+`
+where q.workspace_id=$1 and ($2::uuid is null or q.id < $2) and q.state=$3
+group by q.id,q.workspace_id,q.question,q.question_context,q.state,q.resolution,
+         q.author,q.updated_by,q.created_at,q.updated_at
+order by q.id desc limit $4`, uuid(workspace), uuid(before), state.String(), limit)
+	if err != nil {
+		return nil, translate(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]domain.Question, 0)
+	for rows.Next() {
+		one, err := scanQuestion(rows)
+		if err != nil {
+			return nil, translate(ctx, err)
+		}
+		out = append(out, one)
+	}
+	return out, translate(ctx, rows.Err())
+}

@@ -3,6 +3,7 @@ package root
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	notedomain "github.com/0xsj/overwatch-backend/internal/note/domain"
@@ -18,6 +19,8 @@ type noteResponse struct {
 	// that absence is the difference between the two uses of this noun.
 	SubjectKind  string `json:"subject_kind,omitempty"`
 	SubjectValue string `json:"subject_value,omitempty"`
+	ContextKind  string `json:"context_kind,omitempty"`
+	ContextID    string `json:"context_id,omitempty"`
 
 	Body   string `json:"body"`
 	Author string `json:"author"`
@@ -34,10 +37,21 @@ type noteResponse struct {
 	Mine bool `json:"mine"`
 }
 
+type notePageResponse struct {
+	Items      []noteResponse `json:"items"`
+	NextCursor *id.ID         `json:"next_cursor"`
+}
+
 func asNote(n notedomain.Note, caller id.ID) noteResponse {
 	return noteResponse{
 		NoteID:      n.ID.String(),
 		SubjectKind: n.SubjectKind, SubjectValue: n.SubjectValue,
+		ContextKind: n.ContextKind, ContextID: func() string {
+			if n.ContextID.IsZero() {
+				return ""
+			}
+			return n.ContextID.String()
+		}(),
 		Body: n.Body, Author: n.Author.String(),
 		CreatedAt: n.CreatedAt.UTC().Format(time.RFC3339Nano),
 		Edited:    n.Edited(),
@@ -51,6 +65,8 @@ type writeNoteRequest struct {
 	// `0042`'s eighth report section.
 	SubjectKind  string `json:"subject_kind"`
 	SubjectValue string `json:"subject_value"`
+	ContextKind  string `json:"context_kind"`
+	ContextID    id.ID  `json:"context_id"`
 	Body         string `json:"body"`
 }
 
@@ -68,6 +84,37 @@ func (m *me) listNotes(w http.ResponseWriter, r *http.Request) {
 	size, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	kind := r.URL.Query().Get("subject_kind")
 	value := r.URL.Query().Get("subject_value")
+	contextKind := strings.TrimSpace(r.URL.Query().Get("context_kind"))
+	if contextKind != "" {
+		parsed, err := notedomain.ParseContextKind(contextKind)
+		if err != nil {
+			httpx.Fail(m.log, w, r, err)
+			return
+		}
+		contextKind = string(parsed)
+	}
+	if r.URL.Query().Get("page") == "true" {
+		before, size, ok := researchPage(w, r)
+		if !ok {
+			return
+		}
+		search := strings.TrimSpace(r.URL.Query().Get("q"))
+		if len(search) > 200 {
+			httpx.Fail(m.log, w, r, notedomain.ErrSearchTooLong)
+			return
+		}
+		found, err := m.notes.Window(r.Context(), workspace, before, kind, value, contextKind, search, r.URL.Query().Get("summary") == "true", size)
+		if err != nil {
+			httpx.Fail(m.log, w, r, err)
+			return
+		}
+		items := make([]noteResponse, 0, len(found.Items))
+		for _, one := range found.Items {
+			items = append(items, asNote(one, caller))
+		}
+		httpx.WriteJSON(w, r, http.StatusOK, notePageResponse{Items: items, NextCursor: found.NextCursor})
+		return
+	}
 
 	var (
 		found []notedomain.Note
@@ -75,14 +122,14 @@ func (m *me) listNotes(w http.ResponseWriter, r *http.Request) {
 	)
 	switch {
 	case r.URL.Query().Get("summary") == "true":
-		found, err = m.notes.Summary(r.Context(), workspace, size)
+		found, err = m.notes.Summary(r.Context(), workspace, contextKind, size)
 	case kind != "" || value != "":
 		// A HALF-SET filter is refused rather than ignored: asking for
 		// `subject_kind=host` with no value is a question about every host,
 		// which is not the question this endpoint answers.
-		found, err = m.notes.About(r.Context(), workspace, kind, value, size)
+		found, err = m.notes.About(r.Context(), workspace, kind, value, contextKind, size)
 	default:
-		found, err = m.notes.List(r.Context(), workspace, size)
+		found, err = m.notes.List(r.Context(), workspace, contextKind, size)
 	}
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
@@ -126,7 +173,7 @@ func (m *me) writeNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	written, err := m.notesCmd.Write(r.Context(), workspace, caller,
-		in.SubjectKind, in.SubjectValue, in.Body)
+		in.SubjectKind, in.SubjectValue, in.ContextKind, in.ContextID, in.Body)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return

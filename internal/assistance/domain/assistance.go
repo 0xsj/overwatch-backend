@@ -15,13 +15,29 @@ const (
 	MaxCandidateName           = 400
 	MaxCandidateDescription    = 4000
 	MaxRelationshipDescription = 4000
+	MaxOperationError          = 2000
 )
 
 type OperationStatus string
 
-const OperationCompleted OperationStatus = "completed"
+const (
+	OperationCompleted   OperationStatus = "completed"
+	OperationEmpty       OperationStatus = "empty"
+	OperationPartial     OperationStatus = "partial"
+	OperationFailed      OperationStatus = "failed"
+	OperationUnsupported OperationStatus = "unsupported"
+)
 
 func (s OperationStatus) String() string { return string(s) }
+
+func ParseOperationStatus(raw string) (OperationStatus, error) {
+	switch OperationStatus(strings.TrimSpace(raw)) {
+	case OperationCompleted, OperationEmpty, OperationPartial, OperationFailed, OperationUnsupported:
+		return OperationStatus(strings.TrimSpace(raw)), nil
+	default:
+		return "", ErrStateUnknown
+	}
+}
 
 type ProposalState string
 
@@ -50,18 +66,25 @@ const (
 )
 
 type Operation struct {
-	ID            id.ID           `json:"operation_id"`
-	WorkspaceID   id.ID           `json:"workspace_id"`
-	SourceID      id.ID           `json:"source_id"`
-	CaptureID     id.ID           `json:"capture_id"`
-	ExtractionID  *id.ID          `json:"extraction_id,omitempty"`
-	Status        OperationStatus `json:"status"`
-	Provider      string          `json:"provider"`
-	Method        string          `json:"method"`
-	CreatedBy     id.ID           `json:"created_by"`
-	CreatedAt     time.Time       `json:"created_at"`
-	CompletedAt   time.Time       `json:"completed_at"`
-	ProposalCount int             `json:"proposal_count"`
+	ID              id.ID           `json:"operation_id"`
+	WorkspaceID     id.ID           `json:"workspace_id"`
+	SourceID        id.ID           `json:"source_id"`
+	CaptureID       id.ID           `json:"capture_id"`
+	ExtractionID    *id.ID          `json:"extraction_id,omitempty"`
+	Status          OperationStatus `json:"status"`
+	Provider        string          `json:"provider"`
+	Method          string          `json:"method"`
+	TemplateVersion string          `json:"template_version"`
+	CreatedBy       id.ID           `json:"created_by"`
+	CreatedAt       time.Time       `json:"created_at"`
+	CompletedAt     time.Time       `json:"completed_at"`
+	ProposalCount   int             `json:"proposal_count"`
+	InputBytes      int64           `json:"input_bytes"`
+	OutputBytes     int64           `json:"output_bytes"`
+	DurationMS      int64           `json:"duration_ms"`
+	TimedOut        bool            `json:"timed_out"`
+	Error           string          `json:"error,omitempty"`
+	RetryOf         *id.ID          `json:"retry_of,omitempty"`
 }
 
 type Proposal struct {
@@ -138,6 +161,10 @@ func NewReview(want id.ID, proposal Proposal, reviewer id.ID, decision ReviewDec
 }
 
 func NewOperation(want, workspace, source, capture, actor id.ID, provider, method string, count int, at time.Time) (Operation, error) {
+	return NewOperationResult(want, workspace, source, capture, actor, provider, method, OperationCompleted, "", count, nil, at)
+}
+
+func NewOperationResult(want, workspace, source, capture, actor id.ID, provider, method string, status OperationStatus, failure string, count int, retryOf *id.ID, at time.Time) (Operation, error) {
 	if want.IsZero() || workspace.IsZero() || source.IsZero() || capture.IsZero() || actor.IsZero() {
 		return Operation{}, ErrIDRequired
 	}
@@ -150,7 +177,29 @@ func NewOperation(want, workspace, source, capture, actor id.ID, provider, metho
 	if count < 0 || count > MaxProposals || at.IsZero() {
 		return Operation{}, ErrProposalTooLong
 	}
-	return Operation{ID: want, WorkspaceID: workspace, SourceID: source, CaptureID: capture, Status: OperationCompleted, Provider: provider, Method: method, CreatedBy: actor, CreatedAt: at, CompletedAt: at, ProposalCount: count}, nil
+	parsed, err := ParseOperationStatus(status.String())
+	if err != nil {
+		return Operation{}, err
+	}
+	failure = strings.TrimSpace(failure)
+	if len(failure) > MaxOperationError || !utf8.ValidString(failure) || strings.ContainsRune(failure, 0) {
+		return Operation{}, ErrProposalTooLong
+	}
+	if (parsed == OperationFailed || parsed == OperationUnsupported) && failure == "" {
+		return Operation{}, ErrProposalRequired
+	}
+	if parsed != OperationFailed && parsed != OperationUnsupported && parsed != OperationPartial && failure != "" {
+		return Operation{}, ErrProposalRequired
+	}
+	if retryOf != nil && retryOf.IsZero() {
+		return Operation{}, ErrIDRequired
+	}
+	var retry *id.ID
+	if retryOf != nil {
+		copyOf := *retryOf
+		retry = &copyOf
+	}
+	return Operation{ID: want, WorkspaceID: workspace, SourceID: source, CaptureID: capture, Status: parsed, Provider: provider, Method: method, CreatedBy: actor, CreatedAt: at, CompletedAt: at, ProposalCount: count, Error: failure, RetryOf: retry}, nil
 }
 
 func NewProposal(want, operation, workspace, source, capture id.ID, draft ProposalDraft, at time.Time) (Proposal, error) {

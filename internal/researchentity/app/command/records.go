@@ -15,6 +15,7 @@ type Repository interface {
 	ByID(context.Context, id.ID, id.ID) (domain.Record, error)
 	Save(context.Context, domain.Record) error
 	ReplaceObservations(context.Context, id.ID, id.ID, []id.ID) error
+	ReplacePlaceGeometry(context.Context, domain.Record) error
 }
 
 type Transactor interface {
@@ -39,7 +40,11 @@ func NewRecords(repo Repository, tx Transactor, publisher events.Publisher, ids 
 }
 
 func (r *Records) Create(ctx context.Context, workspace, author id.ID, kind, name, description string, observations []id.ID) (domain.Record, error) {
-	fresh, err := domain.New(r.ids.NewID(), workspace, author, kind, name, description, observations, r.clock.Now())
+	return r.CreateWithPlaceGeometry(ctx, workspace, author, kind, name, description, observations, nil)
+}
+
+func (r *Records) CreateWithPlaceGeometry(ctx context.Context, workspace, author id.ID, kind, name, description string, observations []id.ID, geometry *domain.PlaceGeometry) (domain.Record, error) {
+	fresh, err := domain.NewWithPlaceGeometry(r.ids.NewID(), workspace, author, kind, name, description, observations, geometry, r.clock.Now())
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -48,6 +53,9 @@ func (r *Records) Create(ctx context.Context, workspace, author id.ID, kind, nam
 			return err
 		}
 		if err := r.repo.ReplaceObservations(ctx, workspace, fresh.ID, fresh.ObservationIDs); err != nil {
+			return err
+		}
+		if err := r.repo.ReplacePlaceGeometry(ctx, fresh); err != nil {
 			return err
 		}
 		return r.publish(ctx, workspace, fresh, false)
@@ -62,7 +70,19 @@ func (r *Records) Edit(ctx context.Context, workspace, want, editor id.ID, kind,
 	if err != nil {
 		return domain.Record{}, err
 	}
-	next, err := held.Edit(editor, kind, name, description, observations, r.clock.Now())
+	return r.edit(ctx, workspace, held, editor, kind, name, description, observations, held.PlaceGeometry)
+}
+
+func (r *Records) EditWithPlaceGeometry(ctx context.Context, workspace, want, editor id.ID, kind, name, description string, observations []id.ID, geometry *domain.PlaceGeometry) (domain.Record, error) {
+	held, err := r.repo.ByID(ctx, workspace, want)
+	if err != nil {
+		return domain.Record{}, err
+	}
+	return r.edit(ctx, workspace, held, editor, kind, name, description, observations, geometry)
+}
+
+func (r *Records) edit(ctx context.Context, workspace id.ID, held domain.Record, editor id.ID, kind, name, description string, observations []id.ID, geometry *domain.PlaceGeometry) (domain.Record, error) {
+	next, err := held.EditWithPlaceGeometry(editor, kind, name, description, observations, geometry, r.clock.Now())
 	if err != nil {
 		return domain.Record{}, err
 	}
@@ -71,6 +91,9 @@ func (r *Records) Edit(ctx context.Context, workspace, want, editor id.ID, kind,
 			return err
 		}
 		if err := r.repo.ReplaceObservations(ctx, workspace, next.ID, next.ObservationIDs); err != nil {
+			return err
+		}
+		if err := r.repo.ReplacePlaceGeometry(ctx, next); err != nil {
 			return err
 		}
 		return r.publish(ctx, workspace, next, true)

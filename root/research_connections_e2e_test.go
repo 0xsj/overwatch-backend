@@ -40,7 +40,7 @@ func TestResearchConnectionsKeepAssessmentAndEvidenceExplicit(t *testing.T) {
 	researchStatus(t, createdResponse, http.StatusCreated)
 	var created researchConnectionResponse
 	decode(t, createdResponse, &created)
-	if created.Kind != "may_belong_to" || created.State != "proposed" || len(created.SupportingObservationIDs) != 1 || len(created.OpposingObservationIDs) != 0 {
+	if created.Kind != "may_belong_to" || created.State != "proposed" || len(created.SupportingObservationIDs) != 1 || len(created.OpposingObservationIDs) != 0 || !created.ReviewFlags.Open || created.ReviewFlags.Conflicted || created.ReviewFlags.Uncited {
 		t.Fatalf("created research connection: %+v", created)
 	}
 
@@ -73,8 +73,27 @@ func TestResearchConnectionsKeepAssessmentAndEvidenceExplicit(t *testing.T) {
 	researchStatus(t, updatedResponse, http.StatusOK)
 	var updated researchConnectionResponse
 	decode(t, updatedResponse, &updated)
-	if updated.State != "deferred" || updated.UpdatedBy == "" {
+	if updated.State != "deferred" || updated.UpdatedBy == "" || !updated.ReviewFlags.Open || updated.ReviewFlags.Conflicted || updated.ReviewFlags.Uncited {
 		t.Fatalf("updated research connection: %+v", updated)
+	}
+	var filtered struct {
+		Items []researchConnectionResponse `json:"items"`
+	}
+	decode(t, s.get(t, base+"/connections?state=deferred", auth), &filtered)
+	if len(filtered.Items) != 1 || filtered.Items[0].ConnectionID != created.ConnectionID {
+		t.Fatalf("state-filtered research connections: %+v", filtered)
+	}
+	filtered.Items = nil
+	decode(t, s.get(t, base+"/connections?review=open", auth), &filtered)
+	if len(filtered.Items) != 1 || filtered.Items[0].State != "deferred" {
+		t.Fatalf("open research connections: %+v", filtered)
+	}
+	researchStatus(t, s.get(t, base+"/connections?state=unknown", auth), http.StatusBadRequest)
+	researchStatus(t, s.get(t, base+"/connections?review=unknown", auth), http.StatusBadRequest)
+	var summary researchConnectionSummaryResponse
+	decode(t, s.get(t, base+"/connections/summary", auth), &summary)
+	if summary.ConnectionCount != 1 || summary.StateCounts["deferred"] != 1 || summary.OpenCount != 1 || summary.ConflictedCount != 0 || summary.UncitedCount != 0 {
+		t.Fatalf("research connection summary: %+v", summary)
 	}
 
 	historyResponse := s.get(t, base+"/connections/"+created.ConnectionID+"/revisions", auth)
@@ -90,6 +109,35 @@ func TestResearchConnectionsKeepAssessmentAndEvidenceExplicit(t *testing.T) {
 	decode(t, s.get(t, base+"/connections/"+created.ConnectionID+"/revisions/"+history.Items[0].RevisionID, auth), &detail)
 	if detail.Revision != 1 || detail.State != "proposed" || detail.FromRecordName != "@harborline" || detail.FromRecordDescription != "A working account record supported by the source." || len(detail.FromRecordObservationIDs) != 1 || detail.ToRecordName != "Harborline author" || detail.ToRecordDescription != "A working person record for the named author." || len(detail.ToRecordObservationIDs) != 1 || detail.Rationale == updated.Rationale {
 		t.Fatalf("connection revision detail: %+v", detail)
+	}
+
+	reviewResponse := s.post(t, base+"/connections/"+created.ConnectionID+"/reviews", "{}", auth)
+	researchStatus(t, reviewResponse, http.StatusCreated)
+	var review researchConnectionReviewResponse
+	decode(t, reviewResponse, &review)
+	if review.ConnectionReviewID == "" || review.ConnectionID != created.ConnectionID || review.ConnectionKind != "may_belong_to" || review.ConnectionState != "deferred" || len(review.SupportingObservationIDs) != 1 || len(review.Findings) < 3 || review.Provider != "local" || review.TemplateVersion != "connection-review-v1" {
+		t.Fatalf("connection review: %+v", review)
+	}
+	for _, finding := range review.Findings {
+		if len(finding.ObservationIDs) == 0 {
+			t.Fatalf("connection review finding lost citation: %+v", finding)
+		}
+	}
+	reviewsResponse := s.get(t, base+"/connections/"+created.ConnectionID+"/reviews", auth)
+	researchStatus(t, reviewsResponse, http.StatusOK)
+	var reviews struct {
+		Items []researchConnectionReviewResponse `json:"items"`
+	}
+	decode(t, reviewsResponse, &reviews)
+	if len(reviews.Items) != 1 || reviews.Items[0].ConnectionReviewID != review.ConnectionReviewID {
+		t.Fatalf("connection review history: %+v", reviews)
+	}
+	reviewDetailResponse := s.get(t, base+"/connections/"+created.ConnectionID+"/reviews/"+review.ConnectionReviewID, auth)
+	researchStatus(t, reviewDetailResponse, http.StatusOK)
+	var reviewDetail researchConnectionReviewResponse
+	decode(t, reviewDetailResponse, &reviewDetail)
+	if reviewDetail.Output == "" || reviewDetail.ConnectionRationale != updated.Rationale {
+		t.Fatalf("connection review detail: %+v", reviewDetail)
 	}
 
 	researchStatus(t, s.post(t, base+"/close", "", auth), http.StatusNoContent)

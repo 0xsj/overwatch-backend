@@ -16,10 +16,18 @@ import (
 
 type Reader interface {
 	Page(ctx context.Context, workspace, before id.ID, query string, limit int) ([]domain.Summary, error)
+	IntakePage(ctx context.Context, workspace, before id.ID, status string, limit int) ([]domain.IntakeCandidate, error)
+	IntakeByID(ctx context.Context, workspace, intake id.ID) (domain.IntakeCandidate, error)
 	ByID(ctx context.Context, workspace, source id.ID) (domain.Summary, error)
 	Captures(ctx context.Context, workspace, source id.ID) ([]domain.Capture, error)
 	Capture(ctx context.Context, workspace, source, capture id.ID) (domain.Capture, error)
 	Search(ctx context.Context, workspace, before id.ID, query string, limit int) ([]domain.SearchRow, error)
+}
+type WatchReader interface {
+	WatchBySource(context.Context, id.ID, id.ID) (domain.Watch, error)
+}
+type AlertReader interface {
+	AlertPage(context.Context, id.ID, id.ID, id.ID, int) ([]domain.AlertRow, error)
 }
 type Blobs interface {
 	Open(context.Context, blob.Ref) (io.ReadCloser, error)
@@ -53,6 +61,10 @@ type Page struct {
 	Items      []domain.Summary `json:"items"`
 	NextCursor *id.ID           `json:"next_cursor"`
 }
+type IntakePage struct {
+	Items      []domain.IntakeCandidate `json:"items"`
+	NextCursor *id.ID                   `json:"next_cursor"`
+}
 type Detail struct {
 	Source   domain.Summary   `json:"source"`
 	Captures []domain.Capture `json:"captures"`
@@ -65,6 +77,10 @@ type Captured struct {
 type SearchPage struct {
 	Items      []SearchResult `json:"items"`
 	NextCursor *id.ID         `json:"next_cursor"`
+}
+type AlertPage struct {
+	Items      []domain.AlertRow `json:"items"`
+	NextCursor *id.ID            `json:"next_cursor"`
 }
 type SearchResult struct {
 	SourceID         id.ID  `json:"source_id"`
@@ -97,6 +113,80 @@ func (s *Sources) List(ctx context.Context, workspace, before id.ID, query strin
 	out := Page{Items: rows}
 	if out.Items == nil {
 		out.Items = []domain.Summary{}
+	}
+	if len(rows) > limit {
+		cursor := rows[limit-1].ID
+		out.NextCursor = &cursor
+		out.Items = rows[:limit]
+	}
+	return out, nil
+}
+
+func (s *Sources) ListIntake(ctx context.Context, workspace, before id.ID, status string, limit int) (IntakePage, error) {
+	if workspace.IsZero() || (status != "" && status != domain.IntakePending && status != domain.IntakeApproved && status != domain.IntakeRejected) {
+		return IntakePage{}, domain.ErrInvalid
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := s.reader.IntakePage(ctx, workspace, before, status, limit+1)
+	if err != nil {
+		return IntakePage{}, err
+	}
+	out := IntakePage{Items: rows}
+	if out.Items == nil {
+		out.Items = []domain.IntakeCandidate{}
+	}
+	if len(rows) > limit {
+		cursor := rows[limit-1].ID
+		out.NextCursor = &cursor
+		out.Items = rows[:limit]
+	}
+	return out, nil
+}
+
+func (s *Sources) ReadIntake(ctx context.Context, workspace, intake id.ID) (domain.IntakeCandidate, error) {
+	if workspace.IsZero() || intake.IsZero() {
+		return domain.IntakeCandidate{}, domain.ErrInvalid
+	}
+	return s.reader.IntakeByID(ctx, workspace, intake)
+}
+
+func (s *Sources) Watch(ctx context.Context, workspace, source id.ID) (domain.Watch, error) {
+	if workspace.IsZero() || source.IsZero() {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	reader, ok := s.reader.(WatchReader)
+	if !ok {
+		return domain.Watch{}, domain.ErrInvalid
+	}
+	return reader.WatchBySource(ctx, workspace, source)
+}
+
+func (s *Sources) Alerts(ctx context.Context, workspace, account, before id.ID, limit int) (AlertPage, error) {
+	if workspace.IsZero() || account.IsZero() {
+		return AlertPage{}, domain.ErrInvalid
+	}
+	reader, ok := s.reader.(AlertReader)
+	if !ok {
+		return AlertPage{}, domain.ErrInvalid
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	rows, err := reader.AlertPage(ctx, workspace, account, before, limit+1)
+	if err != nil {
+		return AlertPage{}, err
+	}
+	out := AlertPage{Items: rows}
+	if out.Items == nil {
+		out.Items = []domain.AlertRow{}
 	}
 	if len(rows) > limit {
 		cursor := rows[limit-1].ID

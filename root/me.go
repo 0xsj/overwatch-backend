@@ -28,6 +28,8 @@ import (
 	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
 	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
 	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
+	seencmd "github.com/0xsj/overwatch-backend/internal/seen/app/command"
+	seenquery "github.com/0xsj/overwatch-backend/internal/seen/app/query"
 	targetcmd "github.com/0xsj/overwatch-backend/internal/target/app/command"
 	targetquery "github.com/0xsj/overwatch-backend/internal/target/app/query"
 	toolcmd "github.com/0xsj/overwatch-backend/internal/tool/app/command"
@@ -77,6 +79,9 @@ type me struct {
 	mappingsCmd *toolcmd.Mappings
 	ledger      *auditquery.Ledger
 	trail       *journalquery.Trail
+	journal     *journalquery.Log
+	seen        *seenquery.Markers
+	seenCmd     *seencmd.Markers
 	log         *slog.Logger
 }
 
@@ -96,7 +101,8 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 	health *healthquery.Doctor,
 	notes *notequery.Notes, notesCmd *notecmd.Notes,
 	research *research,
-	ledger *auditquery.Ledger, trail *journalquery.Trail,
+	ledger *auditquery.Ledger, trail *journalquery.Trail, journal *journalquery.Log,
+	seen *seenquery.Markers, seenCmd *seencmd.Markers,
 	log *slog.Logger) *me {
 	if sessions == nil || settings == nil || people == nil || orgs == nil || access == nil ||
 		workspaces == nil || opener == nil || grants == nil || invites == nil ||
@@ -108,7 +114,7 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 		graph == nil || rulings == nil || findings == nil || findingsCmd == nil ||
 		reports == nil || reportsCmd == nil || health == nil ||
 		notes == nil || notesCmd == nil || research == nil ||
-		ledger == nil || trail == nil {
+		ledger == nil || trail == nil || journal == nil || seen == nil || seenCmd == nil {
 		panic("root: newMe with a nil dependency")
 	}
 	if log == nil {
@@ -126,7 +132,7 @@ func newMe(sessions *identityquery.Sessions, settings *identitycmd.Settings,
 		findings: findings, findingsCmd: findingsCmd,
 		reports: reports, reportsCmd: reportsCmd, health: health,
 		notes: notes, notesCmd: notesCmd, research: research,
-		ledger: ledger, trail: trail, log: log}
+		ledger: ledger, trail: trail, journal: journal, seen: seen, seenCmd: seenCmd, log: log}
 }
 
 // meResponse is what the client needs to decide which screen to draw, in one
@@ -179,12 +185,26 @@ type meWorkspace struct {
 func (m *me) register(mux *http.ServeMux) {
 	m.registerResearch(mux)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence", m.listEvidence)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/board", m.listEvidenceBoard)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/{observation}", m.readEvidence)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/relations", m.listEvidenceRelations)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/evidence/relations", m.setEvidenceRelation)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/source-links", m.listEvidenceSourceLinks)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/evidence/source-links", m.setEvidenceSourceLink)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/clusters", m.listEvidenceClusters)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/clusters/coverage", m.listEvidenceClusterCoverage)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/evidence/clusters", m.createEvidenceCluster)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/clusters/{cluster}", m.readEvidenceCluster)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/evidence/clusters/{cluster}", m.editEvidenceCluster)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/syntheses", m.listEvidenceSyntheses)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/syntheses/{synthesis}", m.readEvidenceSynthesis)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/evidence/syntheses", m.createEvidenceSynthesis)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/comparisons", m.listEvidenceComparisons)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/comparisons/{comparison}", m.readEvidenceComparison)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/evidence/comparisons", m.createEvidenceComparison)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/question-suggestions", m.listEvidenceQuestionSuggestions)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/evidence/question-suggestions/{suggestion}", m.readEvidenceQuestionSuggestions)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/evidence/question-suggestions", m.createEvidenceQuestionSuggestions)
 	mux.HandleFunc("GET /v1/me", m.handle)
 	mux.HandleFunc("GET /v1/orgs/{org}/members", m.members)
 	mux.HandleFunc("POST /v1/orgs/{org}/workspaces", m.openWorkspace)
@@ -193,6 +213,9 @@ func (m *me) register(mux *http.ServeMux) {
 	// caused this". Both are composed here because both cross domains.
 	mux.HandleFunc("GET /v1/me/activity", m.myActivity)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/audit", m.workspaceAudit)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/logs", m.workspaceLogs)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/changes", m.changes)
+	mux.HandleFunc("POST /v1/workspaces/{workspace}/changes/seen", m.markChangesSeen)
 	mux.HandleFunc("GET /v1/chains/{correlation}", m.chain)
 
 	// Who is on an engagement — decisions/0023. PUT sets a level and DELETE

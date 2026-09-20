@@ -53,6 +53,9 @@ import (
 	scopecmd "github.com/0xsj/overwatch-backend/internal/scope/app/command"
 	scopequery "github.com/0xsj/overwatch-backend/internal/scope/app/query"
 	scopepg "github.com/0xsj/overwatch-backend/internal/scope/infra/postgres"
+	seencmd "github.com/0xsj/overwatch-backend/internal/seen/app/command"
+	seenquery "github.com/0xsj/overwatch-backend/internal/seen/app/query"
+	seenpg "github.com/0xsj/overwatch-backend/internal/seen/infra/postgres"
 	extractionpg "github.com/0xsj/overwatch-backend/internal/source/extraction/infra/postgres"
 	sourcepg "github.com/0xsj/overwatch-backend/internal/source/infra/postgres"
 	targetcmd "github.com/0xsj/overwatch-backend/internal/target/app/command"
@@ -188,6 +191,7 @@ func Boot(ctx context.Context) (*app, error) {
 		{"identity", identitypg.Migrations, []postgres.MigrateOption{postgres.InSchema(identitypg.Schema)}},
 		{"org", orgpg.Migrations, []postgres.MigrateOption{postgres.InSchema(orgpg.Schema)}},
 		{"workspace", workspacepg.Migrations, []postgres.MigrateOption{postgres.InSchema(workspacepg.Schema)}},
+		{"seen", seenpg.Migrations, []postgres.MigrateOption{postgres.InSchema(seenpg.Schema)}},
 		{"audit", auditpg.Migrations, []postgres.MigrateOption{postgres.InSchema(auditpg.Schema)}},
 		{"journal", journalpg.Migrations, []postgres.MigrateOption{postgres.InSchema(journalpg.Schema)}},
 		{"target", targetpg.Migrations, []postgres.MigrateOption{postgres.InSchema(targetpg.Schema)}},
@@ -295,6 +299,9 @@ func Boot(ctx context.Context) (*app, error) {
 	members := orgcmd.NewMembers(orgStore, publisher, db, ids, clk)
 
 	// The first product domain — decisions/0029.
+	seenStore := seenpg.NewStore(db)
+	seenReads := seenquery.NewMarkers(seenStore)
+	seenWrites := seencmd.NewMarkers(seenStore, clk)
 	targetStore := targetpg.NewStore(db)
 	scopeStore := scopepg.NewStore(db)
 	toolStore := toolpg.NewStore(db)
@@ -508,7 +515,9 @@ func Boot(ctx context.Context) (*app, error) {
 			notesCmd,
 			newResearchWithOCRAndAssistanceAndSynthesis(db, artifacts, publisher, ids, clk, configuredImageOCR(cfg), configuredAssistanceProvider(cfg), configuredSynthesisProvider(cfg)),
 			auditquery.NewLedger(auditpg.NewStore(db)),
-			journalquery.NewTrail(journalpg.NewStore(db)), log),
+			journalquery.NewTrail(journalpg.NewStore(db)),
+			journalquery.NewLog(journalpg.NewStore(db)),
+			seenReads, seenWrites, log),
 		close: func() { db.Close() },
 	}, nil
 }

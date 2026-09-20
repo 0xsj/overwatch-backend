@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	leadquery "github.com/0xsj/overwatch-backend/internal/lead/app/query"
 	leaddomain "github.com/0xsj/overwatch-backend/internal/lead/domain"
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
@@ -56,7 +57,14 @@ func (m *me) listQuestions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.questions.List(r.Context(), workspace, before, size)
+	state := r.URL.Query().Get("state")
+	var found leadquery.Page
+	var err error
+	if state == "" {
+		found, err = m.research.questions.List(r.Context(), workspace, before, size)
+	} else {
+		found, err = m.research.questions.Filtered(r.Context(), workspace, before, state, size)
+	}
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return

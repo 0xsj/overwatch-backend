@@ -2,13 +2,15 @@ package query
 
 import (
 	"context"
+	"strings"
 
 	"github.com/0xsj/overwatch-backend/internal/researchentity/domain"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
 type Reader interface {
-	Page(context.Context, id.ID, id.ID, int) ([]domain.Record, error)
+	Page(context.Context, id.ID, id.ID, string, domain.Kind, domain.CitationFilter, domain.ResolutionFilter, int) ([]domain.Record, error)
+	Summary(context.Context, id.ID) (domain.BrowseSummary, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Record, error)
 }
 
@@ -31,9 +33,28 @@ type Page struct {
 	NextCursor *id.ID          `json:"next_cursor"`
 }
 
-func (r *Records) List(ctx context.Context, workspace, before id.ID, limit int) (Page, error) {
+func (r *Records) List(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int) (Page, error) {
 	if workspace.IsZero() {
 		return Page{}, domain.ErrWorkspaceRequired
+	}
+	search = strings.TrimSpace(search)
+	if len(search) > 200 {
+		return Page{}, domain.ErrSearchTooLong
+	}
+	if kind != "" {
+		parsed, err := domain.ParseKind(kind.String())
+		if err != nil {
+			return Page{}, err
+		}
+		kind = parsed
+	}
+	parsedCitation, err := domain.ParseCitationFilter(citation.String())
+	if err != nil {
+		return Page{}, err
+	}
+	parsedResolution, err := domain.ParseResolutionFilter(resolution.String())
+	if err != nil {
+		return Page{}, err
 	}
 	if limit <= 0 {
 		limit = DefaultPage
@@ -41,7 +62,7 @@ func (r *Records) List(ctx context.Context, workspace, before id.ID, limit int) 
 	if limit > MaxPage {
 		limit = MaxPage
 	}
-	rows, err := r.reader.Page(ctx, workspace, before, limit+1)
+	rows, err := r.reader.Page(ctx, workspace, before, search, kind, parsedCitation, parsedResolution, limit+1)
 	if err != nil {
 		return Page{}, err
 	}
@@ -62,4 +83,11 @@ func (r *Records) ByID(ctx context.Context, workspace, want id.ID) (domain.Recor
 		return domain.Record{}, domain.ErrIDRequired
 	}
 	return r.reader.ByID(ctx, workspace, want)
+}
+
+func (r *Records) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
+	if workspace.IsZero() {
+		return domain.BrowseSummary{}, domain.ErrWorkspaceRequired
+	}
+	return r.reader.Summary(ctx, workspace)
 }

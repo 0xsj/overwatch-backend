@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"strings"
 
 	"github.com/0xsj/overwatch-backend/internal/lead/domain"
 	"github.com/0xsj/overwatch-backend/pkg/id"
@@ -9,6 +10,7 @@ import (
 
 type Reader interface {
 	Page(context.Context, id.ID, id.ID, int) ([]domain.Question, error)
+	PageByState(context.Context, id.ID, id.ID, domain.State, int) ([]domain.Question, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Question, error)
 }
 
@@ -42,6 +44,39 @@ func (q *Questions) List(ctx context.Context, workspace, before id.ID, limit int
 		limit = MaxPage
 	}
 	rows, err := q.reader.Page(ctx, workspace, before, limit+1)
+	if err != nil {
+		return Page{}, err
+	}
+	out := Page{Items: rows}
+	if out.Items == nil {
+		out.Items = []domain.Question{}
+	}
+	if len(rows) > limit {
+		cursor := rows[limit-1].ID
+		out.NextCursor = &cursor
+		out.Items = rows[:limit]
+	}
+	return out, nil
+}
+
+// Filtered is the status queue read. Empty state deliberately falls back to
+// the complete list; a supplied state must be vocabulary-checked before it
+// reaches persistence.
+func (q *Questions) Filtered(ctx context.Context, workspace, before id.ID, state string, limit int) (Page, error) {
+	if workspace.IsZero() {
+		return Page{}, domain.ErrWorkspaceRequired
+	}
+	parsed, err := domain.ParseState(strings.TrimSpace(state))
+	if err != nil {
+		return Page{}, err
+	}
+	if limit <= 0 {
+		limit = DefaultPage
+	}
+	if limit > MaxPage {
+		limit = MaxPage
+	}
+	rows, err := q.reader.PageByState(ctx, workspace, before, parsed, limit+1)
 	if err != nil {
 		return Page{}, err
 	}

@@ -12,6 +12,25 @@ const (
 	MaxValueLength = 2000
 )
 
+type ContextKind string
+
+const (
+	ContextQuestion   ContextKind = "question"
+	ContextRecord     ContextKind = "record"
+	ContextEvent      ContextKind = "event"
+	ContextConnection ContextKind = "connection"
+	ContextBrief      ContextKind = "brief"
+)
+
+func ParseContextKind(raw string) (ContextKind, error) {
+	switch ContextKind(strings.TrimSpace(raw)) {
+	case ContextQuestion, ContextRecord, ContextEvent, ContextConnection, ContextBrief:
+		return ContextKind(strings.TrimSpace(raw)), nil
+	default:
+		return "", ErrContextKindUnknown
+	}
+}
+
 // Note is a person's own text — decisions/0043, and **the only input this system
 // has that nothing else produces.** Every other row here is something a tool
 // said, a rule decided, or a subscriber assembled.
@@ -38,6 +57,8 @@ type Note struct {
 	// spelled like a note about something.
 	SubjectKind  string
 	SubjectValue string
+	ContextKind  string
+	ContextID    id.ID
 
 	Body string
 
@@ -57,6 +78,11 @@ type Note struct {
 // which is where every other domain's kind is checked too.
 func New(newID, workspace, author id.ID, subjectKind, subjectValue, body string,
 	at time.Time) (Note, error) {
+	return NewWithContext(newID, workspace, author, subjectKind, subjectValue, "", id.ID{}, body, at)
+}
+
+func NewWithContext(newID, workspace, author id.ID, subjectKind, subjectValue, contextKind string,
+	contextID id.ID, body string, at time.Time) (Note, error) {
 	if newID.IsZero() || author.IsZero() {
 		return Note{}, ErrIDRequired
 	}
@@ -74,11 +100,31 @@ func New(newID, workspace, author id.ID, subjectKind, subjectValue, body string,
 	if err != nil {
 		return Note{}, err
 	}
+	parsedContext, normalizedContextID, err := context(contextKind, contextID)
+	if err != nil {
+		return Note{}, err
+	}
 	return Note{
 		ID: newID, WorkspaceID: workspace,
 		SubjectKind: kind, SubjectValue: value,
+		ContextKind: string(parsedContext), ContextID: normalizedContextID,
 		Body: body, Author: author, CreatedAt: at, UpdatedAt: at,
 	}, nil
+}
+
+func context(kind string, value id.ID) (ContextKind, id.ID, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" && value.IsZero() {
+		return "", id.ID{}, nil
+	}
+	if kind == "" || value.IsZero() {
+		return "", id.ID{}, ErrContextHalfSet
+	}
+	parsed, err := ParseContextKind(kind)
+	if err != nil {
+		return "", id.ID{}, err
+	}
+	return parsed, value, nil
 }
 
 // subject folds and pairs. **The value is FOLDED, matching

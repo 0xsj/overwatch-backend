@@ -53,15 +53,15 @@ func NewNotes(repo Repository, kinds Kinds, publisher events.Publisher,
 // Write records a note. A SUBJECTLESS one is the engagement summary — `0042`'s
 // eighth report section — and is the same row shape.
 func (n *Notes) Write(ctx context.Context, workspace, author id.ID,
-	subjectKind, subjectValue, body string) (domain.Note, error) {
+	subjectKind, subjectValue, contextKind string, contextID id.ID, body string) (domain.Note, error) {
 	// **THE KIND IS CHECKED BEFORE THE DOMAIN SEES IT.** A note about
 	// `hosst:acme.test` would attach to nothing and read as a note about
 	// something — the quiet failure this vocabulary exists to prevent.
 	if subjectKind != "" && !n.kinds.Known(subjectKind) {
 		return domain.Note{}, domain.ErrKindUnknown
 	}
-	fresh, err := domain.New(n.ids.NewID(), workspace, author,
-		subjectKind, subjectValue, body, n.clock.Now())
+	fresh, err := domain.NewWithContext(n.ids.NewID(), workspace, author,
+		subjectKind, subjectValue, contextKind, contextID, body, n.clock.Now())
 	if err != nil {
 		return domain.Note{}, err
 	}

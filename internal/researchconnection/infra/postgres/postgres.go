@@ -289,12 +289,13 @@ func (s *Store) RevisionByID(ctx context.Context, workspace, connection, revisio
 	return out, nil
 }
 
-func (s *Store) Page(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Connection, error) {
+func (s *Store) Page(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int) ([]domain.Connection, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, connectionSelect+
-		"where c.workspace_id=$1 and ($2::uuid is null or c.id < $2) "+
+		"where c.workspace_id=$1 and ($2::uuid is null or c.id < $2) and ($3='' or c.state=$3) "+
 		"group by c.id,c.workspace_id,c.from_record_id,c.to_record_id,c.kind,c.state,c.rationale,c.author,c.updated_by,c.created_at,c.updated_at "+
-		"order by c.id desc limit $3",
-		uuid(workspace), uuid(before), limit)
+		"having $4='' or ($4='open' and c.state in ('proposed','deferred')) or ($4='conflicted' and count(ce.observation_id) filter (where ce.polarity='supporting') > 0 and count(ce.observation_id) filter (where ce.polarity='opposing') > 0) or ($4='uncited' and count(ce.observation_id) filter (where ce.polarity='supporting') = 0 and count(ce.observation_id) filter (where ce.polarity='opposing') = 0) "+
+		"order by c.id desc limit $5",
+		uuid(workspace), uuid(before), state.String(), review.String(), limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -308,4 +309,29 @@ func (s *Store) Page(ctx context.Context, workspace, before id.ID, limit int) ([
 		out = append(out, one)
 	}
 	return out, translate(ctx, rows.Err())
+}
+
+func (s *Store) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
+	var out domain.BrowseSummary
+	out.StateCounts = map[domain.State]int{}
+	var proposed, accepted, rejected, deferred, open, conflicted, uncited int
+	err := s.db.DB(ctx).QueryRow(ctx, `
+		select count(*),
+			count(*) filter (where c.state='proposed'),
+			count(*) filter (where c.state='accepted'),
+			count(*) filter (where c.state='rejected'),
+			count(*) filter (where c.state='deferred'),
+			count(*) filter (where c.state in ('proposed','deferred')),
+			count(*) filter (where exists (select 1 from research.connection_evidence ce where ce.connection_id=c.id and ce.polarity='supporting') and exists (select 1 from research.connection_evidence ce where ce.connection_id=c.id and ce.polarity='opposing')),
+			count(*) filter (where not exists (select 1 from research.connection_evidence ce where ce.connection_id=c.id))
+		from research.connection c where c.workspace_id=$1`, uuid(workspace)).Scan(&out.ConnectionCount, &proposed, &accepted, &rejected, &deferred, &open, &conflicted, &uncited)
+	if err != nil {
+		return domain.BrowseSummary{}, translate(ctx, err)
+	}
+	out.StateCounts[domain.Proposed] = proposed
+	out.StateCounts[domain.Accepted] = accepted
+	out.StateCounts[domain.Rejected] = rejected
+	out.StateCounts[domain.Deferred] = deferred
+	out.OpenCount, out.ConflictedCount, out.UncitedCount = open, conflicted, uncited
+	return out, nil
 }

@@ -53,6 +53,27 @@ where workspace_id = $1
 order by occurred_at desc, id desc
 limit $4;
 
+-- name: EntriesForWorkspaceDetailPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where workspace_id = $1
+  and detail ->> $2::text = $3::text
+  and ($4::timestamptz is null or (occurred_at, id) < ($4::timestamptz, $5::uuid))
+order by occurred_at desc, id desc
+limit $6;
+
+-- name: EntriesForWorkspaceDetailFacetPage :many
+select id, event_id, scope, action, subject, actor, on_behalf_of, workspace_id,
+       correlation_id, causation_id, detail, occurred_at, recorded_at, org_id
+from audit.entry
+where workspace_id = $1
+  and detail ->> $2::text = $3::text
+  and split_part(action, '.', 1) = $4::text
+  and ($5::timestamptz is null or (occurred_at, id) < ($5::timestamptz, $6::uuid))
+order by occurred_at desc, id desc
+limit $7;
+
 -- name: FacetsForSubject :many
 -- The action's FIRST SEGMENT, which is what the mock's facet row counts. It is
 -- computed rather than stored because the action is the fact and the facet is a
@@ -68,6 +89,14 @@ order by 2 desc, 1;
 select split_part(action, '.', 1) as facet, count(*) as total
 from audit.entry
 where workspace_id = $1
+group by 1
+order by 2 desc, 1;
+
+-- name: FacetsForWorkspaceDetail :many
+select split_part(action, '.', 1) as facet, count(*) as total
+from audit.entry
+where workspace_id = $1
+  and detail ->> $2::text = $3::text
 group by 1
 order by 2 desc, 1;
 

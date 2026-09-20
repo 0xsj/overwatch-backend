@@ -23,13 +23,14 @@ const (
 	Open      State = "open"
 	Answered  State = "answered"
 	Dismissed State = "dismissed"
+	Deferred  State = "deferred"
 )
 
 func (s State) String() string { return string(s) }
 
 func ParseState(raw string) (State, error) {
 	switch State(strings.TrimSpace(raw)) {
-	case Open, Answered, Dismissed:
+	case Open, Answered, Dismissed, Deferred:
 		return State(strings.TrimSpace(raw)), nil
 	default:
 		return "", ErrStateUnknown
