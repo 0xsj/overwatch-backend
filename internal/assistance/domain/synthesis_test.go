@@ -33,3 +33,16 @@ func TestNewSynthesisBoundsSelectedObservations(t *testing.T) {
 		t.Fatalf("expected size error, got %v", err)
 	}
 }
+
+func TestNewSynthesisResultRetainsProviderFailureWithoutOutput(t *testing.T) {
+	found, err := NewSynthesisResult(id.ID{1}, id.ID{2}, id.ID{3}, []id.ID{id.ID{4}}, "external-process", "json-selected-observations-v1", SynthesisUnsupported, "", nil, "provider is not configured", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Status != SynthesisUnsupported || found.Error == "" || found.Output != "" || len(found.Candidates) != 0 {
+		t.Fatalf("unexpected failed synthesis: %+v", found)
+	}
+	if _, err := NewSynthesisResult(id.ID{1}, id.ID{2}, id.ID{3}, []id.ID{id.ID{4}}, "local", "method", SynthesisFailed, "output", nil, "provider failed", time.Now()); err == nil {
+		t.Fatal("failed synthesis should not retain output")
+	}
+}

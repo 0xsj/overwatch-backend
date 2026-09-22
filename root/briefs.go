@@ -626,11 +626,11 @@ func handoffShareDigest(token string) (string, bool) {
 }
 
 func (m *me) readWorkingBrief(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
-	found, err := m.research.brief.ByWorkspace(r.Context(), workspace)
+	found, err := m.research.brief.ByWorkspaceVisible(r.Context(), workspace, maxSensitivity)
 	if errors.Is(err, briefdomain.ErrNotFound) {
 		httpx.WriteJSON(w, r, http.StatusOK, nil)
 		return
@@ -660,7 +660,7 @@ func (m *me) saveWorkingBrief(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listBriefDrafts(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -668,7 +668,7 @@ func (m *me) listBriefDrafts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.briefDrafts.List(r.Context(), workspace, before, size)
+	found, err := m.research.briefDrafts.ListVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -677,7 +677,7 @@ func (m *me) listBriefDrafts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readBriefDraft(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -686,7 +686,7 @@ func (m *me) readBriefDraft(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, assistdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.briefDrafts.ByID(r.Context(), workspace, want)
+	found, err := m.research.briefDrafts.ByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -705,6 +705,10 @@ func (m *me) createBriefDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	fresh, err := m.research.briefDraftCmd.Generate(r.Context(), workspace, in.ObservationIDs, caller)
 	if err != nil {
+		if !fresh.ID.IsZero() {
+			httpx.WriteJSON(w, r, http.StatusCreated, fresh)
+			return
+		}
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
@@ -712,7 +716,7 @@ func (m *me) createBriefDraft(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listBriefSnapshots(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -720,7 +724,7 @@ func (m *me) listBriefSnapshots(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.brief.Snapshots(r.Context(), workspace, before, size)
+	found, err := m.research.brief.SnapshotsVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -749,7 +753,7 @@ func (m *me) createBriefSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readBriefSnapshot(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -758,7 +762,7 @@ func (m *me) readBriefSnapshot(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.brief.SnapshotByID(r.Context(), workspace, want)
+	found, err := m.research.brief.SnapshotByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -771,7 +775,7 @@ func (m *me) readBriefSnapshot(w http.ResponseWriter, r *http.Request) {
 // reviewed, commented on, shared, exported, or opened this frozen handoff
 // without reconstructing the snapshot from a broad activity stream.
 func (m *me) briefSnapshotActivity(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -780,7 +784,7 @@ func (m *me) briefSnapshotActivity(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
 		return
 	}
-	if _, err := m.research.brief.SnapshotByID(r.Context(), workspace, want); err != nil {
+	if _, err := m.research.brief.SnapshotByIDVisible(r.Context(), workspace, want, maxSensitivity); err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
@@ -794,7 +798,7 @@ func (m *me) briefSnapshotActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listBriefRecipientHandoffs(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
+	workspace, maxSensitivity, ok := m.onDeliverableResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -802,7 +806,7 @@ func (m *me) listBriefRecipientHandoffs(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	found, err := m.research.brief.Snapshots(r.Context(), workspace, before, size)
+	found, err := m.research.brief.SnapshotsVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -815,7 +819,7 @@ func (m *me) listBriefRecipientHandoffs(w http.ResponseWriter, r *http.Request) 
 }
 
 func (m *me) readBriefRecipientHandoff(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
+	caller, workspace, org, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
 	if !ok {
 		return
 	}
@@ -824,7 +828,12 @@ func (m *me) readBriefRecipientHandoff(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.brief.SnapshotByID(r.Context(), workspace, want)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.brief.SnapshotByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -837,7 +846,7 @@ func (m *me) readBriefRecipientHandoff(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readBriefRecipientHandoffExport(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
+	caller, workspace, org, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
 	if !ok {
 		return
 	}
@@ -846,7 +855,12 @@ func (m *me) readBriefRecipientHandoffExport(w http.ResponseWriter, r *http.Requ
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.brief.SnapshotByID(r.Context(), workspace, want)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.brief.SnapshotByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -859,7 +873,7 @@ func (m *me) readBriefRecipientHandoffExport(w http.ResponseWriter, r *http.Requ
 }
 
 func (m *me) readBriefSharedHandoff(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
+	caller, workspace, org, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
 	if !ok {
 		return
 	}
@@ -868,7 +882,12 @@ func (m *me) readBriefSharedHandoff(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.brief.SnapshotByHandoffShare(r.Context(), workspace, digest)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.brief.SnapshotByHandoffShareVisible(r.Context(), workspace, digest, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -881,7 +900,7 @@ func (m *me) readBriefSharedHandoff(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readBriefSharedHandoffExport(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
+	caller, workspace, org, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
 	if !ok {
 		return
 	}
@@ -890,7 +909,12 @@ func (m *me) readBriefSharedHandoffExport(w http.ResponseWriter, r *http.Request
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.brief.SnapshotByHandoffShare(r.Context(), workspace, digest)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.brief.SnapshotByHandoffShareVisible(r.Context(), workspace, digest, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -903,13 +927,17 @@ func (m *me) readBriefSharedHandoffExport(w http.ResponseWriter, r *http.Request
 }
 
 func (m *me) listBriefSnapshotShares(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
 	want, err := id.Parse(r.PathValue("snapshot"))
 	if err != nil {
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
+		return
+	}
+	if _, err := m.research.brief.SnapshotByIDVisible(r.Context(), workspace, want, maxSensitivity); err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	found, err := m.research.brief.SnapshotHandoffShares(r.Context(), workspace, want)
@@ -961,13 +989,17 @@ func (m *me) revokeBriefSnapshotShare(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listBriefSnapshotComments(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
 	want, err := id.Parse(r.PathValue("snapshot"))
 	if err != nil {
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
+		return
+	}
+	if _, err := m.research.brief.SnapshotByIDVisible(r.Context(), workspace, want, maxSensitivity); err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	comments, err := m.research.brief.SnapshotComments(r.Context(), workspace, want)
@@ -1005,13 +1037,17 @@ func (m *me) addBriefSnapshotComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readBriefSnapshotReview(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
 	want, err := id.Parse(r.PathValue("snapshot"))
 	if err != nil {
 		httpx.Fail(m.log, w, r, briefdomain.ErrNotFound)
+		return
+	}
+	if _, err := m.research.brief.SnapshotByIDVisible(r.Context(), workspace, want, maxSensitivity); err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	found, err := m.research.brief.SnapshotReview(r.Context(), workspace, want)

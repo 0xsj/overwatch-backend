@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/0xsj/overwatch-backend/internal/assistance/app"
+	pkgerrors "github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
@@ -48,5 +49,8 @@ func TestProcessSynthesisProviderMissingBinaryIsExplicitlyUnavailable(t *testing
 	_, err := provider.Synthesize(context.Background(), []app.Observation{{ID: id.ID{1}, Statement: "source"}})
 	if !errors.Is(err, app.ErrSynthesisProviderUnavailable) {
 		t.Fatalf("error=%v, want ErrSynthesisProviderUnavailable", err)
+	}
+	if got := pkgerrors.KindOf(err); got != pkgerrors.Unavailable {
+		t.Fatalf("error kind=%s, want unavailable", got)
 	}
 }

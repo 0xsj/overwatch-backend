@@ -15,19 +15,19 @@ import (
 )
 
 type Reader interface {
-	Page(ctx context.Context, workspace, before id.ID, query string, limit int) ([]domain.Summary, error)
+	Page(ctx context.Context, workspace, before id.ID, query string, limit int, maxSensitivity string) ([]domain.Summary, error)
 	IntakePage(ctx context.Context, workspace, before id.ID, status string, limit int) ([]domain.IntakeCandidate, error)
 	IntakeByID(ctx context.Context, workspace, intake id.ID) (domain.IntakeCandidate, error)
 	ByID(ctx context.Context, workspace, source id.ID) (domain.Summary, error)
 	Captures(ctx context.Context, workspace, source id.ID) ([]domain.Capture, error)
 	Capture(ctx context.Context, workspace, source, capture id.ID) (domain.Capture, error)
-	Search(ctx context.Context, workspace, before id.ID, query string, limit int) ([]domain.SearchRow, error)
+	Search(ctx context.Context, workspace, before id.ID, query string, limit int, maxSensitivity string) ([]domain.SearchRow, error)
 }
 type WatchReader interface {
 	WatchBySource(context.Context, id.ID, id.ID) (domain.Watch, error)
 }
 type AlertReader interface {
-	AlertPage(context.Context, id.ID, id.ID, id.ID, int) ([]domain.AlertRow, error)
+	AlertPage(context.Context, id.ID, id.ID, id.ID, int, string) ([]domain.AlertRow, error)
 }
 type Blobs interface {
 	Open(context.Context, blob.Ref) (io.ReadCloser, error)
@@ -96,8 +96,8 @@ type SearchResult struct {
 	MatchEnd         int    `json:"match_end"`
 }
 
-func (s *Sources) List(ctx context.Context, workspace, before id.ID, query string, limit int) (Page, error) {
-	if workspace.IsZero() {
+func (s *Sources) List(ctx context.Context, workspace, before id.ID, query string, limit int, maxSensitivity string) (Page, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return Page{}, domain.ErrInvalid
 	}
 	if limit <= 0 {
@@ -106,7 +106,7 @@ func (s *Sources) List(ctx context.Context, workspace, before id.ID, query strin
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := s.reader.Page(ctx, workspace, before, query, limit+1)
+	rows, err := s.reader.Page(ctx, workspace, before, query, limit+1, maxSensitivity)
 	if err != nil {
 		return Page{}, err
 	}
@@ -166,8 +166,8 @@ func (s *Sources) Watch(ctx context.Context, workspace, source id.ID) (domain.Wa
 	return reader.WatchBySource(ctx, workspace, source)
 }
 
-func (s *Sources) Alerts(ctx context.Context, workspace, account, before id.ID, limit int) (AlertPage, error) {
-	if workspace.IsZero() || account.IsZero() {
+func (s *Sources) Alerts(ctx context.Context, workspace, account, before id.ID, limit int, maxSensitivity string) (AlertPage, error) {
+	if workspace.IsZero() || account.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return AlertPage{}, domain.ErrInvalid
 	}
 	reader, ok := s.reader.(AlertReader)
@@ -180,7 +180,7 @@ func (s *Sources) Alerts(ctx context.Context, workspace, account, before id.ID, 
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := reader.AlertPage(ctx, workspace, account, before, limit+1)
+	rows, err := reader.AlertPage(ctx, workspace, account, before, limit+1, maxSensitivity)
 	if err != nil {
 		return AlertPage{}, err
 	}
@@ -196,8 +196,8 @@ func (s *Sources) Alerts(ctx context.Context, workspace, account, before id.ID, 
 	return out, nil
 }
 
-func (s *Sources) Search(ctx context.Context, workspace, before id.ID, query string, limit int) (SearchPage, error) {
-	if workspace.IsZero() || strings.TrimSpace(query) == "" || len(query) > 200 {
+func (s *Sources) Search(ctx context.Context, workspace, before id.ID, query string, limit int, maxSensitivity string) (SearchPage, error) {
+	if workspace.IsZero() || strings.TrimSpace(query) == "" || len(query) > 200 || !validMaxSensitivity(maxSensitivity) {
 		return SearchPage{}, domain.ErrInvalid
 	}
 	if limit <= 0 {
@@ -206,7 +206,7 @@ func (s *Sources) Search(ctx context.Context, workspace, before id.ID, query str
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := s.reader.Search(ctx, workspace, before, strings.TrimSpace(query), limit+1)
+	rows, err := s.reader.Search(ctx, workspace, before, strings.TrimSpace(query), limit+1, maxSensitivity)
 	if err != nil {
 		return SearchPage{}, err
 	}
@@ -254,6 +254,10 @@ func (s *Sources) Search(ctx context.Context, workspace, before id.ID, query str
 		out.Items = []SearchResult{}
 	}
 	return out, nil
+}
+
+func validMaxSensitivity(value string) bool {
+	return value == domain.SensitivityInternal || value == domain.SensitivityRestricted
 }
 
 func (s *Sources) indexedText(ctx context.Context, row domain.SearchRow) (string, error) {

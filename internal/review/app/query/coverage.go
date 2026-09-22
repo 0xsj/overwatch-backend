@@ -8,7 +8,7 @@ import (
 )
 
 type ClusterCoverageReader interface {
-	PageClusterCoverage(context.Context, id.ID, id.ID, int) ([]domain.ClusterCoverage, error)
+	PageClusterCoverage(context.Context, id.ID, id.ID, int, string) ([]domain.ClusterCoverage, error)
 }
 
 type ClusterCoverage struct{ reader ClusterCoverageReader }
@@ -25,8 +25,8 @@ type ClusterCoveragePage struct {
 	NextCursor *id.ID                   `json:"next_cursor"`
 }
 
-func (c *ClusterCoverage) List(ctx context.Context, workspace, before id.ID, limit int) (ClusterCoveragePage, error) {
-	if workspace.IsZero() {
+func (c *ClusterCoverage) List(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (ClusterCoveragePage, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return ClusterCoveragePage{}, domain.ErrInvalid
 	}
 	if limit <= 0 {
@@ -35,7 +35,7 @@ func (c *ClusterCoverage) List(ctx context.Context, workspace, before id.ID, lim
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := c.reader.PageClusterCoverage(ctx, workspace, before, limit+1)
+	rows, err := c.reader.PageClusterCoverage(ctx, workspace, before, limit+1, maxSensitivity)
 	if err != nil {
 		return ClusterCoveragePage{}, err
 	}

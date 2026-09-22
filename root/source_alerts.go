@@ -23,14 +23,19 @@ type sourceGapAlertsResponse struct {
 // durable alert inbox. It is intentionally callable by a deployment worker or
 // a researcher, rather than hiding writes inside GET /source-alerts.
 func (m *me) refreshSourceGapAlerts(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
 		return
 	}
 	if r.Method != http.MethodPost {
 		return
 	}
-	gaps, err := m.currentDerivedGapAlerts(r, workspace)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	gaps, err := m.currentDerivedGapAlerts(r, workspace, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -43,7 +48,7 @@ func (m *me) refreshSourceGapAlerts(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, sourceGapAlertsResponse{ActiveGapCount: count})
 }
 
-func (m *me) currentDerivedGapAlerts(r *http.Request, workspace id.ID) ([]sourcecmd.DerivedGapAlert, error) {
+func (m *me) currentDerivedGapAlerts(r *http.Request, workspace id.ID, maxSensitivity string) ([]sourcecmd.DerivedGapAlert, error) {
 	questions := make([]leaddomain.Question, 0)
 	var questionBefore id.ID
 	for {
@@ -61,7 +66,7 @@ func (m *me) currentDerivedGapAlerts(r *http.Request, workspace id.ID) ([]source
 	relations := make([]reviewdomain.Relation, 0)
 	var relationBefore id.ID
 	for {
-		page, err := m.research.relations.Relations(r.Context(), workspace, relationBefore, 100)
+		page, err := m.research.relations.RelationsVisible(r.Context(), workspace, relationBefore, 100, maxSensitivity)
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +80,7 @@ func (m *me) currentDerivedGapAlerts(r *http.Request, workspace id.ID) ([]source
 	records := make([]recorddomain.Record, 0)
 	var recordBefore id.ID
 	for {
-		page, err := m.research.records.List(r.Context(), workspace, recordBefore, "", recorddomain.Kind(""), recorddomain.CitationAny, recorddomain.ResolutionAny, 100)
+		page, err := m.research.records.List(r.Context(), workspace, recordBefore, "", recorddomain.Kind(""), recorddomain.CitationAny, recorddomain.ResolutionAny, 100, maxSensitivity)
 		if err != nil {
 			return nil, err
 		}
@@ -89,7 +94,7 @@ func (m *me) currentDerivedGapAlerts(r *http.Request, workspace id.ID) ([]source
 	clusters := make([]reviewdomain.Cluster, 0)
 	var clusterBefore id.ID
 	for {
-		page, err := m.research.clusters.List(r.Context(), workspace, clusterBefore, 100)
+		page, err := m.research.clusters.List(r.Context(), workspace, clusterBefore, 100, maxSensitivity)
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +108,7 @@ func (m *me) currentDerivedGapAlerts(r *http.Request, workspace id.ID) ([]source
 	coverage := make(map[id.ID]reviewdomain.ClusterCoverage, len(clusters))
 	var coverageBefore id.ID
 	for {
-		page, err := m.research.clusterCoverage.List(r.Context(), workspace, coverageBefore, 100)
+		page, err := m.research.clusterCoverage.List(r.Context(), workspace, coverageBefore, 100, maxSensitivity)
 		if err != nil {
 			return nil, err
 		}

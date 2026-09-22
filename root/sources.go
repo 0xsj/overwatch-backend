@@ -36,6 +36,7 @@ import (
 	obscmd "github.com/0xsj/overwatch-backend/internal/observation/app/command"
 	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
 	obspg "github.com/0xsj/overwatch-backend/internal/observation/infra/postgres"
+	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
 	connectioncmd "github.com/0xsj/overwatch-backend/internal/researchconnection/app/command"
 	connectionquery "github.com/0xsj/overwatch-backend/internal/researchconnection/app/query"
@@ -86,6 +87,7 @@ type research struct {
 	questions             *leadquery.Questions
 	questionCmd           *leadcmd.Questions
 	assistance            *assistquery.Operations
+	providerRuns          *assistquery.ProviderRuns
 	assistanceCmd         *assistcmd.Operations
 	providerPolicy        *assistquery.ProviderPolicies
 	providerPolicyCmd     *assistcmd.ProviderPolicies
@@ -133,7 +135,7 @@ func configuredImageOCR(cfg Config) extractioncmd.ImageOCR {
 		return extractioncmd.UnsupportedImageOCR{}
 	}
 	return extractioncmd.NewProcessImageOCR(extractioncmd.ProcessImageOCRConfig{
-		Binary: cfg.OCRBinary, Timeout: cfg.OCRTimeout, MaxOutput: cfg.OCRMaxOutput,
+		Binary: cfg.OCRBinary, Args: cfg.OCRArgs, Timeout: cfg.OCRTimeout, MaxOutput: cfg.OCRMaxOutput,
 	})
 }
 
@@ -157,7 +159,7 @@ func configuredAssistanceProvider(cfg Config) assistapp.Provider {
 		return assistapp.LocalSentenceProvider{}
 	}
 	return assistapp.NewProcessProvider(assistapp.ProcessProviderConfig{
-		Binary: cfg.AssistanceBinary, Timeout: cfg.AssistanceTimeout, MaxOutput: cfg.AssistanceMaxOutput,
+		Binary: cfg.AssistanceBinary, Args: cfg.AssistanceArgs, Timeout: cfg.AssistanceTimeout, MaxOutput: cfg.AssistanceMaxOutput,
 	})
 }
 
@@ -166,7 +168,43 @@ func configuredSynthesisProvider(cfg Config) assistapp.SynthesisProvider {
 		return assistapp.LocalSynthesisProvider{}
 	}
 	return assistapp.NewProcessSynthesisProvider(assistapp.SynthesisProcessProviderConfig{
-		Binary: cfg.SynthesisBinary, Timeout: cfg.SynthesisTimeout, MaxOutput: cfg.SynthesisMaxOutput,
+		Binary: cfg.SynthesisBinary, Args: cfg.SynthesisArgs, Timeout: cfg.SynthesisTimeout, MaxOutput: cfg.SynthesisMaxOutput,
+	})
+}
+
+func configuredComparisonProvider(cfg Config) assistapp.ComparisonProvider {
+	if strings.TrimSpace(cfg.AssistanceBinary) == "" {
+		return assistapp.LocalComparisonProvider{}
+	}
+	return assistapp.NewProcessComparisonProvider(assistapp.ComparisonProcessProviderConfig{
+		Binary: cfg.AssistanceBinary, Args: cfg.AssistanceArgs, Timeout: cfg.AssistanceTimeout, MaxOutput: cfg.AssistanceMaxOutput,
+	})
+}
+
+func configuredQuestionSuggestionProvider(cfg Config) assistapp.QuestionSuggestionProvider {
+	if strings.TrimSpace(cfg.AssistanceBinary) == "" {
+		return assistapp.LocalQuestionSuggestionProvider{}
+	}
+	return assistapp.NewProcessQuestionSuggestionProvider(assistapp.QuestionSuggestionsProcessProviderConfig{
+		Binary: cfg.AssistanceBinary, Args: cfg.AssistanceArgs, Timeout: cfg.AssistanceTimeout, MaxOutput: cfg.AssistanceMaxOutput,
+	})
+}
+
+func configuredBriefDraftProvider(cfg Config) assistapp.BriefDraftProvider {
+	if strings.TrimSpace(cfg.AssistanceBinary) == "" {
+		return assistapp.LocalBriefDraftProvider{}
+	}
+	return assistapp.NewProcessBriefDraftProvider(assistapp.BriefDraftProcessProviderConfig{
+		Binary: cfg.AssistanceBinary, Args: cfg.AssistanceArgs, Timeout: cfg.AssistanceTimeout, MaxOutput: cfg.AssistanceMaxOutput,
+	})
+}
+
+func configuredConnectionReviewProvider(cfg Config) assistapp.ConnectionReviewProvider {
+	if strings.TrimSpace(cfg.AssistanceBinary) == "" {
+		return assistapp.LocalConnectionReviewProvider{}
+	}
+	return assistapp.NewProcessConnectionReviewProvider(assistapp.ConnectionReviewProcessProviderConfig{
+		Binary: cfg.AssistanceBinary, Args: cfg.AssistanceArgs, Timeout: cfg.AssistanceTimeout, MaxOutput: cfg.AssistanceMaxOutput,
 	})
 }
 
@@ -178,7 +216,14 @@ func newResearchWithOCRAndAssistanceAndSynthesis(db *postgres.Pool, bytes *blob.
 	return newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db, bytes, publisher, ids, clk, egress.New(egress.Config{
 		Guard:   egress.NewGuard(egress.Policy{}),
 		MaxBody: sourcedomain.MaxBinaryCaptureBytes,
-	}), ocr, provider, synthesisProvider)
+	}), ocr, provider, assistapp.LocalComparisonProvider{}, assistapp.LocalQuestionSuggestionProvider{}, assistapp.LocalBriefDraftProvider{}, assistapp.LocalConnectionReviewProvider{}, synthesisProvider)
+}
+
+func newResearchWithOCRAndAssistanceAndSynthesisAndComparison(db *postgres.Pool, bytes *blob.Store, publisher events.Publisher, ids *id.V7, clk clock.System, ocr extractioncmd.ImageOCR, provider assistapp.Provider, comparisonProvider assistapp.ComparisonProvider, questionSuggestionProvider assistapp.QuestionSuggestionProvider, briefDraftProvider assistapp.BriefDraftProvider, connectionReviewProvider assistapp.ConnectionReviewProvider, synthesisProvider assistapp.SynthesisProvider) *research {
+	return newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db, bytes, publisher, ids, clk, egress.New(egress.Config{
+		Guard:   egress.NewGuard(egress.Policy{}),
+		MaxBody: sourcedomain.MaxBinaryCaptureBytes,
+	}), ocr, provider, comparisonProvider, questionSuggestionProvider, briefDraftProvider, connectionReviewProvider, synthesisProvider)
 }
 
 func newResearchWithFetcherAndOCR(db *postgres.Pool, bytes *blob.Store, publisher events.Publisher, ids *id.V7, clk clock.System, fetcher referenceFetcher, ocr extractioncmd.ImageOCR) *research {
@@ -186,10 +231,10 @@ func newResearchWithFetcherAndOCR(db *postgres.Pool, bytes *blob.Store, publishe
 }
 
 func newResearchWithFetcherAndOCRAndAssistance(db *postgres.Pool, bytes *blob.Store, publisher events.Publisher, ids *id.V7, clk clock.System, fetcher referenceFetcher, ocr extractioncmd.ImageOCR, provider assistapp.Provider) *research {
-	return newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db, bytes, publisher, ids, clk, fetcher, ocr, provider, assistapp.LocalSynthesisProvider{})
+	return newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db, bytes, publisher, ids, clk, fetcher, ocr, provider, assistapp.LocalComparisonProvider{}, assistapp.LocalQuestionSuggestionProvider{}, assistapp.LocalBriefDraftProvider{}, assistapp.LocalConnectionReviewProvider{}, assistapp.LocalSynthesisProvider{})
 }
 
-func newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db *postgres.Pool, bytes *blob.Store, publisher events.Publisher, ids *id.V7, clk clock.System, fetcher referenceFetcher, ocr extractioncmd.ImageOCR, provider assistapp.Provider, synthesisProvider assistapp.SynthesisProvider) *research {
+func newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db *postgres.Pool, bytes *blob.Store, publisher events.Publisher, ids *id.V7, clk clock.System, fetcher referenceFetcher, ocr extractioncmd.ImageOCR, provider assistapp.Provider, comparisonProvider assistapp.ComparisonProvider, questionSuggestionProvider assistapp.QuestionSuggestionProvider, briefDraftProvider assistapp.BriefDraftProvider, connectionReviewProvider assistapp.ConnectionReviewProvider, synthesisProvider assistapp.SynthesisProvider) *research {
 	sourceStore := sourcepg.NewStore(db)
 	reads := sourcequery.NewSourcesWithClock(sourceStore, bytes, clk)
 	observations := obspg.NewStore(db)
@@ -227,19 +272,20 @@ func newResearchWithFetcherAndOCRAndAssistanceAndSynthesis(db *postgres.Pool, by
 		questions:             leadquery.NewQuestions(leadStore),
 		questionCmd:           leadcmd.NewQuestions(leadStore, db, publisher, ids, clk),
 		assistance:            assistquery.NewOperations(assistanceStore),
+		providerRuns:          assistquery.NewProviderRuns(assistanceStore),
 		providerPolicy:        providerPolicy,
 		providerPolicyCmd:     assistcmd.NewProviderPolicies(assistanceStore, db, publisher, ids, clk),
 		assistanceCmd:         assistcmd.NewOperations(assistanceStore, assistanceCaptures{sources: reads, extractions: extractionReads}, provider, providerPolicy, db, publisher, ids, clk),
 		comparisons:           assistquery.NewComparisons(assistanceStore),
-		comparisonCmd:         assistcmd.NewComparisons(assistanceStore, comparisonEvidence{relations: relations}, assistapp.LocalComparisonProvider{}, db, publisher, ids, clk),
+		comparisonCmd:         assistcmd.NewComparisonsWithPolicy(assistanceStore, comparisonEvidence{relations: relations}, comparisonProvider, providerPolicy, db, publisher, ids, clk),
 		questionSuggestions:   assistquery.NewQuestionSuggestions(assistanceStore),
-		questionSuggestionCmd: assistcmd.NewQuestionSuggestions(assistanceStore, questionSuggestionEvidence{relations: relations}, assistapp.LocalQuestionSuggestionProvider{}, db, publisher, ids, clk),
+		questionSuggestionCmd: assistcmd.NewQuestionSuggestionsWithPolicy(assistanceStore, questionSuggestionEvidence{relations: relations}, questionSuggestionProvider, providerPolicy, db, publisher, ids, clk),
 		briefDrafts:           assistquery.NewBriefDrafts(assistanceStore),
-		briefDraftCmd:         assistcmd.NewBriefDrafts(assistanceStore, briefDraftEvidence{brief: briefReads, relations: relations}, assistapp.LocalBriefDraftProvider{}, db, publisher, ids, clk),
+		briefDraftCmd:         assistcmd.NewBriefDraftsWithPolicy(assistanceStore, briefDraftEvidence{brief: briefReads, relations: relations}, briefDraftProvider, providerPolicy, db, publisher, ids, clk),
 		connectionReviews:     assistquery.NewConnectionReviews(assistanceStore),
-		connectionReviewCmd:   assistcmd.NewConnectionReviews(assistanceStore, connections, connectionReviewEvidence{relations: relations}, assistapp.LocalConnectionReviewProvider{}, db, publisher, ids, clk),
+		connectionReviewCmd:   assistcmd.NewConnectionReviewsWithPolicy(assistanceStore, connections, connectionReviewEvidence{relations: relations}, connectionReviewProvider, providerPolicy, db, publisher, ids, clk),
 		syntheses:             assistquery.NewSyntheses(assistanceStore),
-		synthesisCmd:          assistcmd.NewSyntheses(assistanceStore, synthesisEvidence{relations: relations}, synthesisProvider, db, publisher, ids, clk),
+		synthesisCmd:          assistcmd.NewSynthesesWithPolicy(assistanceStore, synthesisEvidence{relations: relations}, synthesisProvider, providerPolicy, db, publisher, ids, clk),
 		events:                eventquery.NewEvents(eventStore),
 		eventCmd:              eventcmd.NewEvents(eventStore, recordStore, db, publisher, ids, clk),
 		eventAccounts:         eventquery.NewAccounts(eventStore),
@@ -503,13 +549,14 @@ func (m *me) registerResearch(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/source-alerts", m.listSourceAlerts)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/source-alerts/refresh-gaps", m.refreshSourceGapAlerts)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/source-alerts/{alert}/seen", m.markSourceAlertSeen)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/source-alert-delivery", m.readSourceAlertDelivery)
+	mux.HandleFunc("PUT /v1/workspaces/{workspace}/source-alert-delivery", m.saveSourceAlertDelivery)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/observations", m.listSourceObservations)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/observations", m.recordSourceObservation)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/observations/{observation}/shares", m.listCitationShares)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/observations/{observation}/shares", m.createCitationShare)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/shares/{share}/revoke", m.revokeCitationShare)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/observations/{observation}", m.readSourceObservation)
-	mux.HandleFunc("GET /v1/workspaces/{workspace}/observations/shared/{token}", m.readSharedCitation)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/questions", m.listQuestions)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/questions", m.createQuestion)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/questions/{question}", m.readQuestion)
@@ -520,6 +567,7 @@ func (m *me) registerResearch(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/events/{event}/revisions/{revision}", m.readTimelineEventRevision)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/events/{event}", m.readTimelineEvent)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/events/{event}", m.editTimelineEvent)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/records/{record}/neighborhood", m.readResearchRecordNeighborhood)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/events/{event}/accounts", m.listTimelineEventAccounts)
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/events/{event}/accounts", m.createTimelineEventAccount)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/events/{event}/accounts/reconciliation", m.reconcileTimelineEventAccounts)
@@ -585,6 +633,7 @@ func (m *me) registerResearch(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/workspaces/{workspace}/sources/{source}/captures/{capture}/assistance", m.generateAssistance)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/assistance/policy", m.readAssistancePolicy)
 	mux.HandleFunc("PUT /v1/workspaces/{workspace}/assistance/policy", m.updateAssistancePolicy)
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/assistance/runs", m.listAssistanceProviderRuns)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/captures/{capture}/assistance", m.readLatestAssistance)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/sources/{source}/captures/{capture}/assistance/history", m.readAssistanceHistory)
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/assistance/{operation}", m.readAssistance)
@@ -650,7 +699,7 @@ func decodeResearchBody(w http.ResponseWriter, r *http.Request, out any) bool {
 }
 
 func (m *me) listSources(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
 		return
 	}
@@ -663,7 +712,12 @@ func (m *me) listSources(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.sources.List(r.Context(), workspace, before, query, size)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.sources.List(r.Context(), workspace, before, query, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -779,7 +833,7 @@ func (m *me) reviewSourceIntake(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) searchResearch(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
 		return
 	}
@@ -792,7 +846,12 @@ func (m *me) searchResearch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.sources.Search(r.Context(), workspace, before, query, size)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.sources.Search(r.Context(), workspace, before, query, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -1363,7 +1422,7 @@ func (m *me) fetchSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if response.Status < http.StatusOK || response.Status >= http.StatusMultipleChoices {
-		httpx.WriteError(w, r, errors.Newf(errors.Unavailable, "reference returned HTTP status %d", response.Status))
+		httpx.WriteError(w, r, egress.ResponseError(response))
 		return
 	}
 	mediaType, err := fetchedMediaType(response.Header.Get("Content-Type"))
@@ -1436,7 +1495,7 @@ func (m *me) setSourceWatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listSourceAlerts(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
 		return
 	}
@@ -1444,7 +1503,12 @@ func (m *me) listSourceAlerts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	alerts, err := m.research.sources.Alerts(r.Context(), workspace, caller, before, size)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	alerts, err := m.research.sources.Alerts(r.Context(), workspace, caller, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -1474,6 +1538,41 @@ func (m *me) markSourceAlertSeen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, r, http.StatusOK, sourceAlertSeenResponse{SeenAt: at.UTC().Format(time.RFC3339Nano)})
+}
+
+func (m *me) readSourceAlertDelivery(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	preference, err := m.research.sourceCmd.AlertDelivery(r.Context(), workspace, caller)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, preference)
+}
+
+type sourceAlertDeliveryRequest struct {
+	EmailEnabled bool     `json:"email_enabled"`
+	Kinds        []string `json:"kinds"`
+}
+
+func (m *me) saveSourceAlertDelivery(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelRead)
+	if !ok {
+		return
+	}
+	var in sourceAlertDeliveryRequest
+	if !decodeResearchBody(w, r, &in) {
+		return
+	}
+	preference, err := m.research.sourceCmd.SaveAlertDelivery(r.Context(), workspace, caller, in.EmailEnabled, in.Kinds)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, preference)
 }
 
 func (m *me) runSourceWatch(w http.ResponseWriter, r *http.Request) {
@@ -1554,7 +1653,7 @@ func (m *me) executeSourceWatch(ctx context.Context, workspace, source, caller i
 		return sourcecmd.WatchRunResult{}, err
 	}
 	if response.Status < http.StatusOK || response.Status >= http.StatusMultipleChoices {
-		err = errors.Newf(errors.Unavailable, "reference returned HTTP status %d", response.Status)
+		err = egress.ResponseError(response)
 		fail(err)
 		return sourcecmd.WatchRunResult{}, err
 	}
@@ -1724,7 +1823,7 @@ type assistancePolicyRequest struct {
 }
 
 func (m *me) readAssistancePolicy(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	_, workspace, _, ok := m.onWorkspaceOrgMember(w, r)
 	if !ok {
 		return
 	}
@@ -1737,8 +1836,17 @@ func (m *me) readAssistancePolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) updateAssistancePolicy(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelAdmin)
+	caller, workspace, org, ok := m.onWorkspaceOrgMember(w, r)
 	if !ok {
+		return
+	}
+	reach, err := m.access.In(r.Context(), caller, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, orgquery.ErrNoAccess)
+		return
+	}
+	if reach.Role != orgdomain.RoleOwner && reach.Role != orgdomain.RoleAdmin {
+		httpx.WriteError(w, r, errors.New(errors.Forbidden, "only an organisation admin can change the assistance provider policy"))
 		return
 	}
 	var in assistancePolicyRequest

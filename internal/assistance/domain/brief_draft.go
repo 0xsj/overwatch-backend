@@ -15,6 +15,7 @@ const (
 	MaxBriefDraftOutput       = 24000
 	MaxBriefDraftText         = 8000
 	MaxBriefDraftRationale    = 2000
+	MaxBriefDraftError        = 2000
 )
 
 const EventBriefDraftGenerated = "assistance.brief_draft.generated"
@@ -22,18 +23,21 @@ const EventBriefDraftGenerated = "assistance.brief_draft.generated"
 type BriefDraftStatus string
 
 const (
-	BriefDraftCompleted BriefDraftStatus = "completed"
-	BriefDraftEmpty     BriefDraftStatus = "empty"
+	BriefDraftCompleted   BriefDraftStatus = "completed"
+	BriefDraftEmpty       BriefDraftStatus = "empty"
+	BriefDraftFailed      BriefDraftStatus = "failed"
+	BriefDraftUnsupported BriefDraftStatus = "unsupported"
+	BriefDraftTimedOut    BriefDraftStatus = "timed_out"
 )
 
 func (s BriefDraftStatus) String() string { return string(s) }
 
 func ParseBriefDraftStatus(raw string) (BriefDraftStatus, error) {
 	switch BriefDraftStatus(strings.TrimSpace(raw)) {
-	case BriefDraftCompleted, BriefDraftEmpty:
+	case BriefDraftCompleted, BriefDraftEmpty, BriefDraftFailed, BriefDraftUnsupported, BriefDraftTimedOut:
 		return BriefDraftStatus(strings.TrimSpace(raw)), nil
 	default:
-		return "", errors.New(errors.Invalid, "brief draft status must be completed or empty")
+		return "", errors.New(errors.Invalid, "brief draft status is unknown")
 	}
 }
 
@@ -93,9 +97,14 @@ type BriefDraft struct {
 	Changes         []BriefDraftChange `json:"changes"`
 	CreatedBy       id.ID              `json:"created_by"`
 	CreatedAt       time.Time          `json:"created_at"`
+	Error           string             `json:"error,omitempty"`
 }
 
 func NewBriefDraft(want, workspace, actor id.ID, input BriefDraftInput, provider, method, templateVersion string, status BriefDraftStatus, output string, changes []BriefDraftChange, at time.Time) (BriefDraft, error) {
+	return NewBriefDraftResult(want, workspace, actor, input, provider, method, templateVersion, status, output, changes, "", at)
+}
+
+func NewBriefDraftResult(want, workspace, actor id.ID, input BriefDraftInput, provider, method, templateVersion string, status BriefDraftStatus, output string, changes []BriefDraftChange, failure string, at time.Time) (BriefDraft, error) {
 	if want.IsZero() || workspace.IsZero() || actor.IsZero() || input.BriefID.IsZero() {
 		return BriefDraft{}, ErrBriefDraftRequired
 	}
@@ -131,7 +140,11 @@ func NewBriefDraft(want, workspace, actor id.ID, input BriefDraftInput, provider
 	if err != nil {
 		return BriefDraft{}, err
 	}
-	if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxBriefDraftOutput {
+	if parsedStatus == BriefDraftCompleted || parsedStatus == BriefDraftEmpty {
+		if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxBriefDraftOutput || strings.TrimSpace(failure) != "" {
+			return BriefDraft{}, ErrBriefDraftOutput
+		}
+	} else if strings.TrimSpace(output) != "" || len(changes) != 0 || strings.TrimSpace(failure) == "" || !utf8.ValidString(failure) || strings.ContainsRune(failure, 0) || len(failure) > MaxBriefDraftError {
 		return BriefDraft{}, ErrBriefDraftOutput
 	}
 	if len(changes) > MaxBriefDraftChanges {
@@ -172,7 +185,7 @@ func NewBriefDraft(want, workspace, actor id.ID, input BriefDraftInput, provider
 	cleanInput.CurrentAccount, cleanInput.Alternatives = strings.TrimSpace(input.CurrentAccount), strings.TrimSpace(input.Alternatives)
 	cleanInput.Limitations, cleanInput.NextSteps = strings.TrimSpace(input.Limitations), strings.TrimSpace(input.NextSteps)
 	cleanInput.ObservationIDs = append([]id.ID(nil), input.ObservationIDs...)
-	return BriefDraft{ID: want, WorkspaceID: workspace, Input: cleanInput, Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), TemplateVersion: strings.TrimSpace(templateVersion), Status: parsedStatus, Output: output, Changes: cleanChanges, CreatedBy: actor, CreatedAt: at}, nil
+	return BriefDraft{ID: want, WorkspaceID: workspace, Input: cleanInput, Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), TemplateVersion: strings.TrimSpace(templateVersion), Status: parsedStatus, Output: output, Changes: cleanChanges, CreatedBy: actor, CreatedAt: at, Error: strings.TrimSpace(failure)}, nil
 }
 
 func validBriefDraftText(value string) bool {

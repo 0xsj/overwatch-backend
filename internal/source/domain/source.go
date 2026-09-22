@@ -62,11 +62,11 @@ type Source struct {
 	Origin             string     `json:"origin"`
 	URL                string     `json:"url,omitempty"`
 	Filename           string     `json:"filename,omitempty"`
-	PublishedAt        *time.Time `json:"published_at,omitempty"`
+	PublishedAt        *time.Time `json:"published_at"`
 	DuplicatePolicy    string     `json:"duplicate_policy"`
 	CreatedBy          id.ID      `json:"created_by"`
 	CreatedAt          time.Time  `json:"created_at"`
-	RetentionUntil     *time.Time `json:"retention_until,omitempty"`
+	RetentionUntil     *time.Time `json:"retention_until"`
 	RetentionUpdatedBy id.ID      `json:"retention_updated_by,omitempty"`
 	RetentionUpdatedAt *time.Time `json:"retention_updated_at,omitempty"`
 	Sensitivity        string     `json:"sensitivity"`

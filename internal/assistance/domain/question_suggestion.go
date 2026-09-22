@@ -19,6 +19,7 @@ const (
 	MaxQuestionSuggestionContext         = 4000
 	MaxQuestionSuggestionGapLabel        = 400
 	MaxQuestionSuggestionGapDetail       = 4000
+	MaxQuestionSuggestionError           = 2000
 )
 
 const EventQuestionSuggestionsGenerated = "assistance.question_suggestions.generated"
@@ -26,18 +27,21 @@ const EventQuestionSuggestionsGenerated = "assistance.question_suggestions.gener
 type QuestionSuggestionStatus string
 
 const (
-	QuestionSuggestionsCompleted QuestionSuggestionStatus = "completed"
-	QuestionSuggestionsEmpty     QuestionSuggestionStatus = "empty"
+	QuestionSuggestionsCompleted   QuestionSuggestionStatus = "completed"
+	QuestionSuggestionsEmpty       QuestionSuggestionStatus = "empty"
+	QuestionSuggestionsFailed      QuestionSuggestionStatus = "failed"
+	QuestionSuggestionsUnsupported QuestionSuggestionStatus = "unsupported"
+	QuestionSuggestionsTimedOut    QuestionSuggestionStatus = "timed_out"
 )
 
 func (s QuestionSuggestionStatus) String() string { return string(s) }
 
 func ParseQuestionSuggestionStatus(raw string) (QuestionSuggestionStatus, error) {
 	switch QuestionSuggestionStatus(strings.TrimSpace(raw)) {
-	case QuestionSuggestionsCompleted, QuestionSuggestionsEmpty:
+	case QuestionSuggestionsCompleted, QuestionSuggestionsEmpty, QuestionSuggestionsFailed, QuestionSuggestionsUnsupported, QuestionSuggestionsTimedOut:
 		return QuestionSuggestionStatus(strings.TrimSpace(raw)), nil
 	default:
-		return "", errors.New(errors.Invalid, "question suggestion status must be completed or empty")
+		return "", errors.New(errors.Invalid, "question suggestion status is unknown")
 	}
 }
 
@@ -91,9 +95,14 @@ type QuestionSuggestions struct {
 	Suggestions     []QuestionSuggestion     `json:"suggestions"`
 	CreatedBy       id.ID                    `json:"created_by"`
 	CreatedAt       time.Time                `json:"created_at"`
+	Error           string                   `json:"error,omitempty"`
 }
 
 func NewQuestionSuggestions(want, workspace, actor id.ID, gaps []QuestionSuggestionGap, provider, method, templateVersion string, status QuestionSuggestionStatus, output string, suggestions []QuestionSuggestion, at time.Time) (QuestionSuggestions, error) {
+	return NewQuestionSuggestionsResult(want, workspace, actor, gaps, provider, method, templateVersion, status, output, suggestions, "", at)
+}
+
+func NewQuestionSuggestionsResult(want, workspace, actor id.ID, gaps []QuestionSuggestionGap, provider, method, templateVersion string, status QuestionSuggestionStatus, output string, suggestions []QuestionSuggestion, failure string, at time.Time) (QuestionSuggestions, error) {
 	if want.IsZero() || workspace.IsZero() || actor.IsZero() {
 		return QuestionSuggestions{}, ErrIDRequired
 	}
@@ -117,8 +126,20 @@ func NewQuestionSuggestions(want, workspace, actor id.ID, gaps []QuestionSuggest
 	if err != nil {
 		return QuestionSuggestions{}, err
 	}
-	if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxQuestionSuggestionOutput {
-		return QuestionSuggestions{}, ErrQuestionSuggestionOutput
+	if parsedStatus == QuestionSuggestionsCompleted || parsedStatus == QuestionSuggestionsEmpty {
+		if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxQuestionSuggestionOutput {
+			return QuestionSuggestions{}, ErrQuestionSuggestionOutput
+		}
+		if strings.TrimSpace(failure) != "" {
+			return QuestionSuggestions{}, ErrSynthesisFailure
+		}
+	} else {
+		if strings.TrimSpace(output) != "" || len(suggestions) != 0 {
+			return QuestionSuggestions{}, ErrSynthesisFailure
+		}
+		if strings.TrimSpace(failure) == "" || !utf8.ValidString(failure) || strings.ContainsRune(failure, 0) || len(failure) > MaxQuestionSuggestionError {
+			return QuestionSuggestions{}, ErrSynthesisFailure
+		}
 	}
 	if len(suggestions) > MaxQuestionSuggestions {
 		return QuestionSuggestions{}, ErrQuestionSuggestionOutput
@@ -159,7 +180,7 @@ func NewQuestionSuggestions(want, workspace, actor id.ID, gaps []QuestionSuggest
 	if at.IsZero() {
 		return QuestionSuggestions{}, ErrTimeRequired
 	}
-	return QuestionSuggestions{ID: want, WorkspaceID: workspace, Gaps: cleanGaps, Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), TemplateVersion: strings.TrimSpace(templateVersion), Status: parsedStatus, Output: output, Suggestions: cleanSuggestions, CreatedBy: actor, CreatedAt: at}, nil
+	return QuestionSuggestions{ID: want, WorkspaceID: workspace, Gaps: cleanGaps, Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), TemplateVersion: strings.TrimSpace(templateVersion), Status: parsedStatus, Output: output, Suggestions: cleanSuggestions, CreatedBy: actor, CreatedAt: at, Error: strings.TrimSpace(failure)}, nil
 }
 
 func cleanQuestionSuggestionGaps(input []QuestionSuggestionGap) ([]QuestionSuggestionGap, map[id.ID]struct{}, error) {

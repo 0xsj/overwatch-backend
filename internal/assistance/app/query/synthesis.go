@@ -12,6 +12,11 @@ type SynthesisReader interface {
 	SynthesisByID(context.Context, id.ID, id.ID) (domain.Synthesis, error)
 }
 
+type VisibleSynthesisReader interface {
+	PageSynthesisVisible(context.Context, id.ID, id.ID, int, string) ([]domain.Synthesis, error)
+	SynthesisByIDVisible(context.Context, id.ID, id.ID, string) (domain.Synthesis, error)
+}
+
 type Syntheses struct{ reader SynthesisReader }
 
 func NewSyntheses(reader SynthesisReader) *Syntheses {
@@ -57,4 +62,45 @@ func (s *Syntheses) ByID(ctx context.Context, workspace, synthesis id.ID) (domai
 		return domain.Synthesis{}, domain.ErrIDRequired
 	}
 	return s.reader.SynthesisByID(ctx, workspace, synthesis)
+}
+
+func (s *Syntheses) ListVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (SynthesisPage, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return SynthesisPage{}, domain.ErrWorkspaceRequired
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	reader, ok := s.reader.(VisibleSynthesisReader)
+	if !ok {
+		return SynthesisPage{}, domain.ErrWorkspaceRequired
+	}
+	rows, err := reader.PageSynthesisVisible(ctx, workspace, before, limit+1, maxSensitivity)
+	if err != nil {
+		return SynthesisPage{}, err
+	}
+	out := SynthesisPage{Items: rows}
+	if out.Items == nil {
+		out.Items = []domain.Synthesis{}
+	}
+	if len(rows) > limit {
+		cursor := rows[limit-1].ID
+		out.NextCursor = &cursor
+		out.Items = rows[:limit]
+	}
+	return out, nil
+}
+
+func (s *Syntheses) ByIDVisible(ctx context.Context, workspace, synthesis id.ID, maxSensitivity string) (domain.Synthesis, error) {
+	if workspace.IsZero() || synthesis.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return domain.Synthesis{}, domain.ErrIDRequired
+	}
+	reader, ok := s.reader.(VisibleSynthesisReader)
+	if !ok {
+		return domain.Synthesis{}, domain.ErrWorkspaceRequired
+	}
+	return reader.SynthesisByIDVisible(ctx, workspace, synthesis, maxSensitivity)
 }

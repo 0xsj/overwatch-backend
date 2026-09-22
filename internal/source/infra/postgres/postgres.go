@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -136,13 +137,37 @@ on conflict (alert_id,account_id) do update set seen_at=excluded.seen_at`, uuid(
 	return nil
 }
 
-func (s *Store) AlertPage(ctx context.Context, workspace, account, before id.ID, limit int) ([]domain.AlertRow, error) {
+func (s *Store) AlertDelivery(ctx context.Context, workspace, account id.ID) (domain.AlertDelivery, error) {
+	var email bool
+	var kinds []string
+	var updated time.Time
+	err := s.db.DB(ctx).QueryRow(ctx, `select email_enabled,kinds,updated_at
+from source.alert_delivery_preference where workspace_id=$1 and account_id=$2`, uuid(workspace), uuid(account)).Scan(&email, &kinds, &updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.DefaultAlertDelivery(workspace, account), nil
+	}
+	if err != nil {
+		return domain.AlertDelivery{}, translate(ctx, err)
+	}
+	return domain.NewAlertDelivery(workspace, account, email, kinds, updated)
+}
+
+func (s *Store) SaveAlertDelivery(ctx context.Context, preference domain.AlertDelivery) error {
+	_, err := s.db.DB(ctx).Exec(ctx, `insert into source.alert_delivery_preference(workspace_id,account_id,email_enabled,kinds,updated_at)
+values($1,$2,$3,$4,$5)
+on conflict (workspace_id,account_id) do update set email_enabled=excluded.email_enabled,kinds=excluded.kinds,updated_at=excluded.updated_at`, uuid(preference.WorkspaceID), uuid(preference.AccountID), preference.Email, preference.Kinds, preference.UpdatedAt)
+	return translate(ctx, err)
+}
+
+func (s *Store) AlertPage(ctx context.Context, workspace, account, before id.ID, limit int, maxSensitivity string) ([]domain.AlertRow, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `select a.id,a.workspace_id,a.source_id,a.capture_id,a.question_id,a.record_id,a.cluster_id,a.kind,a.title,a.detail,a.dedupe_key,a.active,a.created_by,a.created_at,coalesce(s.title,''),seen.seen_at
 from source.alert a
 left join source.source s on s.workspace_id=a.workspace_id and s.id=a.source_id
 left join source.alert_seen seen on seen.workspace_id=a.workspace_id and seen.alert_id=a.id and seen.account_id=$2
-where a.workspace_id=$1 and a.active and ($3::uuid is null or a.id < $3)
-order by a.id desc limit $4`, uuid(workspace), uuid(account), uuid(before), limit)
+where a.workspace_id=$1 and a.active
+  and (s.id is null or s.sensitivity='public' or ($3='internal' and s.sensitivity='internal') or $3='restricted')
+  and ($4::uuid is null or a.id < $4)
+order by a.id desc limit $5`, uuid(workspace), uuid(account), maxSensitivity, uuid(before), limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -199,6 +224,10 @@ func (s *Store) IndexText(ctx context.Context, workspace, source, capture, extra
 	if !extraction.IsZero() {
 		document = extraction
 	}
+	// PostgreSQL text cannot carry U+0000. The retained bytes live in the blob
+	// store and remain exact; the search index is a derived projection, so strip
+	// the unsupported character only at this boundary.
+	content = strings.ReplaceAll(content, "\x00", " ")
 	_, err := s.db.DB(ctx).Exec(ctx, `insert into source.search_document(id,workspace_id,source_id,capture_id,extraction_id,content_sha256,content_bytes,indexed_at,search_vector)
 values($1,$2,$3,$4,$5,$6,$7,$8,to_tsvector('simple',$9))
 on conflict (id) do update set content_sha256=excluded.content_sha256,content_bytes=excluded.content_bytes,indexed_at=excluded.indexed_at,search_vector=excluded.search_vector`, uuid(document), uuid(workspace), uuid(source), uuid(capture), uuid(extraction), contentHash, contentBytes, indexedAt, content)
@@ -460,15 +489,19 @@ func scanSummary(row scanner) (domain.Summary, error) {
 	}
 	return out, nil
 }
-func (s *Store) Page(ctx context.Context, workspace, before id.ID, query string, limit int) ([]domain.Summary, error) {
+func (s *Store) Page(ctx context.Context, workspace, before id.ID, query string, limit int, maxSensitivity string) ([]domain.Summary, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, sourceSelect+`where s.workspace_id=$1 and ($2::uuid is null or s.id < $2)
   and ($3::text = '' or position(lower($3) in lower(s.id::text)) > 0
     or position(lower($3) in lower(s.title)) > 0
     or position(lower($3) in lower(coalesce(s.url, ''))) > 0
     or position(lower($3) in lower(coalesce(s.filename, ''))) > 0
     or position(lower($3) in lower(s.origin)) > 0
-    or position(lower($3) in lower(s.sensitivity)) > 0)
-  order by s.id desc limit $4`, uuid(workspace), uuid(before), query, limit)
+    or position(lower($3) in lower(s.sensitivity)) > 0
+    or exists (select 1 from source.search_document d
+       where d.workspace_id=s.workspace_id and d.source_id=s.id
+         and d.search_vector @@ plainto_tsquery('simple',$3)))
+  and (s.sensitivity='public' or ($4='internal' and s.sensitivity='internal') or $4='restricted')
+  order by s.id desc limit $5`, uuid(workspace), uuid(before), query, maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -528,15 +561,16 @@ func (s *Store) IntakePage(ctx context.Context, workspace, before id.ID, status 
 	return out, translate(ctx, rows.Err())
 }
 
-func (s *Store) Search(ctx context.Context, workspace, before id.ID, query string, limit int) ([]domain.SearchRow, error) {
+func (s *Store) Search(ctx context.Context, workspace, before id.ID, query string, limit int, maxSensitivity string) ([]domain.SearchRow, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `select d.id,d.workspace_id,d.source_id,s.title,d.capture_id,c.version,c.media_type,d.extraction_id,coalesce(e.method,''),d.content_sha256,d.content_bytes
 from source.search_document d
 join source.source s on s.workspace_id=d.workspace_id and s.id=d.source_id
 join source.capture c on c.workspace_id=d.workspace_id and c.source_id=d.source_id and c.id=d.capture_id
 left join source_extraction.extraction e on e.workspace_id=d.workspace_id and e.source_id=d.source_id and e.capture_id=d.capture_id and e.id=d.extraction_id
 where d.workspace_id=$1 and s.purged_at is null and d.search_vector @@ plainto_tsquery('simple',$2)
+  and (s.sensitivity='public' or ($5='internal' and s.sensitivity='internal') or $5='restricted')
   and ($3::uuid is null or d.id < $3)
-order by d.id desc limit $4`, uuid(workspace), query, uuid(before), limit)
+order by d.id desc limit $4`, uuid(workspace), query, uuid(before), limit, maxSensitivity)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}

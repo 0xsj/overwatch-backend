@@ -10,7 +10,7 @@ import (
 func TestResearchResolutionSetRequiresOneDecisionAndPreservesAliases(t *testing.T) {
 	s := tracedSystem(t)
 	_, workspace, _, _, auth, _ := firm(t, s, orgdomain.RoleMember)
-	source := addResearchSource(t, s, workspace, auth, "Two authored handles point to the same working subject.")
+	source := addResearchSource(t, s, workspace, auth, "@harborline and harborline author are two authored handles pointing to the same working subject.")
 	base := "/v1/workspaces/" + workspace.String()
 	firstObservation := recordResearchObservation(t, s, base+"/sources/"+source.ID.String(), auth, source.LatestCapture.ID, "@harborline")
 	secondObservation := recordResearchObservation(t, s, base+"/sources/"+source.ID.String(), auth, source.LatestCapture.ID, "harborline author")

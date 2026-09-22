@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/0xsj/overwatch-backend/internal/assistance/app"
+	pkgerrors "github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
@@ -29,5 +30,8 @@ func TestProcessProviderMissingBinaryIsExplicitlyUnavailable(t *testing.T) {
 	_, err := provider.Extract(context.Background(), app.Input{Content: "source"})
 	if !errors.Is(err, app.ErrProcessProviderUnavailable) {
 		t.Fatalf("error=%v, want ErrProcessProviderUnavailable", err)
+	}
+	if got := pkgerrors.KindOf(err); got != pkgerrors.Unavailable {
+		t.Fatalf("error kind=%s, want unavailable", got)
 	}
 }

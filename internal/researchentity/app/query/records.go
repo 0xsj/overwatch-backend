@@ -9,9 +9,9 @@ import (
 )
 
 type Reader interface {
-	Page(context.Context, id.ID, id.ID, string, domain.Kind, domain.CitationFilter, domain.ResolutionFilter, int) ([]domain.Record, error)
-	Summary(context.Context, id.ID) (domain.BrowseSummary, error)
-	ByID(context.Context, id.ID, id.ID) (domain.Record, error)
+	Page(context.Context, id.ID, id.ID, string, domain.Kind, domain.CitationFilter, domain.ResolutionFilter, int, string) ([]domain.Record, error)
+	Summary(context.Context, id.ID, string) (domain.BrowseSummary, error)
+	ByIDVisible(context.Context, id.ID, id.ID, string) (domain.Record, error)
 }
 
 type Records struct{ reader Reader }
@@ -33,8 +33,8 @@ type Page struct {
 	NextCursor *id.ID          `json:"next_cursor"`
 }
 
-func (r *Records) List(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int) (Page, error) {
-	if workspace.IsZero() {
+func (r *Records) List(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int, maxSensitivity string) (Page, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return Page{}, domain.ErrWorkspaceRequired
 	}
 	search = strings.TrimSpace(search)
@@ -62,7 +62,7 @@ func (r *Records) List(ctx context.Context, workspace, before id.ID, search stri
 	if limit > MaxPage {
 		limit = MaxPage
 	}
-	rows, err := r.reader.Page(ctx, workspace, before, search, kind, parsedCitation, parsedResolution, limit+1)
+	rows, err := r.reader.Page(ctx, workspace, before, search, kind, parsedCitation, parsedResolution, limit+1, maxSensitivity)
 	if err != nil {
 		return Page{}, err
 	}
@@ -78,16 +78,20 @@ func (r *Records) List(ctx context.Context, workspace, before id.ID, search stri
 	return out, nil
 }
 
-func (r *Records) ByID(ctx context.Context, workspace, want id.ID) (domain.Record, error) {
-	if workspace.IsZero() || want.IsZero() {
+func (r *Records) ByID(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Record, error) {
+	if workspace.IsZero() || want.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return domain.Record{}, domain.ErrIDRequired
 	}
-	return r.reader.ByID(ctx, workspace, want)
+	return r.reader.ByIDVisible(ctx, workspace, want, maxSensitivity)
 }
 
-func (r *Records) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
-	if workspace.IsZero() {
+func (r *Records) Summary(ctx context.Context, workspace id.ID, maxSensitivity string) (domain.BrowseSummary, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return domain.BrowseSummary{}, domain.ErrWorkspaceRequired
 	}
-	return r.reader.Summary(ctx, workspace)
+	return r.reader.Summary(ctx, workspace, maxSensitivity)
+}
+
+func validMaxSensitivity(value string) bool {
+	return value == "internal" || value == "restricted"
 }

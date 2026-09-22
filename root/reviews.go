@@ -59,7 +59,7 @@ type evidenceClusterResponse struct {
 }
 
 func (m *me) listEvidenceBoard(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -110,7 +110,7 @@ func (m *me) listEvidenceBoard(w http.ResponseWriter, r *http.Request) {
 		}
 		filters.UnresolvedOnly = parsed
 	}
-	found, err := m.research.board.List(r.Context(), workspace, before, filters, size)
+	found, err := m.research.board.List(r.Context(), workspace, before, filters, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -143,7 +143,7 @@ func asEvidenceCluster(cluster reviewdomain.Cluster) evidenceClusterResponse {
 }
 
 func (m *me) listEvidenceClusters(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -151,7 +151,7 @@ func (m *me) listEvidenceClusters(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.clusters.List(r.Context(), workspace, before, size)
+	found, err := m.research.clusters.List(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -167,7 +167,7 @@ func (m *me) listEvidenceClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listEvidenceClusterCoverage(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -175,7 +175,7 @@ func (m *me) listEvidenceClusterCoverage(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	found, err := m.research.clusterCoverage.List(r.Context(), workspace, before, size)
+	found, err := m.research.clusterCoverage.List(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -184,7 +184,7 @@ func (m *me) listEvidenceClusterCoverage(w http.ResponseWriter, r *http.Request)
 }
 
 func (m *me) readEvidenceCluster(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -193,7 +193,7 @@ func (m *me) readEvidenceCluster(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, reviewdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.clusters.ByID(r.Context(), workspace, want)
+	found, err := m.research.clusters.ByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -241,7 +241,7 @@ func (m *me) editEvidenceCluster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listEvidence(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -249,7 +249,7 @@ func (m *me) listEvidence(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.relations.Evidence(r.Context(), workspace, before, size)
+	found, err := m.research.relations.EvidenceVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -258,7 +258,7 @@ func (m *me) listEvidence(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readEvidence(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -267,7 +267,7 @@ func (m *me) readEvidence(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, reviewdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.relations.EvidenceByID(r.Context(), workspace, want)
+	found, err := m.research.relations.EvidenceByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -276,7 +276,7 @@ func (m *me) readEvidence(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listEvidenceRelations(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -284,7 +284,7 @@ func (m *me) listEvidenceRelations(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.relations.Relations(r.Context(), workspace, before, size)
+	found, err := m.research.relations.RelationsVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -311,7 +311,7 @@ func (m *me) setEvidenceRelation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listEvidenceSourceLinks(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -319,7 +319,7 @@ func (m *me) listEvidenceSourceLinks(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.sourceLinks.List(r.Context(), workspace, before, size)
+	found, err := m.research.sourceLinks.List(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -345,7 +345,7 @@ func (m *me) setEvidenceSourceLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listEvidenceSyntheses(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -353,7 +353,7 @@ func (m *me) listEvidenceSyntheses(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.syntheses.List(r.Context(), workspace, before, size)
+	found, err := m.research.syntheses.ListVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -362,7 +362,7 @@ func (m *me) listEvidenceSyntheses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readEvidenceSynthesis(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -371,7 +371,7 @@ func (m *me) readEvidenceSynthesis(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, assistdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.syntheses.ByID(r.Context(), workspace, want)
+	found, err := m.research.syntheses.ByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -390,6 +390,10 @@ func (m *me) createEvidenceSynthesis(w http.ResponseWriter, r *http.Request) {
 	}
 	fresh, err := m.research.synthesisCmd.Generate(r.Context(), workspace, in.ObservationIDs, caller)
 	if err != nil {
+		if !fresh.ID.IsZero() {
+			httpx.WriteJSON(w, r, http.StatusCreated, fresh)
+			return
+		}
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
@@ -397,7 +401,7 @@ func (m *me) createEvidenceSynthesis(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listEvidenceComparisons(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -405,7 +409,7 @@ func (m *me) listEvidenceComparisons(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.comparisons.List(r.Context(), workspace, before, size)
+	found, err := m.research.comparisons.ListVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -414,7 +418,7 @@ func (m *me) listEvidenceComparisons(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readEvidenceComparison(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -423,7 +427,7 @@ func (m *me) readEvidenceComparison(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, assistdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.comparisons.ByID(r.Context(), workspace, want)
+	found, err := m.research.comparisons.ByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -442,6 +446,10 @@ func (m *me) createEvidenceComparison(w http.ResponseWriter, r *http.Request) {
 	}
 	fresh, err := m.research.comparisonCmd.Generate(r.Context(), workspace, in.ObservationIDs, caller)
 	if err != nil {
+		if !fresh.ID.IsZero() {
+			httpx.WriteJSON(w, r, http.StatusCreated, fresh)
+			return
+		}
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
@@ -449,7 +457,7 @@ func (m *me) createEvidenceComparison(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listEvidenceQuestionSuggestions(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -457,7 +465,7 @@ func (m *me) listEvidenceQuestionSuggestions(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	found, err := m.research.questionSuggestions.List(r.Context(), workspace, before, size)
+	found, err := m.research.questionSuggestions.ListVisible(r.Context(), workspace, before, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -466,7 +474,7 @@ func (m *me) listEvidenceQuestionSuggestions(w http.ResponseWriter, r *http.Requ
 }
 
 func (m *me) readEvidenceQuestionSuggestions(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	workspace, maxSensitivity, ok := m.onWorkspaceResearchRead(w, r)
 	if !ok {
 		return
 	}
@@ -475,7 +483,7 @@ func (m *me) readEvidenceQuestionSuggestions(w http.ResponseWriter, r *http.Requ
 		httpx.Fail(m.log, w, r, assistdomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.questionSuggestions.ByID(r.Context(), workspace, want)
+	found, err := m.research.questionSuggestions.ByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -494,6 +502,10 @@ func (m *me) createEvidenceQuestionSuggestions(w http.ResponseWriter, r *http.Re
 	}
 	fresh, err := m.research.questionSuggestionCmd.Generate(r.Context(), workspace, in.Gaps, caller)
 	if err != nil {
+		if !fresh.ID.IsZero() {
+			httpx.WriteJSON(w, r, http.StatusCreated, fresh)
+			return
+		}
 		httpx.Fail(m.log, w, r, err)
 		return
 	}

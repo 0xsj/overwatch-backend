@@ -153,7 +153,7 @@ func (m *me) revokeCitationShare(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readSharedCitation(w http.ResponseWriter, r *http.Request) {
-	caller, workspace, _, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
+	caller, workspace, org, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
 	if !ok {
 		return
 	}
@@ -164,6 +164,10 @@ func (m *me) readSharedCitation(w http.ResponseWriter, r *http.Request) {
 	}
 	share, err := m.research.observations.CitationShareByDigest(r.Context(), workspace, digest)
 	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	if err := m.requireSourceRead(r.Context(), caller, workspace, org, share.SourceID); err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}

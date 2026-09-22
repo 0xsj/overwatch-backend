@@ -43,6 +43,11 @@ type AlertRepository interface {
 	DeactivateQuestionGapAlerts(context.Context, id.ID, []string) error
 }
 
+type AlertDeliveryRepository interface {
+	AlertDelivery(context.Context, id.ID, id.ID) (domain.AlertDelivery, error)
+	SaveAlertDelivery(context.Context, domain.AlertDelivery) error
+}
+
 type DerivedAlertRepository interface {
 	DeactivateDerivedGapAlerts(context.Context, id.ID, []string) error
 }
@@ -112,7 +117,7 @@ type IntakeReviewResult struct {
 type WatchRunResult struct {
 	Watch   domain.Watch    `json:"watch"`
 	Changed bool            `json:"changed"`
-	Capture *domain.Capture `json:"capture,omitempty"`
+	Capture *domain.Capture `json:"capture"`
 }
 
 func NewSources(repo Repository, blobs Blobs, tx Transactor, publisher events.Publisher, ids Minter, clock Clock) *Sources {
@@ -302,6 +307,9 @@ func (s *Sources) recordWatchRun(ctx context.Context, workspace, source, actor i
 				if err := alertRepo.CreateAlert(ctx, alert); err != nil {
 					return err
 				}
+				if err := s.emitAlert(ctx, alert); err != nil {
+					return err
+				}
 			}
 		}
 		return s.emitWatch(ctx, domain.EventWatchRun, next, actor, runError)
@@ -337,6 +345,35 @@ func (s *Sources) MarkAlertSeen(ctx context.Context, workspace, alert, account i
 		return time.Time{}, err
 	}
 	return at, nil
+}
+
+func (s *Sources) AlertDelivery(ctx context.Context, workspace, account id.ID) (domain.AlertDelivery, error) {
+	if workspace.IsZero() || account.IsZero() {
+		return domain.AlertDelivery{}, domain.ErrAlertDeliveryInvalid
+	}
+	repo, ok := s.repo.(AlertDeliveryRepository)
+	if !ok {
+		return domain.AlertDelivery{}, domain.ErrInvalid
+	}
+	return repo.AlertDelivery(ctx, workspace, account)
+}
+
+func (s *Sources) SaveAlertDelivery(ctx context.Context, workspace, account id.ID, email bool, kinds []string) (domain.AlertDelivery, error) {
+	if workspace.IsZero() || account.IsZero() {
+		return domain.AlertDelivery{}, domain.ErrAlertDeliveryInvalid
+	}
+	repo, ok := s.repo.(AlertDeliveryRepository)
+	if !ok {
+		return domain.AlertDelivery{}, domain.ErrInvalid
+	}
+	fresh, err := domain.NewAlertDelivery(workspace, account, email, kinds, s.clock.Now())
+	if err != nil {
+		return domain.AlertDelivery{}, err
+	}
+	if err := repo.SaveAlertDelivery(ctx, fresh); err != nil {
+		return domain.AlertDelivery{}, err
+	}
+	return fresh, nil
 }
 
 // SyncQuestionGapAlerts materializes the current open-question gap projection
@@ -398,12 +435,45 @@ func (s *Sources) syncDerivedGapAlerts(ctx context.Context, workspace, actor id.
 			if err := repo.CreateAlert(ctx, alert); err != nil {
 				return err
 			}
+			if err := s.emitAlert(ctx, alert); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {
 		return 0, err
 	}
 	return len(alerts), nil
+}
+
+func (s *Sources) emitAlert(ctx context.Context, alert domain.Alert) error {
+	prov, ok := provenance.Current(ctx)
+	if !ok {
+		prov = provenance.New(provenance.OriginRequest, s.ids)
+	}
+	prov, err := prov.WithTenant(alert.WorkspaceID.String())
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"workspace_id": alert.WorkspaceID.String(),
+		"alert_id":     alert.ID.String(),
+		"account_id":   alert.CreatedBy.String(),
+		"kind":         alert.Kind,
+		"title":        alert.Title,
+		"detail":       alert.Detail,
+	}
+	if alert.SourceID != nil {
+		payload["source_id"] = alert.SourceID.String()
+	}
+	if alert.CaptureID != nil {
+		payload["capture_id"] = alert.CaptureID.String()
+	}
+	event, err := events.New(s.ids, s.clock, domain.EventAlertCreated, "workspace:"+alert.WorkspaceID.String(), prov, payload)
+	if err != nil {
+		return err
+	}
+	return s.publisher.Publish(ctx, event)
 }
 
 func (s *Sources) ReviewIntakeCandidate(ctx context.Context, workspace, intake, reviewer id.ID, decision, note string) (IntakeReviewResult, error) {

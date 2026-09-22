@@ -9,6 +9,7 @@ import (
 
 type Reader interface {
 	Page(context.Context, id.ID, id.ID, int) ([]domain.Event, error)
+	ForRecord(context.Context, id.ID, id.ID, int, string) ([]domain.Event, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Event, error)
 	Revisions(context.Context, id.ID, id.ID) ([]domain.Revision, error)
 	RevisionByID(context.Context, id.ID, id.ID, id.ID) (domain.Revision, error)
@@ -57,6 +58,33 @@ func (e *Events) List(ctx context.Context, workspace, before id.ID, limit int) (
 		out.Items = rows[:limit]
 	}
 	return out, nil
+}
+
+// ForRecord returns the bounded timeline neighborhood for one authored
+// record. Timeline rows remain workspace-scoped and are hidden when their
+// citations or linked records depend on restricted sources.
+func (e *Events) ForRecord(ctx context.Context, workspace, record id.ID, limit int, maxSensitivity string) ([]domain.Event, error) {
+	if workspace.IsZero() || record.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return nil, domain.ErrWorkspaceRequired
+	}
+	if limit <= 0 {
+		limit = DefaultPage
+	}
+	if limit > MaxPage {
+		limit = MaxPage
+	}
+	rows, err := e.reader.ForRecord(ctx, workspace, record, limit, maxSensitivity)
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		return []domain.Event{}, nil
+	}
+	return rows, nil
+}
+
+func validMaxSensitivity(value string) bool {
+	return value == "internal" || value == "restricted"
 }
 
 func (e *Events) ByID(ctx context.Context, workspace, want id.ID) (domain.Event, error) {

@@ -319,6 +319,16 @@ func TestSpecWriteErrorIncludesCallerSafeFieldsButNeverDetails(t *testing.T) {
 	}
 }
 
+func TestSpecWriteErrorPropagatesRetryAfterAsHTTPGuidance(t *testing.T) {
+	err := errors.New(errors.RateLimited, "slow down").WithRetryAfter(1500 * time.Millisecond)
+	rec := httptest.NewRecorder()
+	httpx.WriteError(rec, specNewRequest(), err)
+
+	if got := rec.Header().Get("Retry-After"); got != "2" {
+		t.Fatalf("Retry-After=%q, want rounded-up two seconds", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Fail
 // ---------------------------------------------------------------------------

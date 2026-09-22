@@ -23,6 +23,7 @@ var (
 	ErrSynthesisRequired          = errors.New(errors.Invalid, "a synthesis needs at least one observation")
 	ErrSynthesisTooLarge          = errors.New(errors.Invalid, "a synthesis can use at most six observations")
 	ErrSynthesisOutput            = errors.New(errors.Invalid, "a synthesis output is too large or invalid")
+	ErrSynthesisFailure           = errors.New(errors.Invalid, "a failed synthesis needs a bounded error")
 	ErrConnectionReviewRequired   = errors.New(errors.Invalid, "a connection review needs at least one attached observation")
 	ErrConnectionReviewTooLarge   = errors.New(errors.Invalid, "a connection review can use at most twelve observations per side")
 	ErrConnectionReviewOutput     = errors.New(errors.Invalid, "a connection review output is too large or invalid")

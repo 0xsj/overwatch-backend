@@ -1,13 +1,16 @@
 package root
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	identityhttp "github.com/0xsj/overwatch-backend/internal/identity/transport/http"
 	orgquery "github.com/0xsj/overwatch-backend/internal/org/app/query"
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
+	sourcedomain "github.com/0xsj/overwatch-backend/internal/source/domain"
 	"github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
@@ -188,7 +191,66 @@ func (m *me) onWorkspaceRecord(w http.ResponseWriter, r *http.Request) (
 		httpx.Fail(m.log, w, r, orgquery.ErrNoAccess)
 		return id.ID{}, id.ID{}, id.ID{}, false
 	}
+	if raw := strings.TrimSpace(r.PathValue("source")); raw != "" {
+		source, err := id.Parse(raw)
+		if err != nil || source.IsZero() {
+			httpx.Fail(m.log, w, r, sourcedomain.ErrNotFound)
+			return id.ID{}, id.ID{}, id.ID{}, false
+		}
+		if err := m.requireSourceRead(r.Context(), caller, workspace, org, source); err != nil {
+			httpx.Fail(m.log, w, r, err)
+			return id.ID{}, id.ID{}, id.ID{}, false
+		}
+	}
 	return caller, workspace, org, true
+}
+
+// sourceSensitivityScope translates workspace access into the maximum source
+// sensitivity visible to a caller. Read members can work with public/internal
+// material; write-capable members may also open restricted material. The
+// source routes deliberately use the same 404-shaped no-access error as the
+// workspace gate so a restricted source cannot be discovered by identifier.
+func (m *me) sourceSensitivityScope(ctx context.Context, caller, workspace, org id.ID) (string, error) {
+	reach, err := m.access.In(ctx, caller, org)
+	if err != nil {
+		return "", err
+	}
+	if reach.Allows(workspace, orgdomain.LevelWrite) {
+		return sourcedomain.SensitivityRestricted, nil
+	}
+	return sourcedomain.SensitivityInternal, nil
+}
+
+func (m *me) requireSourceRead(ctx context.Context, caller, workspace, org, source id.ID) error {
+	found, err := m.research.sources.Read(ctx, workspace, source)
+	if err != nil {
+		return err
+	}
+	scope, err := m.sourceSensitivityScope(ctx, caller, workspace, org)
+	if err != nil {
+		return err
+	}
+	if found.Source.Sensitivity == sourcedomain.SensitivityRestricted && scope != sourcedomain.SensitivityRestricted {
+		return orgquery.ErrNoAccess
+	}
+	return nil
+}
+
+// onWorkspaceResearchRead is the shared read gate for derived research views.
+// Those views do not carry a source in their URL, so the route-level source
+// check cannot protect them; the query must receive the caller's sensitivity
+// ceiling explicitly instead.
+func (m *me) onWorkspaceResearchRead(w http.ResponseWriter, r *http.Request) (workspace id.ID, maxSensitivity string, ok bool) {
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return id.ID{}, "", false
+	}
+	scope, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return id.ID{}, "", false
+	}
+	return workspace, scope, true
 }
 
 // onDeliverable is the ONE gate a client passes — decisions/0042 §5. Only the
@@ -205,6 +267,50 @@ func (m *me) onDeliverable(w http.ResponseWriter, r *http.Request, least orgdoma
 	caller, workspace, org id.ID, ok bool) {
 	caller, workspace, org, _, _, ok = m.reachWorkspace(w, r, least)
 	return caller, workspace, org, ok
+}
+
+func (m *me) onDeliverableResearchRead(w http.ResponseWriter, r *http.Request) (workspace id.ID, maxSensitivity string, ok bool) {
+	caller, workspace, org, ok := m.onDeliverable(w, r, orgdomain.LevelRead)
+	if !ok {
+		return id.ID{}, "", false
+	}
+	scope, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return id.ID{}, "", false
+	}
+	return workspace, scope, true
+}
+
+// onWorkspaceOrgMember is for workspace-scoped control metadata that every
+// non-client member of the owning organisation may inspect, even before a
+// workspace grant exists. Provider policy is deliberately one such item: its
+// closed default is useful to members, while changing it remains admin-only.
+// It still resolves the workspace's owning organisation first, so a member
+// cannot use an arbitrary workspace identifier to discover another org's data.
+func (m *me) onWorkspaceOrgMember(w http.ResponseWriter, r *http.Request) (
+	caller, workspace, org id.ID, ok bool) {
+	found, err := m.sessions.Authenticate(r.Context(), identityhttp.Presented(r))
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return id.ID{}, id.ID{}, id.ID{}, false
+	}
+	workspace, err = id.Parse(r.PathValue("workspace"))
+	if err != nil {
+		httpx.Fail(m.log, w, r, orgquery.ErrNoAccess)
+		return id.ID{}, id.ID{}, id.ID{}, false
+	}
+	org, _, err = m.workspaces.OrgOf(r.Context(), workspace)
+	if err != nil {
+		httpx.Fail(m.log, w, r, orgquery.ErrNoAccess)
+		return id.ID{}, id.ID{}, id.ID{}, false
+	}
+	reach, err := m.access.In(r.Context(), found.AccountID, org)
+	if err != nil || reach.Role == orgdomain.RoleClient {
+		httpx.Fail(m.log, w, r, orgquery.ErrNoAccess)
+		return id.ID{}, id.ID{}, id.ID{}, false
+	}
+	return found.AccountID, workspace, org, true
 }
 
 func (m *me) reachWorkspace(w http.ResponseWriter, r *http.Request, least orgdomain.Level) (

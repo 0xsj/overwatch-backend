@@ -23,6 +23,7 @@ func (s *operationStore) CreateOperation(_ context.Context, in domain.Operation)
 	s.operation = in
 	return nil
 }
+func (*operationStore) CreateProviderRun(context.Context, domain.ProviderRun) error { return nil }
 func (s *operationStore) ByOperation(_ context.Context, _, _ id.ID) (domain.Operation, error) {
 	return s.operation, nil
 }

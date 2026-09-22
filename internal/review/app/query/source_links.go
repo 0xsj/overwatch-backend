@@ -8,7 +8,7 @@ import (
 )
 
 type SourceLinkReader interface {
-	PageSourceLinks(context.Context, id.ID, id.ID, int) ([]domain.SourceLinkItem, error)
+	PageSourceLinks(context.Context, id.ID, id.ID, int, string) ([]domain.SourceLinkItem, error)
 }
 
 type SourceLinks struct{ reader SourceLinkReader }
@@ -25,8 +25,8 @@ type SourceLinkPage struct {
 	NextCursor *id.ID                  `json:"next_cursor"`
 }
 
-func (s *SourceLinks) List(ctx context.Context, workspace, before id.ID, limit int) (SourceLinkPage, error) {
-	if workspace.IsZero() {
+func (s *SourceLinks) List(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (SourceLinkPage, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return SourceLinkPage{}, domain.ErrInvalid
 	}
 	if limit <= 0 {
@@ -35,7 +35,7 @@ func (s *SourceLinks) List(ctx context.Context, workspace, before id.ID, limit i
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := s.reader.PageSourceLinks(ctx, workspace, before, limit+1)
+	rows, err := s.reader.PageSourceLinks(ctx, workspace, before, limit+1, maxSensitivity)
 	if err != nil {
 		return SourceLinkPage{}, err
 	}

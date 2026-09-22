@@ -75,6 +75,126 @@ select s.id,s.workspace_id,s.brief_id,s.title,s.question,s.current_account,s.alt
        coalesce((select json_agg(json_build_object('relationship_id',ser.relationship_id,'from_event_id',ser.from_event_id,'to_event_id',ser.to_event_id,'kind',ser.kind,'rationale',ser.rationale,'state',ser.state,'review_note',ser.review_note,'supporting_observation_ids',ser.supporting_observation_ids,'opposing_observation_ids',ser.opposing_observation_ids) order by ser.relationship_id) from brief.snapshot_event_relationship ser where ser.workspace_id=s.workspace_id and ser.snapshot_id=s.id), '[]'::json)::text
 from brief.snapshot s`
 
+const workingVisibility = `
+  and ($2='restricted' or not exists (
+    select 1
+    from (
+      select bo.observation_id
+      from brief.working_observation bo
+      where bo.workspace_id=b.workspace_id and bo.brief_id=b.id
+      union all
+      select qo.observation_id
+      from brief.working_question bwq
+      join lead.question_observation qo on qo.workspace_id=bwq.workspace_id and qo.question_id=bwq.question_id
+      where bwq.workspace_id=b.workspace_id and bwq.brief_id=b.id
+      union all
+      select co.observation_id
+      from brief.working_cluster bwc
+      join review.cluster_observation co on co.cluster_id=bwc.cluster_id
+      join review.cluster c on c.id=co.cluster_id and c.workspace_id=bwc.workspace_id
+      where bwc.workspace_id=b.workspace_id and bwc.brief_id=b.id
+      union all
+      select ce.observation_id
+      from brief.working_connection bwc
+      join research.connection_evidence ce on ce.connection_id=bwc.connection_id and ce.workspace_id=bwc.workspace_id
+      where bwc.workspace_id=b.workspace_id and bwc.brief_id=b.id
+      union all
+      select ro.observation_id
+      from brief.working_connection bwc
+      join research.connection c on c.id=bwc.connection_id and c.workspace_id=bwc.workspace_id
+      join research.record_observation ro on ro.workspace_id=c.workspace_id and ro.record_id in (c.from_record_id,c.to_record_id)
+      where bwc.workspace_id=b.workspace_id and bwc.brief_id=b.id
+      union all
+      select eo.observation_id
+      from brief.working_event bwe
+      join timeline.event_observation eo on eo.workspace_id=bwe.workspace_id and eo.event_id=bwe.event_id
+      where bwe.workspace_id=b.workspace_id and bwe.brief_id=b.id
+      union all
+      select ro.observation_id
+      from brief.working_event bwe
+      join timeline.event e on e.workspace_id=bwe.workspace_id and e.id=bwe.event_id
+      join timeline.event_participant ep on ep.workspace_id=e.workspace_id and ep.event_id=e.id
+      join research.record_observation ro on ro.workspace_id=ep.workspace_id and ro.record_id=ep.record_id
+      where bwe.workspace_id=b.workspace_id and bwe.brief_id=b.id
+      union all
+      select ro.observation_id
+      from brief.working_event bwe
+      join timeline.event e on e.workspace_id=bwe.workspace_id and e.id=bwe.event_id
+      join research.record_observation ro on ro.workspace_id=e.workspace_id and ro.record_id=e.location_record_id
+      where bwe.workspace_id=b.workspace_id and bwe.brief_id=b.id and e.location_record_id is not null
+    ) linked
+    join observation.manual m on m.id=linked.observation_id and m.workspace_id=b.workspace_id
+    join source.source src on src.id=m.source_id and src.workspace_id=b.workspace_id
+    where src.sensitivity='restricted'))`
+
+const snapshotVisibility = `
+  and ($3='restricted' or not exists (
+    select 1
+    from (
+      select so.observation_id
+      from brief.snapshot_observation so
+      where so.workspace_id=s.workspace_id and so.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_question sq
+      cross join lateral jsonb_array_elements_text(sq.observation_ids) as cited(observation_id)
+      where sq.workspace_id=s.workspace_id and sq.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_cluster sc
+      cross join lateral jsonb_array_elements_text(sc.observation_ids) as cited(observation_id)
+      where sc.workspace_id=s.workspace_id and sc.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_connection sc
+      cross join lateral jsonb_array_elements_text(sc.supporting_observation_ids) as cited(observation_id)
+      where sc.workspace_id=s.workspace_id and sc.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_connection sc
+      cross join lateral jsonb_array_elements_text(sc.opposing_observation_ids) as cited(observation_id)
+      where sc.workspace_id=s.workspace_id and sc.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_connection sc
+      cross join lateral jsonb_array_elements_text(sc.from_record_observation_ids) as cited(observation_id)
+      where sc.workspace_id=s.workspace_id and sc.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_connection sc
+      cross join lateral jsonb_array_elements_text(sc.to_record_observation_ids) as cited(observation_id)
+      where sc.workspace_id=s.workspace_id and sc.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_event se
+      cross join lateral jsonb_array_elements_text(se.observation_ids) as cited(observation_id)
+      where se.workspace_id=s.workspace_id and se.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_event se
+      cross join lateral jsonb_array_elements(se.participant_records) as record_entry
+      cross join lateral jsonb_array_elements_text(record_entry->'observation_ids') as cited(observation_id)
+      where se.workspace_id=s.workspace_id and se.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_event se
+      cross join lateral jsonb_array_elements_text(coalesce(se.location_record->'observation_ids','[]'::jsonb)) as cited(observation_id)
+      where se.workspace_id=s.workspace_id and se.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_event_relationship ser
+      cross join lateral jsonb_array_elements_text(ser.supporting_observation_ids) as cited(observation_id)
+      where ser.workspace_id=s.workspace_id and ser.snapshot_id=s.id
+      union all
+      select cited.observation_id::uuid
+      from brief.snapshot_event_relationship ser
+      cross join lateral jsonb_array_elements_text(ser.opposing_observation_ids) as cited(observation_id)
+      where ser.workspace_id=s.workspace_id and ser.snapshot_id=s.id
+    ) linked
+    join observation.manual m on m.id=linked.observation_id and m.workspace_id=s.workspace_id
+    join source.source src on src.id=m.source_id and src.workspace_id=s.workspace_id
+    where src.sensitivity='restricted'))`
+
 func scanBrief(row interface{ Scan(...any) error }) (domain.Brief, error) {
 	var out domain.Brief
 	var briefID, workspace, author, updatedBy pgtype.UUID
@@ -429,6 +549,14 @@ func (s *Store) ByWorkspace(ctx context.Context, workspace id.ID) (domain.Brief,
 	return out, nil
 }
 
+func (s *Store) ByWorkspaceVisible(ctx context.Context, workspace id.ID, maxSensitivity string) (domain.Brief, error) {
+	out, err := scanBrief(s.db.DB(ctx).QueryRow(ctx, briefSelect+` where b.workspace_id=$1`+workingVisibility, uuid(workspace), maxSensitivity))
+	if err != nil {
+		return domain.Brief{}, translate(ctx, err)
+	}
+	return out, nil
+}
+
 func (s *Store) Create(ctx context.Context, in domain.Brief) error {
 	_, err := s.db.DB(ctx).Exec(ctx, `insert into brief.working(id,workspace_id,title,question,current_account,alternatives,limitations,next_steps,author,updated_by,created_at,updated_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, uuid(in.ID), uuid(in.WorkspaceID), in.Title, in.Question, in.CurrentAccount, in.Alternatives, in.Limitations, in.NextSteps, uuid(in.Author), uuid(in.UpdatedBy), in.CreatedAt, in.UpdatedAt)
 	return translate(ctx, err)
@@ -565,7 +693,7 @@ func (s *Store) ClusterSnapshots(ctx context.Context, workspace id.ID, clusters 
 		var observations []byte
 		err := s.db.DB(ctx).QueryRow(ctx, `
 			select c.id,c.kind,c.title,c.description,
-			coalesce((select json_agg(co.observation_id order by co.ordinal) from review.cluster_observation co where co.workspace_id=c.workspace_id and co.cluster_id=c.id), '[]'::json)::text
+          coalesce((select json_agg(co.observation_id order by co.ordinal) from review.cluster_observation co where co.cluster_id=c.id), '[]'::json)::text
 			from review.cluster c where c.workspace_id=$1 and c.id=$2`, uuid(workspace), uuid(cluster)).Scan(&rawID, &snapshot.Kind, &snapshot.Title, &snapshot.Description, &observations)
 		if err != nil {
 			if stderrors.Is(err, pgx.ErrNoRows) {
@@ -607,7 +735,7 @@ func (s *Store) ConnectionSnapshots(ctx context.Context, workspace id.ID, connec
 			join research.record tr on tr.id=c.to_record_id and tr.workspace_id=c.workspace_id
 			left join research.connection_evidence ce on ce.connection_id=c.id
 			where c.workspace_id=$1 and c.id=$2
-			group by c.id,c.from_record_id,fr.kind,fr.name,fr.description,c.to_record_id,tr.kind,tr.name,tr.description,c.kind,c.state,c.rationale`, uuid(workspace), uuid(connection)).Scan(
+			group by c.id,c.workspace_id,c.from_record_id,fr.id,fr.workspace_id,fr.kind,fr.name,fr.description,c.to_record_id,tr.id,tr.workspace_id,tr.kind,tr.name,tr.description,c.kind,c.state,c.rationale`, uuid(workspace), uuid(connection)).Scan(
 			&connectionID, &fromRecordID, &snapshot.FromRecordKind, &snapshot.FromRecordName, &snapshot.FromRecordDescription, &fromRecordObservationRaw,
 			&toRecordID, &snapshot.ToRecordKind, &snapshot.ToRecordName, &snapshot.ToRecordDescription, &toRecordObservationRaw,
 			&snapshot.Kind, &snapshot.State, &snapshot.Rationale, &supportingRaw, &opposingRaw)
@@ -943,8 +1071,33 @@ func (s *Store) SnapshotByID(ctx context.Context, workspace, snapshot id.ID) (do
 	return out, nil
 }
 
+func (s *Store) SnapshotByIDVisible(ctx context.Context, workspace, snapshot id.ID, maxSensitivity string) (domain.Snapshot, error) {
+	out, err := scanSnapshot(s.db.DB(ctx).QueryRow(ctx, snapshotSelect+` where s.workspace_id=$1 and s.id=$2`+snapshotVisibility, uuid(workspace), uuid(snapshot), maxSensitivity))
+	if err != nil {
+		return domain.Snapshot{}, translate(ctx, err)
+	}
+	return out, nil
+}
+
 func (s *Store) SnapshotPage(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Snapshot, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, snapshotSelect+` where s.workspace_id=$1 and ($2::uuid is null or s.id < $2) order by s.id desc limit $3`, uuid(workspace), uuid(before), limit)
+	if err != nil {
+		return nil, translate(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]domain.Snapshot, 0)
+	for rows.Next() {
+		one, err := scanSnapshot(rows)
+		if err != nil {
+			return nil, translate(ctx, err)
+		}
+		out = append(out, one)
+	}
+	return out, translate(ctx, rows.Err())
+}
+
+func (s *Store) SnapshotPageVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.Snapshot, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, snapshotSelect+` where s.workspace_id=$1 and ($2::uuid is null or s.id < $2)`+snapshotVisibility+` order by s.id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -1175,6 +1328,14 @@ func (s *Store) SnapshotHandoffShares(ctx context.Context, workspace, snapshot i
 
 func (s *Store) SnapshotByHandoffShare(ctx context.Context, workspace id.ID, tokenDigest string) (domain.Snapshot, error) {
 	out, err := scanSnapshot(s.db.DB(ctx).QueryRow(ctx, snapshotSelect+` join brief.snapshot_handoff_share sh on sh.snapshot_id=s.id and sh.workspace_id=s.workspace_id where s.workspace_id=$1 and sh.token_digest=$2 and sh.revoked_at is null`, uuid(workspace), tokenDigest))
+	if err != nil {
+		return domain.Snapshot{}, translate(ctx, err)
+	}
+	return out, nil
+}
+
+func (s *Store) SnapshotByHandoffShareVisible(ctx context.Context, workspace id.ID, tokenDigest, maxSensitivity string) (domain.Snapshot, error) {
+	out, err := scanSnapshot(s.db.DB(ctx).QueryRow(ctx, snapshotSelect+` join brief.snapshot_handoff_share sh on sh.snapshot_id=s.id and sh.workspace_id=s.workspace_id where s.workspace_id=$1 and sh.token_digest=$2 and sh.revoked_at is null`+snapshotVisibility, uuid(workspace), tokenDigest, maxSensitivity))
 	if err != nil {
 		return domain.Snapshot{}, translate(ctx, err)
 	}

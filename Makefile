@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help env dev run build test check tidy
+.PHONY: help env dev run build test check seed scale-check tidy
 
 ENV_FILE := ./.env    # local override only; the shared values arrive exported from the root
 LOAD_ENV := set -a; [ -f $(ENV_FILE) ] && . $(ENV_FILE); set +a;
@@ -26,6 +26,12 @@ test:  ## run the tests
 check: ## vet, then test under the race detector
 	@go vet ./...
 	@go test -race ./...
+
+seed: ## create or reuse a real source-to-brief demo workspace
+	@../scripts/seed-live.sh
+
+scale-check: ## exercise high-volume authored-record pagination without a database
+	@GOCACHE=/tmp/overwatch-go-cache go test ./internal/researchentity/app/query -run TestListPagesLargeRecordSetWithoutDuplicatesOrUnboundedReads -count=1
 
 recent: ## the newest journal lines, newest first
 	@$(LOAD_ENV) psql "$$DATABASE_URL" -f scripts/recent.sql

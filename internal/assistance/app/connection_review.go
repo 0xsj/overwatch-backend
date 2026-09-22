@@ -43,6 +43,7 @@ type LocalConnectionReviewProvider struct{}
 func (LocalConnectionReviewProvider) Name() string            { return "local" }
 func (LocalConnectionReviewProvider) Method() string          { return "authored-connection-review-v1" }
 func (LocalConnectionReviewProvider) TemplateVersion() string { return "connection-review-v1" }
+func (LocalConnectionReviewProvider) External() bool          { return false }
 
 func (LocalConnectionReviewProvider) ReviewConnection(ctx context.Context, input ConnectionReviewInput) (ConnectionReviewOutput, error) {
 	if err := ctx.Err(); err != nil {

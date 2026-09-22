@@ -16,6 +16,13 @@ type Reader interface {
 	SnapshotHandoffShares(context.Context, id.ID, id.ID) ([]domain.HandoffShare, error)
 	SnapshotByHandoffShare(context.Context, id.ID, string) (domain.Snapshot, error)
 }
+
+type VisibleReader interface {
+	ByWorkspaceVisible(context.Context, id.ID, string) (domain.Brief, error)
+	SnapshotPageVisible(context.Context, id.ID, id.ID, int, string) ([]domain.Snapshot, error)
+	SnapshotByIDVisible(context.Context, id.ID, id.ID, string) (domain.Snapshot, error)
+	SnapshotByHandoffShareVisible(context.Context, id.ID, string, string) (domain.Snapshot, error)
+}
 type Briefs struct{ reader Reader }
 
 func NewBriefs(reader Reader) *Briefs {
@@ -101,4 +108,67 @@ func (b *Briefs) SnapshotByHandoffShare(ctx context.Context, workspace id.ID, to
 		return domain.Snapshot{}, domain.ErrIDRequired
 	}
 	return b.reader.SnapshotByHandoffShare(ctx, workspace, tokenDigest)
+}
+
+func (b *Briefs) ByWorkspaceVisible(ctx context.Context, workspace id.ID, maxSensitivity string) (domain.Brief, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return domain.Brief{}, domain.ErrWorkspaceRequired
+	}
+	reader, ok := b.reader.(VisibleReader)
+	if !ok {
+		return domain.Brief{}, domain.ErrWorkspaceRequired
+	}
+	return reader.ByWorkspaceVisible(ctx, workspace, maxSensitivity)
+}
+
+func (b *Briefs) SnapshotsVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (SnapshotPage, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return SnapshotPage{}, domain.ErrWorkspaceRequired
+	}
+	if limit <= 0 {
+		limit = DefaultSnapshotPage
+	}
+	if limit > MaxSnapshotPage {
+		limit = MaxSnapshotPage
+	}
+	reader, ok := b.reader.(VisibleReader)
+	if !ok {
+		return SnapshotPage{}, domain.ErrWorkspaceRequired
+	}
+	rows, err := reader.SnapshotPageVisible(ctx, workspace, before, limit+1, maxSensitivity)
+	if err != nil {
+		return SnapshotPage{}, err
+	}
+	out := SnapshotPage{Items: rows}
+	if out.Items == nil {
+		out.Items = []domain.Snapshot{}
+	}
+	if len(rows) > limit {
+		cursor := rows[limit-1].ID
+		out.NextCursor = &cursor
+		out.Items = rows[:limit]
+	}
+	return out, nil
+}
+
+func (b *Briefs) SnapshotByIDVisible(ctx context.Context, workspace, snapshot id.ID, maxSensitivity string) (domain.Snapshot, error) {
+	if workspace.IsZero() || snapshot.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return domain.Snapshot{}, domain.ErrIDRequired
+	}
+	reader, ok := b.reader.(VisibleReader)
+	if !ok {
+		return domain.Snapshot{}, domain.ErrWorkspaceRequired
+	}
+	return reader.SnapshotByIDVisible(ctx, workspace, snapshot, maxSensitivity)
+}
+
+func (b *Briefs) SnapshotByHandoffShareVisible(ctx context.Context, workspace id.ID, tokenDigest, maxSensitivity string) (domain.Snapshot, error) {
+	if workspace.IsZero() || tokenDigest == "" || !validMaxSensitivity(maxSensitivity) {
+		return domain.Snapshot{}, domain.ErrIDRequired
+	}
+	reader, ok := b.reader.(VisibleReader)
+	if !ok {
+		return domain.Snapshot{}, domain.ErrWorkspaceRequired
+	}
+	return reader.SnapshotByHandoffShareVisible(ctx, workspace, tokenDigest, maxSensitivity)
 }

@@ -1,6 +1,7 @@
 package env
 
 import (
+	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
@@ -53,6 +54,32 @@ func (r *Reader) String(key, fallback string) string {
 	}
 	r.resolved(Var{Key: key, Value: v, Default: fallback, Set: true})
 	return v
+}
+
+// JSONStrings reads an optional JSON array of strings. JSON is deliberate here:
+// unlike shell-style splitting, it has one unambiguous meaning for spaces,
+// quotes, and arguments that begin with a dash. A null value is rejected so an
+// operator cannot accidentally turn a configured argument vector into an
+// undocumented fallback.
+func (r *Reader) JSONStrings(key string, fallback []string) []string {
+	defaultBytes, _ := json.Marshal(fallback)
+	defaultValue := string(defaultBytes)
+	v, ok := r.lookup(key)
+	if !ok {
+		r.resolved(Var{Key: key, Value: defaultValue, Default: defaultValue})
+		return slices.Clone(fallback)
+	}
+	r.resolved(Var{Key: key, Value: v, Default: defaultValue, Set: true})
+	if strings.TrimSpace(v) == "" {
+		r.fail(key, "must be a JSON array of strings")
+		return nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(v), &values); err != nil || values == nil {
+		r.fail(key, "must be a JSON array of strings")
+		return nil
+	}
+	return values
 }
 
 func (r *Reader) RequiredInt(key string) int {

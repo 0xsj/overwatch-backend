@@ -37,6 +37,7 @@ type LocalSynthesisProvider struct{}
 
 func (LocalSynthesisProvider) Name() string   { return "local" }
 func (LocalSynthesisProvider) Method() string { return "selected-observations-v1" }
+func (LocalSynthesisProvider) External() bool { return false }
 
 var (
 	localEmailPattern  = regexp.MustCompile(`(?i)\b[a-z0-9][a-z0-9.!#$%&'*+/=?^_\x60{|}~-]{0,63}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\b`)

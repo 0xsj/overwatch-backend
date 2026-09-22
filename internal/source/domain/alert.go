@@ -14,6 +14,8 @@ const (
 	AlertKindQuestionGap    = "question_gap"
 	AlertKindRecordGap      = "record_gap"
 	AlertKindClusterGap     = "cluster_gap"
+
+	EventAlertCreated = "source.alert.created"
 )
 
 var ErrAlertInvalid = errors.New(errors.Invalid, "source alert is invalid")

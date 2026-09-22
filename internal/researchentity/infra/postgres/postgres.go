@@ -132,9 +132,25 @@ values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, uuid(in.ID), uuid(in.WorkspaceID), in.Kind
 }
 
 func (s *Store) ByID(ctx context.Context, workspace, want id.ID) (domain.Record, error) {
+	return s.ByIDVisible(ctx, workspace, want, "restricted")
+}
+
+func (s *Store) ByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Record, error) {
 	row := s.db.DB(ctx).QueryRow(ctx, recordSelect+`
 where r.workspace_id=$1 and r.id=$2
-group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at`, uuid(workspace), uuid(want))
+  and ($3 = 'restricted' or not exists (
+       select 1
+       from research.record_observation hidden_ro
+       join observation.manual hidden_o
+         on hidden_o.id=hidden_ro.observation_id
+        and hidden_o.workspace_id=hidden_ro.workspace_id
+       join source.source hidden_s
+         on hidden_s.id=hidden_o.source_id
+        and hidden_s.workspace_id=hidden_o.workspace_id
+       where hidden_ro.record_id=r.id
+         and hidden_ro.workspace_id=r.workspace_id
+         and hidden_s.sensitivity='restricted'))
+group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at`, uuid(workspace), uuid(want), maxSensitivity)
 	out, err := scanRecord(row)
 	if err != nil {
 		return domain.Record{}, translate(ctx, err)
@@ -195,9 +211,21 @@ values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`, uuid(record.WorkspaceID), uuid(record.
 	return translate(ctx, err)
 }
 
-func (s *Store) Page(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int) ([]domain.Record, error) {
+func (s *Store) Page(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int, maxSensitivity string) ([]domain.Record, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, recordSelect+`
 where r.workspace_id=$1 and ($2::uuid is null or r.id < $2)
+  and ($7 = 'restricted' or not exists (
+       select 1
+       from research.record_observation hidden_ro
+       join observation.manual hidden_o
+         on hidden_o.id=hidden_ro.observation_id
+        and hidden_o.workspace_id=hidden_ro.workspace_id
+       join source.source hidden_s
+         on hidden_s.id=hidden_o.source_id
+        and hidden_s.workspace_id=hidden_o.workspace_id
+       where hidden_ro.record_id=r.id
+         and hidden_ro.workspace_id=r.workspace_id
+         and hidden_s.sensitivity='restricted'))
   and ($3 = '' or position(lower($3) in lower(r.id::text)) > 0
     or position(lower($3) in lower(r.name)) > 0
     or position(lower($3) in lower(coalesce(r.description, ''))) > 0
@@ -210,7 +238,7 @@ where r.workspace_id=$1 and ($2::uuid is null or r.id < $2)
          and searched_ro.workspace_id=r.workspace_id
          and (position(lower($3) in lower(searched_o.statement)) > 0
            or position(lower($3) in lower(convert_from(searched_o.quote, 'UTF8'))) > 0
-           or position(lower($3) in lower(coalesce(searched_o.locator, ''))) > 0))
+           or position(lower($3) in lower(coalesce(searched_o.locator, ''))) > 0)))
   and ($4 = '' or r.kind = $4)
   and ($5 = '' or ($5 = 'cited' and exists (
        select 1 from research.record_observation citation_ro
@@ -234,7 +262,7 @@ where r.workspace_id=$1 and ($2::uuid is null or r.id < $2)
          and (active_rr.alias_record_id=r.id or active_rr.canonical_record_id=r.id)
          and active_rr.state in ('proposed','accepted'))))
 group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at
-order by r.id desc limit $7`, uuid(workspace), uuid(before), search, kind.String(), citation.String(), resolution.String(), limit)
+order by r.id desc limit $8`, uuid(workspace), uuid(before), search, kind.String(), citation.String(), resolution.String(), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -250,7 +278,7 @@ order by r.id desc limit $7`, uuid(workspace), uuid(before), search, kind.String
 	return out, translate(ctx, rows.Err())
 }
 
-func (s *Store) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
+func (s *Store) Summary(ctx context.Context, workspace id.ID, maxSensitivity string) (domain.BrowseSummary, error) {
 	var out domain.BrowseSummary
 	var total, people, accounts, organisations, places, cited, uncited, citations, openResolutions, acceptedResolutions int64
 	err := s.db.DB(ctx).QueryRow(ctx, `
@@ -275,7 +303,19 @@ select count(*)::bigint,
 from research.record r
 left join research.record_observation ro
   on ro.record_id=r.id and ro.workspace_id=r.workspace_id
-where r.workspace_id=$1`, uuid(workspace)).Scan(&total, &people, &accounts, &organisations, &places, &cited, &uncited, &citations, &openResolutions, &acceptedResolutions)
+where r.workspace_id=$1
+  and ($2 = 'restricted' or not exists (
+       select 1
+       from research.record_observation hidden_ro
+       join observation.manual hidden_o
+         on hidden_o.id=hidden_ro.observation_id
+        and hidden_o.workspace_id=hidden_ro.workspace_id
+       join source.source hidden_s
+         on hidden_s.id=hidden_o.source_id
+        and hidden_s.workspace_id=hidden_o.workspace_id
+       where hidden_ro.record_id=r.id
+         and hidden_ro.workspace_id=r.workspace_id
+         and hidden_s.sensitivity='restricted'))`, uuid(workspace), maxSensitivity).Scan(&total, &people, &accounts, &organisations, &places, &cited, &uncited, &citations, &openResolutions, &acceptedResolutions)
 	if err != nil {
 		return domain.BrowseSummary{}, translate(ctx, err)
 	}

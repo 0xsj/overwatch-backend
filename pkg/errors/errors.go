@@ -3,6 +3,7 @@ package errors
 import (
 	"fmt"
 	"maps"
+	"time"
 )
 
 type Error struct {
@@ -12,6 +13,11 @@ type Error struct {
 	Fields  map[string]string
 	Details map[string]string
 	Type    string
+
+	// RetryAfter is caller-safe transport guidance for a retryable failure. It
+	// stays separate from Details because the HTTP edge may expose it while
+	// diagnostic details must remain log-only.
+	RetryAfter time.Duration
 }
 
 func New(kind Kind, msg string) *Error {
@@ -81,5 +87,15 @@ func (e *Error) WithDetails(details map[string]string) *Error {
 		c.Details = make(map[string]string, len(details))
 	}
 	maps.Copy(c.Details, details)
+	return c
+}
+
+func (e *Error) WithRetryAfter(delay time.Duration) *Error {
+	c := e.clone()
+	if delay > 0 {
+		c.RetryAfter = delay
+	} else {
+		c.RetryAfter = 0
+	}
 	return c
 }

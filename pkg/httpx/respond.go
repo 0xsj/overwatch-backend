@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/provenance"
@@ -92,7 +94,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 		Type:   errors.TypeOf(err),
 		Fields: errors.FieldsOf(err),
 	}
-	writeProblemValue(w, r, Status(kind), p)
+	writeProblemValue(w, r, Status(kind), p, err)
 }
 
 // Fail logs the whole chain once and answers with the caller-safe half. The
@@ -112,10 +114,20 @@ func Fail(log *slog.Logger, w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func writeProblem(w http.ResponseWriter, r *http.Request, status int, kind, msg string, fields map[string]string) {
-	writeProblemValue(w, r, status, problem{Kind: kind, Message: msg, Fields: fields})
+	writeProblemValue(w, r, status, problem{Kind: kind, Message: msg, Fields: fields}, nil)
 }
 
-func writeProblemValue(w http.ResponseWriter, r *http.Request, status int, p problem) {
+func writeProblemValue(w http.ResponseWriter, r *http.Request, status int, p problem, sourceErr error) {
+	if retryAfter := errors.RetryAfterOf(sourceErr); retryAfter > 0 {
+		seconds := retryAfter / time.Second
+		if retryAfter%time.Second != 0 {
+			seconds++
+		}
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(seconds), 10))
+	}
 	if cur, ok := provenance.Current(r.Context()); ok {
 		p.RequestID = cur.Request().String()
 	}

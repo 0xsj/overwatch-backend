@@ -42,6 +42,7 @@ type LocalQuestionSuggestionProvider struct{}
 func (LocalQuestionSuggestionProvider) Name() string            { return "local" }
 func (LocalQuestionSuggestionProvider) Method() string          { return "unresolved-evidence-gaps-v1" }
 func (LocalQuestionSuggestionProvider) TemplateVersion() string { return "question-suggestions-v1" }
+func (LocalQuestionSuggestionProvider) External() bool          { return false }
 
 func (LocalQuestionSuggestionProvider) SuggestQuestions(ctx context.Context, input QuestionSuggestionInput) (QuestionSuggestionOutput, error) {
 	if err := ctx.Err(); err != nil {

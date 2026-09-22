@@ -4,6 +4,7 @@ import (
 	"context"
 	stderrors "errors"
 	"maps"
+	"time"
 )
 
 const internalMessage = "internal error"
@@ -85,6 +86,13 @@ func FieldsOf(err error) map[string]string {
 		return maps.Clone(e.Fields)
 	}
 	return nil
+}
+
+func RetryAfterOf(err error) time.Duration {
+	if e := first(err); e != nil {
+		return e.RetryAfter
+	}
+	return 0
 }
 
 // DetailsOf collects the diagnostics along the whole chain. They are for logs;

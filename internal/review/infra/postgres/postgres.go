@@ -97,16 +97,27 @@ returning id,workspace_id,kind,title,description,author,updated_by,created_at,up
 	if err != nil {
 		return domain.Cluster{}, translate(ctx, err)
 	}
-	if err := s.replaceClusterObservations(ctx, out); err != nil {
+	if err := s.replaceClusterObservations(ctx, in); err != nil {
 		return domain.Cluster{}, translate(ctx, err)
 	}
+	out.ObservationIDs = append([]id.ID(nil), in.ObservationIDs...)
 	return out, nil
 }
 
 func (s *Store) ByID(ctx context.Context, workspace, want id.ID) (domain.Cluster, error) {
+	return s.ByIDVisible(ctx, workspace, want, "restricted")
+}
+
+func (s *Store) ByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Cluster, error) {
 	row := s.db.DB(ctx).QueryRow(ctx, `
 select id,workspace_id,kind,title,description,author,updated_by,created_at,updated_at
-from review.cluster where workspace_id=$1 and id=$2`, uuid(workspace), uuid(want))
+from review.cluster c
+where workspace_id=$1 and id=$2
+  and ($3='restricted' or not exists (
+    select 1 from review.cluster_observation hidden_co
+    join observation.manual hidden_m on hidden_m.id=hidden_co.observation_id and hidden_m.workspace_id=$1
+    join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=$1
+    where hidden_co.cluster_id=c.id and hidden_s.sensitivity='restricted'))`, uuid(workspace), uuid(want), maxSensitivity)
 	out, err := scanCluster(row)
 	if err != nil {
 		return domain.Cluster{}, translate(ctx, err)
@@ -134,12 +145,17 @@ returning id,workspace_id,kind,title,description,author,updated_by,created_at,up
 	return out, nil
 }
 
-func (s *Store) PageClusters(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Cluster, error) {
+func (s *Store) PageClusters(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.Cluster, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `
 select id,workspace_id,kind,title,description,author,updated_by,created_at,updated_at
-from review.cluster
+from review.cluster c
 where workspace_id=$1 and ($2::uuid is null or id < $2)
-order by id desc limit $3`, uuid(workspace), uuid(before), limit)
+  and ($3='restricted' or not exists (
+    select 1 from review.cluster_observation hidden_co
+    join observation.manual hidden_m on hidden_m.id=hidden_co.observation_id and hidden_m.workspace_id=$1
+    join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=$1
+    where hidden_co.cluster_id=c.id and hidden_s.sensitivity='restricted'))
+order by id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -165,7 +181,7 @@ order by id desc limit $3`, uuid(workspace), uuid(before), limit)
 	return out, nil
 }
 
-func (s *Store) PageClusterCoverage(ctx context.Context, workspace, before id.ID, limit int) ([]domain.ClusterCoverage, error) {
+func (s *Store) PageClusterCoverage(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.ClusterCoverage, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `
 with base as (
   select c.id,
@@ -176,6 +192,11 @@ with base as (
           where co.cluster_id=c.id and m.workspace_id=$1) as distinct_source_count
   from review.cluster c
   where c.workspace_id=$1 and ($2::uuid is null or c.id < $2)
+    and ($3='restricted' or not exists (
+      select 1 from review.cluster_observation hidden_co
+      join observation.manual hidden_m on hidden_m.id=hidden_co.observation_id and hidden_m.workspace_id=$1
+      join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=$1
+      where hidden_co.cluster_id=c.id and hidden_s.sensitivity='restricted'))
 ), coverage as (
   select base.*,
     (select count(*)::int from review.relation r
@@ -224,7 +245,7 @@ select id,observation_count,distinct_source_count,reviewed_observation_count,sup
             when observation_count<2 or distinct_source_count<2 or (supporting_count=0 and repeating_count>0) then 'needs_corroboration'
             when internal_reviewed_pairs < possible_internal_pairs then 'review_incomplete'
             else 'covered' end as status
-from final order by id desc limit $3`, uuid(workspace), uuid(before), limit)
+from final order by id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -306,11 +327,20 @@ func scanRelation(row scanner) (domain.Relation, error) {
 }
 
 func (s *Store) PageRelations(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Relation, error) {
+	return s.PageRelationsVisible(ctx, workspace, before, limit, "restricted")
+}
+
+func (s *Store) PageRelationsVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.Relation, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `
-select id,workspace_id,left_observation_id,right_observation_id,kind,rationale,author,created_at,updated_at
-from review.relation
-where workspace_id=$1 and ($2::uuid is null or id < $2)
-order by id desc limit $3`, uuid(workspace), uuid(before), limit)
+select r.id,r.workspace_id,r.left_observation_id,r.right_observation_id,r.kind,r.rationale,r.author,r.created_at,r.updated_at
+from review.relation r
+join observation.manual left_m on left_m.workspace_id=r.workspace_id and left_m.id=r.left_observation_id
+join source.source left_s on left_s.workspace_id=r.workspace_id and left_s.id=left_m.source_id
+join observation.manual right_m on right_m.workspace_id=r.workspace_id and right_m.id=r.right_observation_id
+join source.source right_s on right_s.workspace_id=r.workspace_id and right_s.id=right_m.source_id
+where r.workspace_id=$1 and ($2::uuid is null or r.id < $2)
+  and ($3='restricted' or (left_s.sensitivity <> 'restricted' and right_s.sensitivity <> 'restricted'))
+order by r.id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -326,7 +356,7 @@ order by id desc limit $3`, uuid(workspace), uuid(before), limit)
 	return out, translate(ctx, rows.Err())
 }
 
-func (s *Store) PageSourceLinks(ctx context.Context, workspace, before id.ID, limit int) ([]domain.SourceLinkItem, error) {
+func (s *Store) PageSourceLinks(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.SourceLinkItem, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `
 with recursive edges as (
   select workspace_id, upstream_observation_id as parent, downstream_observation_id as child
@@ -347,11 +377,12 @@ with recursive edges as (
   join observation.manual upstream on upstream.workspace_id=l.workspace_id and upstream.id=l.upstream_observation_id
   join source.source upstream_source on upstream_source.workspace_id=l.workspace_id and upstream_source.id=upstream.source_id
   where l.workspace_id=$1 and ($2::uuid is null or l.id < $2)
+    and ($3='restricted' or (downstream_source.sensitivity <> 'restricted' and upstream_source.sensitivity <> 'restricted'))
 )
 select id,workspace_id,downstream_observation_id,upstream_observation_id,rationale,author,created_at,updated_at,
        downstream_source_id,downstream_source_title,downstream_capture_id,downstream_statement,
        upstream_source_id,upstream_source_title,upstream_capture_id,upstream_statement,cycle_detected
-from links order by id desc limit $3`, uuid(workspace), uuid(before), limit)
+from links order by id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -375,13 +406,18 @@ from links order by id desc limit $3`, uuid(workspace), uuid(before), limit)
 }
 
 func (s *Store) PageEvidence(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Evidence, error) {
+	return s.PageEvidenceVisible(ctx, workspace, before, limit, "restricted")
+}
+
+func (s *Store) PageEvidenceVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.Evidence, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `
 select m.id,m.workspace_id,m.source_id,s.title,m.capture_id,m.statement,m.quote,
        m.extraction_id,m.quote_start,m.quote_end,m.locator,m.author,m.recorded_at
 from observation.manual m
 join source.source s on s.workspace_id=m.workspace_id and s.id=m.source_id
 where m.workspace_id=$1 and ($2::uuid is null or m.id < $2)
-order by m.id desc limit $3`, uuid(workspace), uuid(before), limit)
+  and ($3='restricted' or s.sensitivity <> 'restricted')
+order by m.id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -398,12 +434,17 @@ order by m.id desc limit $3`, uuid(workspace), uuid(before), limit)
 }
 
 func (s *Store) EvidenceByID(ctx context.Context, workspace, want id.ID) (domain.Evidence, error) {
+	return s.EvidenceByIDVisible(ctx, workspace, want, "restricted")
+}
+
+func (s *Store) EvidenceByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Evidence, error) {
 	row := s.db.DB(ctx).QueryRow(ctx, `
 select m.id,m.workspace_id,m.source_id,s.title,m.capture_id,m.statement,m.quote,
        m.extraction_id,m.quote_start,m.quote_end,m.locator,m.author,m.recorded_at
 from observation.manual m
 join source.source s on s.workspace_id=m.workspace_id and s.id=m.source_id
-where m.workspace_id=$1 and m.id=$2`, uuid(workspace), uuid(want))
+where m.workspace_id=$1 and m.id=$2
+  and ($3='restricted' or s.sensitivity <> 'restricted')`, uuid(workspace), uuid(want), maxSensitivity)
 	one, err := scanEvidence(row)
 	if err != nil {
 		return domain.Evidence{}, translate(ctx, err)
@@ -411,7 +452,7 @@ where m.workspace_id=$1 and m.id=$2`, uuid(workspace), uuid(want))
 	return one, nil
 }
 
-func (s *Store) PageBoard(ctx context.Context, workspace, before id.ID, filters domain.BoardFilters, limit int) ([]domain.BoardItem, error) {
+func (s *Store) PageBoard(ctx context.Context, workspace, before id.ID, filters domain.BoardFilters, limit int, maxSensitivity string) ([]domain.BoardItem, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `
 with raw as (
   select m.id,m.workspace_id,m.source_id,s.title,m.capture_id,m.statement,m.quote,
@@ -430,7 +471,8 @@ with raw as (
     and ($5::uuid is null or exists (select 1 from timeline.event_observation eo where eo.workspace_id=m.workspace_id and eo.event_id=$5 and eo.observation_id=m.id))
     and ($6::timestamptz is null or m.recorded_at >= $6)
     and ($7::timestamptz is null or m.recorded_at < $7)
-    and ($8 = '' or s.title ilike '%' || $8 || '%' or m.statement ilike '%' || $8 || '%' or m.quote ilike '%' || $8 || '%' or m.locator ilike '%' || $8 || '%')
+    and ($8 = '' or s.title ilike '%' || $8 || '%' or m.statement ilike '%' || $8 || '%' or convert_from(m.quote, 'UTF8') ilike '%' || $8 || '%' or m.locator ilike '%' || $8 || '%')
+    and ($10='restricted' or s.sensitivity <> 'restricted')
 ), board as (
   select raw.*,
     case when supports=0 and contradicts=0 and repeats=0 and unresolved=0 then 'unreviewed'
@@ -444,8 +486,8 @@ select id,workspace_id,source_id,title,capture_id,statement,quote,
        review_state,supports,contradicts,repeats,unresolved,cluster_count
 from board
 where ($9 = '' or review_state = $9)
-  and (not $10 or unresolved > 0)
-order by id desc limit $11`, uuid(workspace), uuid(before), uuid(filters.SourceID), uuid(filters.RecordID), uuid(filters.EventID), filters.RecordedFrom, filters.RecordedTo, filters.Query, filters.State.String(), filters.UnresolvedOnly, limit)
+  and (not $11 or unresolved > 0)
+order by id desc limit $12`, uuid(workspace), uuid(before), uuid(filters.SourceID), uuid(filters.RecordID), uuid(filters.EventID), filters.RecordedFrom, filters.RecordedTo, filters.Query, filters.State.String(), maxSensitivity, filters.UnresolvedOnly, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}

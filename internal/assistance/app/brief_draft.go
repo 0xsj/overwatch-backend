@@ -35,6 +35,7 @@ type LocalBriefDraftProvider struct{}
 func (LocalBriefDraftProvider) Name() string            { return "local" }
 func (LocalBriefDraftProvider) Method() string          { return "working-brief-diff-v1" }
 func (LocalBriefDraftProvider) TemplateVersion() string { return "brief-draft-v1" }
+func (LocalBriefDraftProvider) External() bool          { return false }
 
 func (LocalBriefDraftProvider) DraftBrief(ctx context.Context, input BriefDraftInput) (domain.BriefDraftStatus, string, []domain.BriefDraftChange, error) {
 	if err := ctx.Err(); err != nil {

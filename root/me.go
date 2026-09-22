@@ -305,7 +305,10 @@ func (m *me) register(mux *http.ServeMux) {
 	// PRODUCT.md's central claim, as an endpoint: every value walks backwards
 	// to the parser version, the raw bytes, the exact command, and the scope
 	// rule that allowed the command to run.
-	mux.HandleFunc("GET /v1/workspaces/{workspace}/observations/{observation}/lineage", m.readLineage)
+	// `shared/{token}` occupies the same intersection in Go's ServeMux pattern
+	// space as `{observation}/lineage` (the value `shared` can be an observation
+	// id in the abstract), so they are dispatched from one structural route.
+	mux.HandleFunc("GET /v1/workspaces/{workspace}/observations/{observation}/{suffix...}", m.readObservationSubpath)
 	// "How much of what the tools printed actually became an observation."
 	mux.HandleFunc("GET /v1/workspaces/{workspace}/invocations/{invocation}/extraction", m.readExtraction)
 

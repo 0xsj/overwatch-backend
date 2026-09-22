@@ -47,6 +47,9 @@ import (
 	reportcmd "github.com/0xsj/overwatch-backend/internal/report/app/command"
 	reportquery "github.com/0xsj/overwatch-backend/internal/report/app/query"
 	reportpg "github.com/0xsj/overwatch-backend/internal/report/infra/postgres"
+	connectionpg "github.com/0xsj/overwatch-backend/internal/researchconnection/infra/postgres"
+	recordpg "github.com/0xsj/overwatch-backend/internal/researchentity/infra/postgres"
+	resolutionpg "github.com/0xsj/overwatch-backend/internal/researchresolution/infra/postgres"
 	reviewpg "github.com/0xsj/overwatch-backend/internal/review/infra/postgres"
 	runcmd "github.com/0xsj/overwatch-backend/internal/run/app/command"
 	runquery "github.com/0xsj/overwatch-backend/internal/run/app/query"
@@ -133,6 +136,9 @@ func tracedSystemWithFetcherAndOCR(t *testing.T, fetcher referenceFetcher, ocr e
 	// the reason most of them are refused, and this one is justified only
 	// because it is cleaned up here.
 	t.Cleanup(func() { guessBudget = nil })
+	researchMigrations := append([]postgres.Migration{}, recordpg.Migrations...)
+	researchMigrations = append(researchMigrations, connectionpg.Migrations...)
+	researchMigrations = append(researchMigrations, resolutionpg.Migrations...)
 	p := testx.Postgres(t,
 		testx.Schema{Name: "outbox", Migrations: outbox.Migrations, Unqualified: true},
 		testx.Schema{Name: identitypg.Schema, Migrations: identitypg.Migrations},
@@ -156,6 +162,7 @@ func tracedSystemWithFetcherAndOCR(t *testing.T, fetcher referenceFetcher, ocr e
 		testx.Schema{Name: notepg.Schema, Migrations: notepg.Migrations},
 		testx.Schema{Name: reviewpg.Schema, Migrations: reviewpg.Migrations},
 		testx.Schema{Name: leadpg.Schema, Migrations: leadpg.Migrations},
+		testx.Schema{Name: recordpg.Schema, Migrations: researchMigrations},
 		testx.Schema{Name: briefpg.Schema, Migrations: briefpg.Migrations},
 		testx.Schema{Name: assistpg.Schema, Migrations: assistpg.Migrations},
 		testx.Schema{Name: cleanuppg.Schema, Migrations: cleanuppg.Migrations},

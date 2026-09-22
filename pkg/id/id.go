@@ -2,6 +2,7 @@ package id
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"time"
 
 	"github.com/0xsj/overwatch-backend/pkg/errors"
@@ -41,6 +42,16 @@ func (i ID) String() string {
 }
 
 func (i ID) MarshalText() ([]byte, error) { return []byte(i.String()), nil }
+
+// MarshalJSON keeps unset optional identifiers distinguishable from real
+// identifiers on the wire. A zero ID is a useful in-memory sentinel, but its
+// all-zero UUID text is intentionally rejected by Parse and UnmarshalText.
+func (i ID) MarshalJSON() ([]byte, error) {
+	if i.IsZero() {
+		return []byte("null"), nil
+	}
+	return json.Marshal(i.String())
+}
 
 func (i *ID) UnmarshalText(b []byte) error {
 	parsed, err := Parse(string(b))

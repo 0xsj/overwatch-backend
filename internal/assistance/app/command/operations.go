@@ -16,6 +16,7 @@ import (
 )
 
 type Repository interface {
+	ProviderRunRepository
 	CreateOperation(context.Context, domain.Operation) error
 	ByOperation(context.Context, id.ID, id.ID) (domain.Operation, error)
 	CreateProposal(context.Context, domain.Proposal) error
@@ -190,6 +191,13 @@ func (o *Operations) generate(ctx context.Context, workspace, source, capture, e
 		if err := o.repo.CreateOperation(ctx, operation); err != nil {
 			return err
 		}
+		run, err := providerRunForOperation(operation)
+		if err != nil {
+			return err
+		}
+		if err := o.repo.CreateProviderRun(ctx, run); err != nil {
+			return err
+		}
 		for _, proposal := range proposals {
 			if err := o.repo.CreateProposal(ctx, proposal); err != nil {
 				return err
@@ -231,6 +239,13 @@ func (o *Operations) persistTerminal(ctx context.Context, workspace, source, cap
 		if err := o.repo.CreateOperation(ctx, operation); err != nil {
 			return err
 		}
+		run, err := providerRunForOperation(operation)
+		if err != nil {
+			return err
+		}
+		if err := o.repo.CreateProviderRun(ctx, run); err != nil {
+			return err
+		}
 		return o.publish(ctx, domain.EventGenerated, workspace, map[string]any{
 			"workspace_id": workspace.String(), "source_id": source.String(), "capture_id": capture.String(), "operation_id": operation.ID.String(),
 			"provider": operation.Provider, "method": operation.Method, "template_version": operation.TemplateVersion, "status": operation.Status.String(), "error": operation.Error, "proposal_count": 0, "input_bytes": operation.InputBytes, "output_bytes": operation.OutputBytes, "duration_ms": operation.DurationMS, "timed_out": operation.TimedOut, "actor": actor.String(),
@@ -265,7 +280,7 @@ func retryOperationID(value *id.ID) string {
 	return value.String()
 }
 
-func providerUsesExternal(provider app.Provider) bool {
+func providerUsesExternal(provider any) bool {
 	external, ok := provider.(app.ExternalProvider)
 	return !ok || external.External()
 }

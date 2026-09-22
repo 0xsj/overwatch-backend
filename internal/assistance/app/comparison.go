@@ -46,6 +46,7 @@ type LocalComparisonProvider struct{}
 func (LocalComparisonProvider) Name() string            { return "local" }
 func (LocalComparisonProvider) Method() string          { return "selected-observations-comparison-v1" }
 func (LocalComparisonProvider) TemplateVersion() string { return "comparison-v1" }
+func (LocalComparisonProvider) External() bool          { return false }
 
 var comparisonTokenPattern = regexp.MustCompile(`(?i)[\p{L}\p{N}][\p{L}\p{N}@._'’-]{1,63}`)
 

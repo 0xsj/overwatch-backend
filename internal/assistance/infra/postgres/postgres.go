@@ -60,6 +60,43 @@ values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`, uui
 	return translate(ctx, err)
 }
 
+func (s *Store) CreateProviderRun(ctx context.Context, in domain.ProviderRun) error {
+	_, err := s.db.DB(ctx).Exec(ctx, `
+insert into assistance.provider_run
+ (id,workspace_id,kind,result_id,provider,method,template_version,status,input_bytes,output_bytes,duration_ms,timed_out,error,created_by,created_at,completed_at)
+values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, uuid(in.ID), uuid(in.WorkspaceID), in.Kind, uuid(in.ResultID), in.Provider, in.Method, in.TemplateVersion, in.Status, in.InputBytes, in.OutputBytes, in.DurationMS, in.TimedOut, in.Error, uuid(in.CreatedBy), in.CreatedAt, in.CompletedAt)
+	return translate(ctx, err)
+}
+
+const providerRunSelect = `select id,workspace_id,kind,result_id,provider,method,template_version,status,input_bytes,output_bytes,duration_ms,timed_out,error,created_by,created_at,completed_at from assistance.provider_run `
+
+func scanProviderRun(row interface{ Scan(...any) error }) (domain.ProviderRun, error) {
+	var out domain.ProviderRun
+	var run, workspace, result, actor pgtype.UUID
+	if err := row.Scan(&run, &workspace, &out.Kind, &result, &out.Provider, &out.Method, &out.TemplateVersion, &out.Status, &out.InputBytes, &out.OutputBytes, &out.DurationMS, &out.TimedOut, &out.Error, &actor, &out.CreatedAt, &out.CompletedAt); err != nil {
+		return domain.ProviderRun{}, err
+	}
+	out.ID, out.WorkspaceID, out.ResultID, out.CreatedBy = id.ID(run.Bytes), id.ID(workspace.Bytes), id.ID(result.Bytes), id.ID(actor.Bytes)
+	return out, nil
+}
+
+func (s *Store) PageProviderRuns(ctx context.Context, workspace id.ID, limit int) ([]domain.ProviderRun, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, providerRunSelect+`where workspace_id=$1 order by created_at desc, id desc limit $2`, uuid(workspace), limit)
+	if err != nil {
+		return nil, translate(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]domain.ProviderRun, 0)
+	for rows.Next() {
+		one, err := scanProviderRun(rows)
+		if err != nil {
+			return nil, translate(ctx, err)
+		}
+		out = append(out, one)
+	}
+	return out, translate(ctx, rows.Err())
+}
+
 func optionalUUID(value *id.ID) pgtype.UUID {
 	if value == nil {
 		return pgtype.UUID{}
@@ -121,7 +158,7 @@ func (s *Store) CreateSynthesis(ctx context.Context, in domain.Synthesis) error 
 	if err != nil {
 		return err
 	}
-	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.synthesis(id,workspace_id,observation_ids,provider,method,output,candidates,created_by,created_at) values($1,$2,$3::jsonb,$4,$5,$6,$7::jsonb,$8,$9)`, uuid(in.ID), uuid(in.WorkspaceID), string(observations), in.Provider, in.Method, in.Output, string(candidates), uuid(in.CreatedBy), in.CreatedAt)
+	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.synthesis(id,workspace_id,observation_ids,provider,method,status,output,candidates,created_by,created_at,error) values($1,$2,$3::jsonb,$4,$5,$6,$7,$8::jsonb,$9,$10,$11)`, uuid(in.ID), uuid(in.WorkspaceID), string(observations), in.Provider, in.Method, in.Status.String(), in.Output, string(candidates), uuid(in.CreatedBy), in.CreatedAt, in.Error)
 	return translate(ctx, err)
 }
 
@@ -148,7 +185,7 @@ func (s *Store) CreateComparison(ctx context.Context, in domain.Comparison) erro
 	if err != nil {
 		return err
 	}
-	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.comparison(id,workspace_id,observation_ids,provider,method,template_version,status,output,findings,created_by,created_at) values($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)`, uuid(in.ID), uuid(in.WorkspaceID), string(observations), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(findings), uuid(in.CreatedBy), in.CreatedAt)
+	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.comparison(id,workspace_id,observation_ids,provider,method,template_version,status,output,findings,created_by,created_at,error) values($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)`, uuid(in.ID), uuid(in.WorkspaceID), string(observations), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(findings), uuid(in.CreatedBy), in.CreatedAt, in.Error)
 	return translate(ctx, err)
 }
 
@@ -179,7 +216,7 @@ func (s *Store) CreateConnectionReview(ctx context.Context, in domain.Connection
 	if err != nil {
 		return err
 	}
-	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.connection_review(id,workspace_id,connection_id,from_record_id,to_record_id,connection_kind,connection_state,connection_rationale,supporting_observation_ids,opposing_observation_ids,provider,method,template_version,status,output,findings,created_by,created_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16::jsonb,$17,$18)`, uuid(in.ID), uuid(in.WorkspaceID), uuid(in.ConnectionID), uuid(in.FromRecordID), uuid(in.ToRecordID), in.ConnectionKind.String(), in.ConnectionState.String(), in.ConnectionRationale, string(supporting), string(opposing), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(findings), uuid(in.CreatedBy), in.CreatedAt)
+	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.connection_review(id,workspace_id,connection_id,from_record_id,to_record_id,connection_kind,connection_state,connection_rationale,supporting_observation_ids,opposing_observation_ids,provider,method,template_version,status,output,findings,created_by,created_at,error) values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19)`, uuid(in.ID), uuid(in.WorkspaceID), uuid(in.ConnectionID), uuid(in.FromRecordID), uuid(in.ToRecordID), in.ConnectionKind.String(), in.ConnectionState.String(), in.ConnectionRationale, string(supporting), string(opposing), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(findings), uuid(in.CreatedBy), in.CreatedAt, in.Error)
 	return translate(ctx, err)
 }
 
@@ -222,7 +259,7 @@ func (s *Store) CreateQuestionSuggestions(ctx context.Context, in domain.Questio
 	if err != nil {
 		return err
 	}
-	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.question_suggestions(id,workspace_id,gaps,provider,method,template_version,status,output,suggestions,created_by,created_at) values($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9::jsonb,$10,$11)`, uuid(in.ID), uuid(in.WorkspaceID), string(gaps), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(suggestions), uuid(in.CreatedBy), in.CreatedAt)
+	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.question_suggestions(id,workspace_id,gaps,provider,method,template_version,status,output,suggestions,created_by,created_at,error) values($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)`, uuid(in.ID), uuid(in.WorkspaceID), string(gaps), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(suggestions), uuid(in.CreatedBy), in.CreatedAt, in.Error)
 	return translate(ctx, err)
 }
 
@@ -242,15 +279,21 @@ func (s *Store) ByOperation(ctx context.Context, workspace, want id.ID) (domain.
 	return s.readOperation(ctx, `where workspace_id=$1 and id=$2`, uuid(workspace), uuid(want))
 }
 
-const synthesisSelect = `select id,workspace_id,observation_ids,provider,method,output,candidates,created_by,created_at from assistance.synthesis `
+const synthesisSelect = `select id,workspace_id,observation_ids,provider,method,status,output,candidates,created_by,created_at,error from assistance.synthesis s `
 
 func scanSynthesis(row interface{ Scan(...any) error }) (domain.Synthesis, error) {
 	var out domain.Synthesis
 	var synthesis, workspace, createdBy pgtype.UUID
 	var observationRaw, candidateRaw []byte
-	if err := row.Scan(&synthesis, &workspace, &observationRaw, &out.Provider, &out.Method, &out.Output, &candidateRaw, &createdBy, &out.CreatedAt); err != nil {
+	var status string
+	if err := row.Scan(&synthesis, &workspace, &observationRaw, &out.Provider, &out.Method, &status, &out.Output, &candidateRaw, &createdBy, &out.CreatedAt, &out.Error); err != nil {
 		return domain.Synthesis{}, err
 	}
+	parsedStatus, err := domain.ParseSynthesisStatus(status)
+	if err != nil {
+		return domain.Synthesis{}, err
+	}
+	out.Status = parsedStatus
 	var observations []string
 	if err := json.Unmarshal(observationRaw, &observations); err != nil {
 		return domain.Synthesis{}, err
@@ -284,7 +327,17 @@ func scanSynthesis(row interface{ Scan(...any) error }) (domain.Synthesis, error
 }
 
 func (s *Store) SynthesisByID(ctx context.Context, workspace, want id.ID) (domain.Synthesis, error) {
-	found, err := scanSynthesis(s.db.DB(ctx).QueryRow(ctx, synthesisSelect+`where workspace_id=$1 and id=$2`, uuid(workspace), uuid(want)))
+	return s.SynthesisByIDVisible(ctx, workspace, want, "restricted")
+}
+
+func (s *Store) SynthesisByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Synthesis, error) {
+	found, err := scanSynthesis(s.db.DB(ctx).QueryRow(ctx, synthesisSelect+`where s.workspace_id=$1 and s.id=$2
+  and ($3='restricted' or not exists (
+    select 1
+    from jsonb_array_elements_text(s.observation_ids) as cited(observation_id)
+    join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=s.workspace_id
+    join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=s.workspace_id
+    where hidden_s.sensitivity='restricted'))`, uuid(workspace), uuid(want), maxSensitivity))
 	if err != nil {
 		return domain.Synthesis{}, translate(ctx, err)
 	}
@@ -292,7 +345,18 @@ func (s *Store) SynthesisByID(ctx context.Context, workspace, want id.ID) (domai
 }
 
 func (s *Store) PageSynthesis(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Synthesis, error) {
-	rows, err := s.db.DB(ctx).Query(ctx, synthesisSelect+`where workspace_id=$1 and ($2::uuid is null or id < $2) order by created_at desc, id desc limit $3`, uuid(workspace), uuid(before), limit)
+	return s.PageSynthesisVisible(ctx, workspace, before, limit, "restricted")
+}
+
+func (s *Store) PageSynthesisVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.Synthesis, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, synthesisSelect+`where s.workspace_id=$1 and ($2::uuid is null or s.id < $2)
+  and ($3='restricted' or not exists (
+    select 1
+    from jsonb_array_elements_text(s.observation_ids) as cited(observation_id)
+    join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=s.workspace_id
+    join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=s.workspace_id
+    where hidden_s.sensitivity='restricted'))
+order by s.created_at desc, s.id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -308,14 +372,14 @@ func (s *Store) PageSynthesis(ctx context.Context, workspace, before id.ID, limi
 	return out, translate(ctx, rows.Err())
 }
 
-const comparisonSelect = `select id,workspace_id,observation_ids,provider,method,template_version,status,output,findings,created_by,created_at from assistance.comparison `
+const comparisonSelect = `select id,workspace_id,observation_ids,provider,method,template_version,status,output,findings,created_by,created_at,error from assistance.comparison c `
 
 func scanComparison(row interface{ Scan(...any) error }) (domain.Comparison, error) {
 	var out domain.Comparison
 	var comparison, workspace, createdBy pgtype.UUID
 	var observationRaw, findingRaw []byte
 	var status string
-	if err := row.Scan(&comparison, &workspace, &observationRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &findingRaw, &createdBy, &out.CreatedAt); err != nil {
+	if err := row.Scan(&comparison, &workspace, &observationRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &findingRaw, &createdBy, &out.CreatedAt, &out.Error); err != nil {
 		return domain.Comparison{}, err
 	}
 	parsedStatus, err := domain.ParseComparisonStatus(status)
@@ -359,7 +423,17 @@ func scanComparison(row interface{ Scan(...any) error }) (domain.Comparison, err
 }
 
 func (s *Store) ComparisonByID(ctx context.Context, workspace, want id.ID) (domain.Comparison, error) {
-	found, err := scanComparison(s.db.DB(ctx).QueryRow(ctx, comparisonSelect+`where workspace_id=$1 and id=$2`, uuid(workspace), uuid(want)))
+	return s.ComparisonByIDVisible(ctx, workspace, want, "restricted")
+}
+
+func (s *Store) ComparisonByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Comparison, error) {
+	found, err := scanComparison(s.db.DB(ctx).QueryRow(ctx, comparisonSelect+`where c.workspace_id=$1 and c.id=$2
+  and ($3='restricted' or not exists (
+    select 1
+    from jsonb_array_elements_text(c.observation_ids) as cited(observation_id)
+    join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=c.workspace_id
+    join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=c.workspace_id
+    where hidden_s.sensitivity='restricted'))`, uuid(workspace), uuid(want), maxSensitivity))
 	if err != nil {
 		return domain.Comparison{}, translate(ctx, err)
 	}
@@ -367,7 +441,18 @@ func (s *Store) ComparisonByID(ctx context.Context, workspace, want id.ID) (doma
 }
 
 func (s *Store) PageComparison(ctx context.Context, workspace, before id.ID, limit int) ([]domain.Comparison, error) {
-	rows, err := s.db.DB(ctx).Query(ctx, comparisonSelect+`where workspace_id=$1 and ($2::uuid is null or id < $2) order by created_at desc, id desc limit $3`, uuid(workspace), uuid(before), limit)
+	return s.PageComparisonVisible(ctx, workspace, before, limit, "restricted")
+}
+
+func (s *Store) PageComparisonVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.Comparison, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, comparisonSelect+`where c.workspace_id=$1 and ($2::uuid is null or c.id < $2)
+  and ($3='restricted' or not exists (
+    select 1
+    from jsonb_array_elements_text(c.observation_ids) as cited(observation_id)
+    join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=c.workspace_id
+    join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=c.workspace_id
+    where hidden_s.sensitivity='restricted'))
+order by c.created_at desc, c.id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -383,14 +468,14 @@ func (s *Store) PageComparison(ctx context.Context, workspace, before id.ID, lim
 	return out, translate(ctx, rows.Err())
 }
 
-const connectionReviewSelect = `select id,workspace_id,connection_id,from_record_id,to_record_id,connection_kind,connection_state,connection_rationale,supporting_observation_ids,opposing_observation_ids,provider,method,template_version,status,output,findings,created_by,created_at from assistance.connection_review `
+const connectionReviewSelect = `select id,workspace_id,connection_id,from_record_id,to_record_id,connection_kind,connection_state,connection_rationale,supporting_observation_ids,opposing_observation_ids,provider,method,template_version,status,output,findings,created_by,created_at,error from assistance.connection_review `
 
 func scanConnectionReview(row interface{ Scan(...any) error }) (domain.ConnectionReview, error) {
 	var out domain.ConnectionReview
 	var review, workspace, connection, fromRecord, toRecord, createdBy pgtype.UUID
 	var kind, state, status string
 	var supportingRaw, opposingRaw, findingRaw []byte
-	if err := row.Scan(&review, &workspace, &connection, &fromRecord, &toRecord, &kind, &state, &out.ConnectionRationale, &supportingRaw, &opposingRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &findingRaw, &createdBy, &out.CreatedAt); err != nil {
+	if err := row.Scan(&review, &workspace, &connection, &fromRecord, &toRecord, &kind, &state, &out.ConnectionRationale, &supportingRaw, &opposingRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &findingRaw, &createdBy, &out.CreatedAt, &out.Error); err != nil {
 		return domain.ConnectionReview{}, err
 	}
 	parsedKind, err := connectiondomain.ParseKind(kind)
@@ -479,14 +564,14 @@ func (s *Store) PageConnectionReviews(ctx context.Context, workspace, connection
 	return out, translate(ctx, rows.Err())
 }
 
-const questionSuggestionsSelect = `select id,workspace_id,gaps,provider,method,template_version,status,output,suggestions,created_by,created_at from assistance.question_suggestions `
+const questionSuggestionsSelect = `select id,workspace_id,gaps,provider,method,template_version,status,output,suggestions,created_by,created_at,error from assistance.question_suggestions q `
 
 func scanQuestionSuggestions(row interface{ Scan(...any) error }) (domain.QuestionSuggestions, error) {
 	var out domain.QuestionSuggestions
 	var suggestion, workspace, createdBy pgtype.UUID
 	var gapsRaw, suggestionsRaw []byte
 	var status string
-	if err := row.Scan(&suggestion, &workspace, &gapsRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &suggestionsRaw, &createdBy, &out.CreatedAt); err != nil {
+	if err := row.Scan(&suggestion, &workspace, &gapsRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &suggestionsRaw, &createdBy, &out.CreatedAt, &out.Error); err != nil {
 		return domain.QuestionSuggestions{}, err
 	}
 	parsedStatus, err := domain.ParseQuestionSuggestionStatus(status)
@@ -541,7 +626,26 @@ func scanQuestionSuggestions(row interface{ Scan(...any) error }) (domain.Questi
 }
 
 func (s *Store) QuestionSuggestionsByID(ctx context.Context, workspace, want id.ID) (domain.QuestionSuggestions, error) {
-	found, err := scanQuestionSuggestions(s.db.DB(ctx).QueryRow(ctx, questionSuggestionsSelect+`where workspace_id=$1 and id=$2`, uuid(workspace), uuid(want)))
+	return s.QuestionSuggestionsByIDVisible(ctx, workspace, want, "restricted")
+}
+
+func (s *Store) QuestionSuggestionsByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.QuestionSuggestions, error) {
+	found, err := scanQuestionSuggestions(s.db.DB(ctx).QueryRow(ctx, questionSuggestionsSelect+`where q.workspace_id=$1 and q.id=$2
+  and ($3='restricted' or (
+    not exists (
+      select 1
+      from jsonb_array_elements(q.gaps) as gap_entry
+      cross join lateral jsonb_array_elements_text(gap_entry->'observation_ids') as cited(observation_id)
+      join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=q.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=q.workspace_id
+      where hidden_s.sensitivity='restricted')
+    and not exists (
+      select 1
+      from jsonb_array_elements(q.suggestions) as suggestion_entry
+      cross join lateral jsonb_array_elements_text(suggestion_entry->'observation_ids') as cited(observation_id)
+      join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=q.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=q.workspace_id
+      where hidden_s.sensitivity='restricted')))`, uuid(workspace), uuid(want), maxSensitivity))
 	if err != nil {
 		return domain.QuestionSuggestions{}, translate(ctx, err)
 	}
@@ -549,7 +653,27 @@ func (s *Store) QuestionSuggestionsByID(ctx context.Context, workspace, want id.
 }
 
 func (s *Store) PageQuestionSuggestions(ctx context.Context, workspace, before id.ID, limit int) ([]domain.QuestionSuggestions, error) {
-	rows, err := s.db.DB(ctx).Query(ctx, questionSuggestionsSelect+`where workspace_id=$1 and ($2::uuid is null or id < $2) order by created_at desc, id desc limit $3`, uuid(workspace), uuid(before), limit)
+	return s.PageQuestionSuggestionsVisible(ctx, workspace, before, limit, "restricted")
+}
+
+func (s *Store) PageQuestionSuggestionsVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.QuestionSuggestions, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, questionSuggestionsSelect+`where q.workspace_id=$1 and ($2::uuid is null or q.id < $2)
+  and ($3='restricted' or (
+    not exists (
+      select 1
+      from jsonb_array_elements(q.gaps) as gap_entry
+      cross join lateral jsonb_array_elements_text(gap_entry->'observation_ids') as cited(observation_id)
+      join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=q.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=q.workspace_id
+      where hidden_s.sensitivity='restricted')
+    and not exists (
+      select 1
+      from jsonb_array_elements(q.suggestions) as suggestion_entry
+      cross join lateral jsonb_array_elements_text(suggestion_entry->'observation_ids') as cited(observation_id)
+      join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=q.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=q.workspace_id
+      where hidden_s.sensitivity='restricted')))
+order by q.created_at desc, q.id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -605,18 +729,34 @@ func (s *Store) CreateBriefDraft(ctx context.Context, in domain.BriefDraft) erro
 	if err != nil {
 		return err
 	}
-	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.brief_draft(id,workspace_id,brief_id,input,provider,method,template_version,status,output,changes,created_by,created_at) values($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10::jsonb,$11,$12)`, uuid(in.ID), uuid(in.WorkspaceID), uuid(in.Input.BriefID), string(input), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(changes), uuid(in.CreatedBy), in.CreatedAt)
+	_, err = s.db.DB(ctx).Exec(ctx, `insert into assistance.brief_draft(id,workspace_id,brief_id,input,provider,method,template_version,status,output,changes,created_by,created_at,error) values($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13)`, uuid(in.ID), uuid(in.WorkspaceID), uuid(in.Input.BriefID), string(input), in.Provider, in.Method, in.TemplateVersion, in.Status.String(), in.Output, string(changes), uuid(in.CreatedBy), in.CreatedAt, in.Error)
 	return translate(ctx, err)
 }
 
-const briefDraftSelect = `select id,workspace_id,brief_id,input,provider,method,template_version,status,output,changes,created_by,created_at from assistance.brief_draft `
+const briefDraftSelect = `select id,workspace_id,brief_id,input,provider,method,template_version,status,output,changes,created_by,created_at,error from assistance.brief_draft d `
+
+const briefDraftVisibility = `
+  and ($3='restricted' or (
+    not exists (
+      select 1
+      from jsonb_array_elements_text(d.input->'observation_ids') as cited(observation_id)
+      join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=d.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=d.workspace_id
+      where hidden_s.sensitivity='restricted')
+    and not exists (
+      select 1
+      from jsonb_array_elements(d.changes) as change_entry
+      cross join lateral jsonb_array_elements_text(change_entry->'observation_ids') as cited(observation_id)
+      join observation.manual hidden_m on hidden_m.id=cited.observation_id::uuid and hidden_m.workspace_id=d.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_m.source_id and hidden_s.workspace_id=d.workspace_id
+      where hidden_s.sensitivity='restricted')))`
 
 func scanBriefDraft(row interface{ Scan(...any) error }) (domain.BriefDraft, error) {
 	var out domain.BriefDraft
 	var draft, workspace, briefID, createdBy pgtype.UUID
 	var inputRaw, changesRaw []byte
 	var status string
-	if err := row.Scan(&draft, &workspace, &briefID, &inputRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &changesRaw, &createdBy, &out.CreatedAt); err != nil {
+	if err := row.Scan(&draft, &workspace, &briefID, &inputRaw, &out.Provider, &out.Method, &out.TemplateVersion, &status, &out.Output, &changesRaw, &createdBy, &out.CreatedAt, &out.Error); err != nil {
 		return domain.BriefDraft{}, err
 	}
 	parsedStatus, err := domain.ParseBriefDraftStatus(status)
@@ -668,7 +808,15 @@ func scanBriefDraft(row interface{ Scan(...any) error }) (domain.BriefDraft, err
 }
 
 func (s *Store) BriefDraftByID(ctx context.Context, workspace, want id.ID) (domain.BriefDraft, error) {
-	found, err := scanBriefDraft(s.db.DB(ctx).QueryRow(ctx, briefDraftSelect+`where workspace_id=$1 and id=$2`, uuid(workspace), uuid(want)))
+	found, err := scanBriefDraft(s.db.DB(ctx).QueryRow(ctx, briefDraftSelect+`where d.workspace_id=$1 and d.id=$2`, uuid(workspace), uuid(want)))
+	if err != nil {
+		return domain.BriefDraft{}, translate(ctx, err)
+	}
+	return found, nil
+}
+
+func (s *Store) BriefDraftByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.BriefDraft, error) {
+	found, err := scanBriefDraft(s.db.DB(ctx).QueryRow(ctx, briefDraftSelect+`where d.workspace_id=$1 and d.id=$2`+briefDraftVisibility, uuid(workspace), uuid(want), maxSensitivity))
 	if err != nil {
 		return domain.BriefDraft{}, translate(ctx, err)
 	}
@@ -676,7 +824,24 @@ func (s *Store) BriefDraftByID(ctx context.Context, workspace, want id.ID) (doma
 }
 
 func (s *Store) PageBriefDrafts(ctx context.Context, workspace, before id.ID, limit int) ([]domain.BriefDraft, error) {
-	rows, err := s.db.DB(ctx).Query(ctx, briefDraftSelect+`where workspace_id=$1 and ($2::uuid is null or id < $2) order by created_at desc, id desc limit $3`, uuid(workspace), uuid(before), limit)
+	rows, err := s.db.DB(ctx).Query(ctx, briefDraftSelect+`where d.workspace_id=$1 and ($2::uuid is null or d.id < $2) order by d.created_at desc, d.id desc limit $3`, uuid(workspace), uuid(before), limit)
+	if err != nil {
+		return nil, translate(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]domain.BriefDraft, 0)
+	for rows.Next() {
+		one, err := scanBriefDraft(rows)
+		if err != nil {
+			return nil, translate(ctx, err)
+		}
+		out = append(out, one)
+	}
+	return out, translate(ctx, rows.Err())
+}
+
+func (s *Store) PageBriefDraftsVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) ([]domain.BriefDraft, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, briefDraftSelect+`where d.workspace_id=$1 and ($2::uuid is null or d.id < $2)`+briefDraftVisibility+` order by d.created_at desc, d.id desc limit $4`, uuid(workspace), uuid(before), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}

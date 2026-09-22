@@ -42,7 +42,14 @@ relationships, or publish conclusions.
 External assistance is denied by default at the workspace level. An admin must
 explicitly opt a workspace in before a configured external provider can receive
 retained material; local providers remain available, and policy changes are
-persisted and emitted into the audit/event stream.
+persisted and emitted into the audit/event stream. `ASSISTANCE_BINARY` with
+optional `ASSISTANCE_ARGS_JSON` can
+provide passage extraction, selected-observation comparison, next-question
+suggestions, brief-draft proposals, and authored-connection review; each
+command receives only the bounded evidence context it needs and must return
+strict JSON with exact observation IDs. Brief drafting returns a reviewable
+section diff, while connection review returns cited findings; neither replaces
+authored prose or relationships.
 
 ## Architecture
 

@@ -26,6 +26,13 @@ func Translate(ctx context.Context, err error, msg string) error {
 	if stderrors.Is(err, context.DeadlineExceeded) {
 		return errors.Wrap(err, errors.Timeout, msg)
 	}
+	// Repositories also use this boundary after domain validation and
+	// workspace-scoped existence checks. Those errors already carry the
+	// caller-safe kind and must not be mistaken for an unavailable database.
+	var classified *errors.Error
+	if stderrors.As(err, &classified) {
+		return err
+	}
 
 	var pg *pgconn.PgError
 	if !stderrors.As(err, &pg) {

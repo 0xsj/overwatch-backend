@@ -438,6 +438,42 @@ func (s *Store) Page(ctx context.Context, workspace, before id.ID, limit int) ([
 	return out, translate(ctx, rows.Err())
 }
 
+func (s *Store) ForRecord(ctx context.Context, workspace, record id.ID, limit int, maxSensitivity string) ([]domain.Event, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, eventSelect+` where e.workspace_id=$1
+  and (exists (select 1 from timeline.event_participant ep where ep.event_id=e.id and ep.workspace_id=e.workspace_id and ep.record_id=$2)
+    or e.location_record_id=$2)
+  and ($3='restricted' or (
+    not exists (select 1 from timeline.event_observation hidden_eo
+      join observation.manual hidden_o on hidden_o.id=hidden_eo.observation_id and hidden_o.workspace_id=hidden_eo.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_o.source_id and hidden_s.workspace_id=hidden_o.workspace_id
+      where hidden_eo.event_id=e.id and hidden_eo.workspace_id=e.workspace_id and hidden_s.sensitivity='restricted')
+    and not exists (select 1 from timeline.event_participant hidden_ep
+      join research.record_observation hidden_ro on hidden_ro.record_id=hidden_ep.record_id and hidden_ro.workspace_id=hidden_ep.workspace_id
+      join observation.manual hidden_o on hidden_o.id=hidden_ro.observation_id and hidden_o.workspace_id=hidden_ro.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_o.source_id and hidden_s.workspace_id=hidden_o.workspace_id
+      where hidden_ep.event_id=e.id and hidden_ep.workspace_id=e.workspace_id and hidden_s.sensitivity='restricted')
+    and not exists (select 1 from research.record_observation hidden_ro
+      join observation.manual hidden_o on hidden_o.id=hidden_ro.observation_id and hidden_o.workspace_id=hidden_ro.workspace_id
+      join source.source hidden_s on hidden_s.id=hidden_o.source_id and hidden_s.workspace_id=hidden_o.workspace_id
+      where hidden_ro.record_id=e.location_record_id and hidden_ro.workspace_id=e.workspace_id and hidden_s.sensitivity='restricted')
+  ))
+  group by e.id,e.workspace_id,e.title,e.description,e.reported_time,e.time_precision,e.sort_date,e.location,e.location_record_id,e.author,e.updated_by,e.created_at,e.updated_at
+  order by e.id desc limit $4`, uuid(workspace), uuid(record), maxSensitivity, limit)
+	if err != nil {
+		return nil, translate(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]domain.Event, 0)
+	for rows.Next() {
+		one, err := scanEvent(rows)
+		if err != nil {
+			return nil, translate(ctx, err)
+		}
+		out = append(out, one)
+	}
+	return out, translate(ctx, rows.Err())
+}
+
 const accountSelect = `
 select a.id,a.workspace_id,a.event_id,a.title,a.description,a.reported_time,a.time_precision,a.sort_date,a.location,a.author,a.created_at,a.updated_at,
        coalesce((select json_agg(ao.observation_id order by ao.observation_id) from timeline.event_account_observation ao where ao.account_id=a.id and ao.workspace_id=a.workspace_id),'[]'::json)::text,

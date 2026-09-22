@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/pkg/egress"
 	"github.com/0xsj/overwatch-backend/pkg/errors"
@@ -135,6 +136,44 @@ func TestAGuardedFetchRecordsWhatItActuallyConnectedTo(t *testing.T) {
 	}
 	if res.Duration <= 0 {
 		t.Error("no duration")
+	}
+}
+
+func TestA429RetryAfterIsCapturedAndCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	res, err := loopbackClient(t, egress.Config{}).Get(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != http.StatusTooManyRequests || res.RetryAfter != egress.MaxRetryAfter {
+		t.Fatalf("status=%d retry_after=%s, want 429 and %s", res.Status, res.RetryAfter, egress.MaxRetryAfter)
+	}
+}
+
+func TestResponseErrorClassifiesRetryableHTTPStatuses(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		kind   errors.Kind
+	}{
+		{http.StatusRequestTimeout, errors.Timeout},
+		{http.StatusTooManyRequests, errors.RateLimited},
+		{http.StatusBadGateway, errors.Unavailable},
+	} {
+		err := egress.ResponseError(&egress.Response{Status: tc.status, RetryAfter: 3 * time.Second})
+		if got := errors.KindOf(err); got != tc.kind {
+			t.Errorf("status %d kind=%s, want %s", tc.status, got, tc.kind)
+		}
+		if !errors.Retryable(err) {
+			t.Errorf("status %d was not retryable", tc.status)
+		}
+		if got := errors.RetryAfterOf(err); got != 3*time.Second {
+			t.Errorf("status %d retry_after=%s, want 3s", tc.status, got)
+		}
 	}
 }
 

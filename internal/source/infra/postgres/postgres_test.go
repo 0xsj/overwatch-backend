@@ -198,11 +198,11 @@ func TestPostgresSourcePaginationIsolationAndExactContent(t *testing.T) {
 	first := f.create(t, "🧭 exact\r\n\x00text")
 	f.create(t, "second")
 	third := f.create(t, "third")
-	page, err := f.reads.List(ctx, f.ws, id.Nil, "", 2)
+	page, err := f.reads.List(ctx, f.ws, id.Nil, "", 2, domain.SensitivityRestricted)
 	if err != nil || len(page.Items) != 2 || page.NextCursor == nil || page.Items[0].ID != third.ID {
 		t.Fatalf("first page: %+v err=%v", page, err)
 	}
-	last, err := f.reads.List(ctx, f.ws, *page.NextCursor, "", 2)
+	last, err := f.reads.List(ctx, f.ws, *page.NextCursor, "", 2, domain.SensitivityRestricted)
 	if err != nil || len(last.Items) != 1 || last.Items[0].ID != first.ID || last.NextCursor != nil {
 		t.Fatalf("last page: %+v err=%v", last, err)
 	}

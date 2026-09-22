@@ -9,7 +9,7 @@ import (
 )
 
 type BoardReader interface {
-	PageBoard(context.Context, id.ID, id.ID, domain.BoardFilters, int) ([]domain.BoardItem, error)
+	PageBoard(context.Context, id.ID, id.ID, domain.BoardFilters, int, string) ([]domain.BoardItem, error)
 }
 
 type Board struct{ reader BoardReader }
@@ -26,8 +26,8 @@ type BoardPage struct {
 	NextCursor *id.ID             `json:"next_cursor"`
 }
 
-func (b *Board) List(ctx context.Context, workspace, before id.ID, filters domain.BoardFilters, limit int) (BoardPage, error) {
-	if workspace.IsZero() {
+func (b *Board) List(ctx context.Context, workspace, before id.ID, filters domain.BoardFilters, limit int, maxSensitivity string) (BoardPage, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return BoardPage{}, domain.ErrInvalid
 	}
 	if err := filters.Validate(); err != nil {
@@ -40,7 +40,7 @@ func (b *Board) List(ctx context.Context, workspace, before id.ID, filters domai
 		limit = 100
 	}
 	filters.Query = strings.TrimSpace(filters.Query)
-	rows, err := b.reader.PageBoard(ctx, workspace, before, filters, limit+1)
+	rows, err := b.reader.PageBoard(ctx, workspace, before, filters, limit+1, maxSensitivity)
 	if err != nil {
 		return BoardPage{}, err
 	}
@@ -54,4 +54,8 @@ func (b *Board) List(ctx context.Context, workspace, before id.ID, filters domai
 		out.Items = rows[:limit]
 	}
 	return out, nil
+}
+
+func validMaxSensitivity(value string) bool {
+	return value == "internal" || value == "restricted"
 }

@@ -175,10 +175,19 @@ func (s *Store) Create(ctx context.Context, in domain.Connection) error {
 }
 
 func (s *Store) ByID(ctx context.Context, workspace, want id.ID) (domain.Connection, error) {
+	return s.ByIDVisible(ctx, workspace, want, "restricted")
+}
+
+func (s *Store) ByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Connection, error) {
 	row := s.db.DB(ctx).QueryRow(ctx, connectionSelect+
 		"where c.workspace_id=$1 and c.id=$2 "+
+		"and ($3='restricted' or ("+
+		"not exists (select 1 from research.record_observation hidden_from_ro join observation.manual hidden_from_o on hidden_from_o.id=hidden_from_ro.observation_id and hidden_from_o.workspace_id=hidden_from_ro.workspace_id join source.source hidden_from_s on hidden_from_s.id=hidden_from_o.source_id and hidden_from_s.workspace_id=hidden_from_o.workspace_id where hidden_from_ro.record_id=c.from_record_id and hidden_from_ro.workspace_id=c.workspace_id and hidden_from_s.sensitivity='restricted') "+
+		"and not exists (select 1 from research.record_observation hidden_to_ro join observation.manual hidden_to_o on hidden_to_o.id=hidden_to_ro.observation_id and hidden_to_o.workspace_id=hidden_to_ro.workspace_id join source.source hidden_to_s on hidden_to_s.id=hidden_to_o.source_id and hidden_to_s.workspace_id=hidden_to_o.workspace_id where hidden_to_ro.record_id=c.to_record_id and hidden_to_ro.workspace_id=c.workspace_id and hidden_to_s.sensitivity='restricted') "+
+		"and not exists (select 1 from research.connection_evidence hidden_ce join observation.manual hidden_eo on hidden_eo.id=hidden_ce.observation_id and hidden_eo.workspace_id=hidden_ce.workspace_id join source.source hidden_es on hidden_es.id=hidden_eo.source_id and hidden_es.workspace_id=hidden_eo.workspace_id where hidden_ce.connection_id=c.id and hidden_ce.workspace_id=c.workspace_id and hidden_es.sensitivity='restricted')"+
+		")) "+
 		"group by c.id,c.workspace_id,c.from_record_id,c.to_record_id,c.kind,c.state,c.rationale,c.author,c.updated_by,c.created_at,c.updated_at",
-		uuid(workspace), uuid(want))
+		uuid(workspace), uuid(want), maxSensitivity)
 	out, err := scanConnection(row)
 	if err != nil {
 		return domain.Connection{}, translate(ctx, err)
@@ -259,10 +268,18 @@ func stringIDs(values []id.ID) []string {
 	return out
 }
 
-func (s *Store) Revisions(ctx context.Context, workspace, connection id.ID) ([]domain.Revision, error) {
+func (s *Store) Revisions(ctx context.Context, workspace, connection id.ID, maxSensitivity string) ([]domain.Revision, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, `
-		select id,workspace_id,connection_id,revision,from_record_id,from_record_kind,from_record_name,from_record_description,from_record_observation_ids,to_record_id,to_record_kind,to_record_name,to_record_description,to_record_observation_ids,kind,state,rationale,supporting_observation_ids,opposing_observation_ids,changed_by,changed_at
-		from research.connection_revision where workspace_id=$1 and connection_id=$2 order by revision asc`, uuid(workspace), uuid(connection))
+		select cr.id,cr.workspace_id,cr.connection_id,cr.revision,cr.from_record_id,cr.from_record_kind,cr.from_record_name,cr.from_record_description,cr.from_record_observation_ids,cr.to_record_id,cr.to_record_kind,cr.to_record_name,cr.to_record_description,cr.to_record_observation_ids,cr.kind,cr.state,cr.rationale,cr.supporting_observation_ids,cr.opposing_observation_ids,cr.changed_by,cr.changed_at
+		from research.connection_revision cr
+		join research.connection c on c.id=cr.connection_id and c.workspace_id=cr.workspace_id
+		where cr.workspace_id=$1 and cr.connection_id=$2
+		  and ($3='restricted' or (
+			not exists (select 1 from research.record_observation hidden_from_ro join observation.manual hidden_from_o on hidden_from_o.id=hidden_from_ro.observation_id and hidden_from_o.workspace_id=hidden_from_ro.workspace_id join source.source hidden_from_s on hidden_from_s.id=hidden_from_o.source_id and hidden_from_s.workspace_id=hidden_from_o.workspace_id where hidden_from_ro.record_id=c.from_record_id and hidden_from_ro.workspace_id=c.workspace_id and hidden_from_s.sensitivity='restricted')
+			and not exists (select 1 from research.record_observation hidden_to_ro join observation.manual hidden_to_o on hidden_to_o.id=hidden_to_ro.observation_id and hidden_to_o.workspace_id=hidden_to_ro.workspace_id join source.source hidden_to_s on hidden_to_s.id=hidden_to_o.source_id and hidden_to_s.workspace_id=hidden_to_o.workspace_id where hidden_to_ro.record_id=c.to_record_id and hidden_to_ro.workspace_id=c.workspace_id and hidden_to_s.sensitivity='restricted')
+			and not exists (select 1 from research.connection_evidence hidden_ce join observation.manual hidden_eo on hidden_eo.id=hidden_ce.observation_id and hidden_eo.workspace_id=hidden_ce.workspace_id join source.source hidden_es on hidden_es.id=hidden_eo.source_id and hidden_es.workspace_id=hidden_eo.workspace_id where hidden_ce.connection_id=c.id and hidden_ce.workspace_id=c.workspace_id and hidden_es.sensitivity='restricted')
+		  ))
+		order by cr.revision asc`, uuid(workspace), uuid(connection), maxSensitivity)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -278,10 +295,17 @@ func (s *Store) Revisions(ctx context.Context, workspace, connection id.ID) ([]d
 	return out, translate(ctx, rows.Err())
 }
 
-func (s *Store) RevisionByID(ctx context.Context, workspace, connection, revision id.ID) (domain.Revision, error) {
+func (s *Store) RevisionByID(ctx context.Context, workspace, connection, revision id.ID, maxSensitivity string) (domain.Revision, error) {
 	row := s.db.DB(ctx).QueryRow(ctx, `
-		select id,workspace_id,connection_id,revision,from_record_id,from_record_kind,from_record_name,from_record_description,from_record_observation_ids,to_record_id,to_record_kind,to_record_name,to_record_description,to_record_observation_ids,kind,state,rationale,supporting_observation_ids,opposing_observation_ids,changed_by,changed_at
-		from research.connection_revision where workspace_id=$1 and connection_id=$2 and id=$3`, uuid(workspace), uuid(connection), uuid(revision))
+		select cr.id,cr.workspace_id,cr.connection_id,cr.revision,cr.from_record_id,cr.from_record_kind,cr.from_record_name,cr.from_record_description,cr.from_record_observation_ids,cr.to_record_id,cr.to_record_kind,cr.to_record_name,cr.to_record_description,cr.to_record_observation_ids,cr.kind,cr.state,cr.rationale,cr.supporting_observation_ids,cr.opposing_observation_ids,cr.changed_by,cr.changed_at
+		from research.connection_revision cr
+		join research.connection c on c.id=cr.connection_id and c.workspace_id=cr.workspace_id
+		where cr.workspace_id=$1 and cr.connection_id=$2 and cr.id=$4
+		  and ($3='restricted' or (
+			not exists (select 1 from research.record_observation hidden_from_ro join observation.manual hidden_from_o on hidden_from_o.id=hidden_from_ro.observation_id and hidden_from_o.workspace_id=hidden_from_ro.workspace_id join source.source hidden_from_s on hidden_from_s.id=hidden_from_o.source_id and hidden_from_s.workspace_id=hidden_from_o.workspace_id where hidden_from_ro.record_id=c.from_record_id and hidden_from_ro.workspace_id=c.workspace_id and hidden_from_s.sensitivity='restricted')
+			and not exists (select 1 from research.record_observation hidden_to_ro join observation.manual hidden_to_o on hidden_to_o.id=hidden_to_ro.observation_id and hidden_to_o.workspace_id=hidden_to_ro.workspace_id join source.source hidden_to_s on hidden_to_s.id=hidden_to_o.source_id and hidden_to_s.workspace_id=hidden_to_o.workspace_id where hidden_to_ro.record_id=c.to_record_id and hidden_to_ro.workspace_id=c.workspace_id and hidden_to_s.sensitivity='restricted')
+			and not exists (select 1 from research.connection_evidence hidden_ce join observation.manual hidden_eo on hidden_eo.id=hidden_ce.observation_id and hidden_eo.workspace_id=hidden_ce.workspace_id join source.source hidden_es on hidden_es.id=hidden_eo.source_id and hidden_es.workspace_id=hidden_eo.workspace_id where hidden_ce.connection_id=c.id and hidden_ce.workspace_id=c.workspace_id and hidden_es.sensitivity='restricted')
+		  ))`, uuid(workspace), uuid(connection), maxSensitivity, uuid(revision))
 	out, err := scanRevision(row)
 	if err != nil {
 		return domain.Revision{}, translate(ctx, err)
@@ -289,13 +313,18 @@ func (s *Store) RevisionByID(ctx context.Context, workspace, connection, revisio
 	return out, nil
 }
 
-func (s *Store) Page(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int) ([]domain.Connection, error) {
+func (s *Store) Page(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int, maxSensitivity string) ([]domain.Connection, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, connectionSelect+
 		"where c.workspace_id=$1 and ($2::uuid is null or c.id < $2) and ($3='' or c.state=$3) "+
+		"and ($5='restricted' or ("+
+		"not exists (select 1 from research.record_observation hidden_from_ro join observation.manual hidden_from_o on hidden_from_o.id=hidden_from_ro.observation_id and hidden_from_o.workspace_id=hidden_from_ro.workspace_id join source.source hidden_from_s on hidden_from_s.id=hidden_from_o.source_id and hidden_from_s.workspace_id=hidden_from_o.workspace_id where hidden_from_ro.record_id=c.from_record_id and hidden_from_ro.workspace_id=c.workspace_id and hidden_from_s.sensitivity='restricted') "+
+		"and not exists (select 1 from research.record_observation hidden_to_ro join observation.manual hidden_to_o on hidden_to_o.id=hidden_to_ro.observation_id and hidden_to_o.workspace_id=hidden_to_ro.workspace_id join source.source hidden_to_s on hidden_to_s.id=hidden_to_o.source_id and hidden_to_s.workspace_id=hidden_to_o.workspace_id where hidden_to_ro.record_id=c.to_record_id and hidden_to_ro.workspace_id=c.workspace_id and hidden_to_s.sensitivity='restricted') "+
+		"and not exists (select 1 from research.connection_evidence hidden_ce join observation.manual hidden_eo on hidden_eo.id=hidden_ce.observation_id and hidden_eo.workspace_id=hidden_ce.workspace_id join source.source hidden_es on hidden_es.id=hidden_eo.source_id and hidden_es.workspace_id=hidden_eo.workspace_id where hidden_ce.connection_id=c.id and hidden_ce.workspace_id=c.workspace_id and hidden_es.sensitivity='restricted')"+
+		")) "+
 		"group by c.id,c.workspace_id,c.from_record_id,c.to_record_id,c.kind,c.state,c.rationale,c.author,c.updated_by,c.created_at,c.updated_at "+
 		"having $4='' or ($4='open' and c.state in ('proposed','deferred')) or ($4='conflicted' and count(ce.observation_id) filter (where ce.polarity='supporting') > 0 and count(ce.observation_id) filter (where ce.polarity='opposing') > 0) or ($4='uncited' and count(ce.observation_id) filter (where ce.polarity='supporting') = 0 and count(ce.observation_id) filter (where ce.polarity='opposing') = 0) "+
-		"order by c.id desc limit $5",
-		uuid(workspace), uuid(before), state.String(), review.String(), limit)
+		"order by c.id desc limit $6",
+		uuid(workspace), uuid(before), state.String(), review.String(), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -311,7 +340,32 @@ func (s *Store) Page(ctx context.Context, workspace, before id.ID, state domain.
 	return out, translate(ctx, rows.Err())
 }
 
-func (s *Store) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
+func (s *Store) ForRecord(ctx context.Context, workspace, record id.ID, limit int, maxSensitivity string) ([]domain.Connection, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, connectionSelect+
+		"where c.workspace_id=$1 and (c.from_record_id=$2 or c.to_record_id=$2) "+
+		"and ($3='restricted' or ("+
+		"not exists (select 1 from research.record_observation hidden_from_ro join observation.manual hidden_from_o on hidden_from_o.id=hidden_from_ro.observation_id and hidden_from_o.workspace_id=hidden_from_ro.workspace_id join source.source hidden_from_s on hidden_from_s.id=hidden_from_o.source_id and hidden_from_s.workspace_id=hidden_from_o.workspace_id where hidden_from_ro.record_id=c.from_record_id and hidden_from_ro.workspace_id=c.workspace_id and hidden_from_s.sensitivity='restricted') "+
+		"and not exists (select 1 from research.record_observation hidden_to_ro join observation.manual hidden_to_o on hidden_to_o.id=hidden_to_ro.observation_id and hidden_to_o.workspace_id=hidden_to_ro.workspace_id join source.source hidden_to_s on hidden_to_s.id=hidden_to_o.source_id and hidden_to_s.workspace_id=hidden_to_o.workspace_id where hidden_to_ro.record_id=c.to_record_id and hidden_to_ro.workspace_id=c.workspace_id and hidden_to_s.sensitivity='restricted') "+
+		"and not exists (select 1 from research.connection_evidence hidden_ce join observation.manual hidden_eo on hidden_eo.id=hidden_ce.observation_id and hidden_eo.workspace_id=hidden_ce.workspace_id join source.source hidden_es on hidden_es.id=hidden_eo.source_id and hidden_es.workspace_id=hidden_eo.workspace_id where hidden_ce.connection_id=c.id and hidden_ce.workspace_id=c.workspace_id and hidden_es.sensitivity='restricted')"+
+		")) "+
+		"group by c.id,c.workspace_id,c.from_record_id,c.to_record_id,c.kind,c.state,c.rationale,c.author,c.updated_by,c.created_at,c.updated_at "+
+		"order by c.id desc limit $4", uuid(workspace), uuid(record), maxSensitivity, limit)
+	if err != nil {
+		return nil, translate(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]domain.Connection, 0)
+	for rows.Next() {
+		one, err := scanConnection(rows)
+		if err != nil {
+			return nil, translate(ctx, err)
+		}
+		out = append(out, one)
+	}
+	return out, translate(ctx, rows.Err())
+}
+
+func (s *Store) Summary(ctx context.Context, workspace id.ID, maxSensitivity string) (domain.BrowseSummary, error) {
 	var out domain.BrowseSummary
 	out.StateCounts = map[domain.State]int{}
 	var proposed, accepted, rejected, deferred, open, conflicted, uncited int
@@ -324,7 +378,12 @@ func (s *Store) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSumm
 			count(*) filter (where c.state in ('proposed','deferred')),
 			count(*) filter (where exists (select 1 from research.connection_evidence ce where ce.connection_id=c.id and ce.polarity='supporting') and exists (select 1 from research.connection_evidence ce where ce.connection_id=c.id and ce.polarity='opposing')),
 			count(*) filter (where not exists (select 1 from research.connection_evidence ce where ce.connection_id=c.id))
-		from research.connection c where c.workspace_id=$1`, uuid(workspace)).Scan(&out.ConnectionCount, &proposed, &accepted, &rejected, &deferred, &open, &conflicted, &uncited)
+		from research.connection c where c.workspace_id=$1
+		  and ($2='restricted' or (
+			not exists (select 1 from research.record_observation hidden_from_ro join observation.manual hidden_from_o on hidden_from_o.id=hidden_from_ro.observation_id and hidden_from_o.workspace_id=hidden_from_ro.workspace_id join source.source hidden_from_s on hidden_from_s.id=hidden_from_o.source_id and hidden_from_s.workspace_id=hidden_from_o.workspace_id where hidden_from_ro.record_id=c.from_record_id and hidden_from_ro.workspace_id=c.workspace_id and hidden_from_s.sensitivity='restricted')
+			and not exists (select 1 from research.record_observation hidden_to_ro join observation.manual hidden_to_o on hidden_to_o.id=hidden_to_ro.observation_id and hidden_to_o.workspace_id=hidden_to_ro.workspace_id join source.source hidden_to_s on hidden_to_s.id=hidden_to_o.source_id and hidden_to_s.workspace_id=hidden_to_o.workspace_id where hidden_to_ro.record_id=c.to_record_id and hidden_to_ro.workspace_id=c.workspace_id and hidden_to_s.sensitivity='restricted')
+			and not exists (select 1 from research.connection_evidence hidden_ce join observation.manual hidden_eo on hidden_eo.id=hidden_ce.observation_id and hidden_eo.workspace_id=hidden_ce.workspace_id join source.source hidden_es on hidden_es.id=hidden_eo.source_id and hidden_es.workspace_id=hidden_eo.workspace_id where hidden_ce.connection_id=c.id and hidden_ce.workspace_id=c.workspace_id and hidden_es.sensitivity='restricted')
+		  ))`, uuid(workspace), maxSensitivity).Scan(&out.ConnectionCount, &proposed, &accepted, &rejected, &deferred, &open, &conflicted, &uncited)
 	if err != nil {
 		return domain.BrowseSummary{}, translate(ctx, err)
 	}

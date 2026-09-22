@@ -5,6 +5,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
@@ -12,9 +13,30 @@ const (
 	MaxSynthesisObservations = 6
 	MaxSynthesisOutput       = 24000
 	MaxSynthesisCandidates   = 50
+	MaxSynthesisError        = 2000
 )
 
 const EventSynthesisGenerated = "assistance.synthesis.generated"
+
+type SynthesisStatus string
+
+const (
+	SynthesisCompleted   SynthesisStatus = "completed"
+	SynthesisFailed      SynthesisStatus = "failed"
+	SynthesisUnsupported SynthesisStatus = "unsupported"
+	SynthesisTimedOut    SynthesisStatus = "timed_out"
+)
+
+func (s SynthesisStatus) String() string { return string(s) }
+
+func ParseSynthesisStatus(raw string) (SynthesisStatus, error) {
+	switch SynthesisStatus(strings.TrimSpace(raw)) {
+	case SynthesisCompleted, SynthesisFailed, SynthesisUnsupported, SynthesisTimedOut:
+		return SynthesisStatus(strings.TrimSpace(raw)), nil
+	default:
+		return "", errors.New(errors.Invalid, "synthesis status is unknown")
+	}
+}
 
 // SynthesisCandidate is a narrow, reviewable output. It points back to the
 // selected observations that exposed the identifier; it is not a research
@@ -32,13 +54,19 @@ type Synthesis struct {
 	ObservationIDs []id.ID              `json:"observation_ids"`
 	Provider       string               `json:"provider"`
 	Method         string               `json:"method"`
+	Status         SynthesisStatus      `json:"status"`
 	Output         string               `json:"output"`
 	Candidates     []SynthesisCandidate `json:"candidates"`
 	CreatedBy      id.ID                `json:"created_by"`
 	CreatedAt      time.Time            `json:"created_at"`
+	Error          string               `json:"error,omitempty"`
 }
 
 func NewSynthesis(want, workspace, actor id.ID, observations []id.ID, provider, method, output string, candidates []SynthesisCandidate, at time.Time) (Synthesis, error) {
+	return NewSynthesisResult(want, workspace, actor, observations, provider, method, SynthesisCompleted, output, candidates, "", at)
+}
+
+func NewSynthesisResult(want, workspace, actor id.ID, observations []id.ID, provider, method string, status SynthesisStatus, output string, candidates []SynthesisCandidate, failure string, at time.Time) (Synthesis, error) {
 	if want.IsZero() || actor.IsZero() {
 		return Synthesis{}, ErrIDRequired
 	}
@@ -61,8 +89,27 @@ func NewSynthesis(want, workspace, actor id.ID, observations []id.ID, provider, 
 		}
 		seen[observation] = struct{}{}
 	}
-	if at.IsZero() || !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxSynthesisOutput {
-		return Synthesis{}, ErrSynthesisOutput
+	if at.IsZero() {
+		return Synthesis{}, ErrTimeRequired
+	}
+	parsedStatus, err := ParseSynthesisStatus(status.String())
+	if err != nil {
+		return Synthesis{}, err
+	}
+	if parsedStatus == SynthesisCompleted {
+		if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxSynthesisOutput {
+			return Synthesis{}, ErrSynthesisOutput
+		}
+		if strings.TrimSpace(failure) != "" {
+			return Synthesis{}, ErrSynthesisFailure
+		}
+	} else {
+		if strings.TrimSpace(output) != "" || len(candidates) != 0 {
+			return Synthesis{}, ErrSynthesisFailure
+		}
+		if strings.TrimSpace(failure) == "" || !utf8.ValidString(failure) || strings.ContainsRune(failure, 0) || len(failure) > MaxSynthesisError {
+			return Synthesis{}, ErrSynthesisFailure
+		}
 	}
 	if len(candidates) > MaxSynthesisCandidates {
 		return Synthesis{}, ErrSynthesisOutput
@@ -88,5 +135,5 @@ func NewSynthesis(want, workspace, actor id.ID, observations []id.ID, provider, 
 	if strings.TrimSpace(method) == "" {
 		return Synthesis{}, ErrMethodRequired
 	}
-	return Synthesis{ID: want, WorkspaceID: workspace, ObservationIDs: append([]id.ID(nil), observations...), Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), Output: output, Candidates: append([]SynthesisCandidate(nil), candidates...), CreatedBy: actor, CreatedAt: at}, nil
+	return Synthesis{ID: want, WorkspaceID: workspace, ObservationIDs: append([]id.ID(nil), observations...), Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), Status: parsedStatus, Output: output, Candidates: append([]SynthesisCandidate(nil), candidates...), CreatedBy: actor, CreatedAt: at, Error: strings.TrimSpace(failure)}, nil
 }

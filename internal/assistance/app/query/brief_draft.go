@@ -12,6 +12,11 @@ type BriefDraftReader interface {
 	BriefDraftByID(context.Context, id.ID, id.ID) (domain.BriefDraft, error)
 }
 
+type VisibleBriefDraftReader interface {
+	PageBriefDraftsVisible(context.Context, id.ID, id.ID, int, string) ([]domain.BriefDraft, error)
+	BriefDraftByIDVisible(context.Context, id.ID, id.ID, string) (domain.BriefDraft, error)
+}
+
 type BriefDrafts struct{ reader BriefDraftReader }
 
 func NewBriefDrafts(reader BriefDraftReader) *BriefDrafts {
@@ -57,4 +62,45 @@ func (b *BriefDrafts) ByID(ctx context.Context, workspace, draft id.ID) (domain.
 		return domain.BriefDraft{}, domain.ErrIDRequired
 	}
 	return b.reader.BriefDraftByID(ctx, workspace, draft)
+}
+
+func (b *BriefDrafts) ListVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (BriefDraftPage, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return BriefDraftPage{}, domain.ErrWorkspaceRequired
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	reader, ok := b.reader.(VisibleBriefDraftReader)
+	if !ok {
+		return BriefDraftPage{}, domain.ErrWorkspaceRequired
+	}
+	rows, err := reader.PageBriefDraftsVisible(ctx, workspace, before, limit+1, maxSensitivity)
+	if err != nil {
+		return BriefDraftPage{}, err
+	}
+	out := BriefDraftPage{Items: rows}
+	if out.Items == nil {
+		out.Items = []domain.BriefDraft{}
+	}
+	if len(rows) > limit {
+		cursor := rows[limit-1].ID
+		out.NextCursor = &cursor
+		out.Items = rows[:limit]
+	}
+	return out, nil
+}
+
+func (b *BriefDrafts) ByIDVisible(ctx context.Context, workspace, draft id.ID, maxSensitivity string) (domain.BriefDraft, error) {
+	if workspace.IsZero() || draft.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return domain.BriefDraft{}, domain.ErrIDRequired
+	}
+	reader, ok := b.reader.(VisibleBriefDraftReader)
+	if !ok {
+		return domain.BriefDraft{}, domain.ErrWorkspaceRequired
+	}
+	return reader.BriefDraftByIDVisible(ctx, workspace, draft, maxSensitivity)
 }

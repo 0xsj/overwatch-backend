@@ -99,8 +99,13 @@ func placeGeometryRequest(input *researchPlaceGeometryRequest) *recorddomain.Pla
 }
 
 func (m *me) listResearchRecords(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	before, size, ok := researchPage(w, r)
@@ -111,7 +116,7 @@ func (m *me) listResearchRecords(w http.ResponseWriter, r *http.Request) {
 	kind := recorddomain.Kind(strings.TrimSpace(r.URL.Query().Get("kind")))
 	citation := recorddomain.CitationFilter(strings.TrimSpace(r.URL.Query().Get("citation")))
 	resolution := recorddomain.ResolutionFilter(strings.TrimSpace(r.URL.Query().Get("resolution")))
-	found, err := m.research.records.List(r.Context(), workspace, before, search, kind, citation, resolution, size)
+	found, err := m.research.records.List(r.Context(), workspace, before, search, kind, citation, resolution, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -127,11 +132,16 @@ func (m *me) listResearchRecords(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) summarizeResearchRecords(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
 		return
 	}
-	found, err := m.research.records.Summary(r.Context(), workspace)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.records.Summary(r.Context(), workspace, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -140,8 +150,13 @@ func (m *me) summarizeResearchRecords(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) readResearchRecord(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	want, err := id.Parse(r.PathValue("record"))
@@ -149,7 +164,7 @@ func (m *me) readResearchRecord(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, recorddomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.records.ByID(r.Context(), workspace, want)
+	found, err := m.research.records.ByID(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return

@@ -161,6 +161,18 @@ func (m *Mailer) EmailChangeRequested(ctx context.Context, to, proposed string) 
 	})
 }
 
+// Alert sends a plain-text workspace notification. It intentionally carries
+// only the alert's title and detail; source access remains behind the signed-in
+// application, and the inbox applies the same workspace/privacy boundary as the
+// API route.
+func (m *Mailer) Alert(ctx context.Context, to, title, detail string) error {
+	return m.sender.Send(ctx, Message{
+		To:      to,
+		Subject: "Overwatch alert: " + strings.TrimSpace(title),
+		Body:    strings.TrimSpace(title) + "\n\n" + strings.TrimSpace(detail) + "\n\nOpen the Overwatch alert inbox:\n\n" + m.Link("/home/alerts", nil) + "\n",
+	})
+}
+
 // ── smtp ───────────────────────────────────────────────────────────────
 
 type SMTP struct {

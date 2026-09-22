@@ -3,7 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,13 +11,18 @@ import (
 	"time"
 
 	"github.com/0xsj/overwatch-backend/internal/assistance/domain"
+	pkgerrors "github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/execx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
 const SynthesisInputPlaceholder = "{input}"
 
-var ErrSynthesisProviderUnavailable = errors.New("external synthesis provider is not configured")
+var (
+	ErrSynthesisProviderUnavailable = pkgerrors.New(pkgerrors.Unavailable, "external synthesis provider is not configured")
+	ErrSynthesisProviderTimedOut    = pkgerrors.New(pkgerrors.Timeout, "external synthesis provider timed out")
+	ErrSynthesisProviderOutputLimit = pkgerrors.New(pkgerrors.Unprocessable, "external synthesis provider output limit exceeded")
+)
 
 type SynthesisProcessProviderConfig struct {
 	Binary    string
@@ -71,6 +76,7 @@ func NewProcessSynthesisProvider(config SynthesisProcessProviderConfig) ProcessS
 
 func (p ProcessSynthesisProvider) Name() string   { return "external-process" }
 func (p ProcessSynthesisProvider) Method() string { return "json-selected-observations-v1" }
+func (p ProcessSynthesisProvider) External() bool { return true }
 
 func (p ProcessSynthesisProvider) Synthesize(ctx context.Context, observations []Observation) (SynthesisOutput, error) {
 	if p.config.Binary == "" {
@@ -123,10 +129,10 @@ func (p ProcessSynthesisProvider) Synthesize(ctx context.Context, observations [
 		return SynthesisOutput{}, fmt.Errorf("%w: %v", ErrSynthesisProviderUnavailable, spawnErr)
 	}
 	if result.Outcome == execx.TimedOut {
-		return SynthesisOutput{}, fmt.Errorf("synthesis provider timed out: %s", result.Reason)
+		return SynthesisOutput{}, fmt.Errorf("%w: %s", ErrSynthesisProviderTimedOut, result.Reason)
 	}
 	if result.StdoutTruncated {
-		return SynthesisOutput{}, fmt.Errorf("synthesis provider output exceeded %d bytes", p.config.MaxOutput)
+		return SynthesisOutput{}, fmt.Errorf("%w: %d bytes", ErrSynthesisProviderOutputLimit, p.config.MaxOutput)
 	}
 	if result.ExitCode != 0 {
 		return SynthesisOutput{}, fmt.Errorf("synthesis provider exited with code %d", result.ExitCode)
@@ -140,12 +146,12 @@ func (p ProcessSynthesisProvider) Synthesize(ctx context.Context, observations [
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return SynthesisOutput{}, errors.New("synthesis provider returned more than one JSON value")
+			return SynthesisOutput{}, stderrors.New("synthesis provider returned more than one JSON value")
 		}
 		return SynthesisOutput{}, fmt.Errorf("synthesis provider returned trailing data: %w", err)
 	}
 	if strings.TrimSpace(decoded.Text) == "" {
-		return SynthesisOutput{}, errors.New("synthesis provider returned empty text")
+		return SynthesisOutput{}, stderrors.New("synthesis provider returned empty text")
 	}
 
 	known := make(map[id.ID]Observation, len(observations))

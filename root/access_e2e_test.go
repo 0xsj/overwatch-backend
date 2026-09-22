@@ -9,6 +9,7 @@ import (
 
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
 	orgpg "github.com/0xsj/overwatch-backend/internal/org/infra/postgres"
+	sourcedomain "github.com/0xsj/overwatch-backend/internal/source/domain"
 	"github.com/0xsj/overwatch-backend/pkg/clock"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
@@ -202,6 +203,435 @@ func TestAStrangerCannotTellAnOrgApartFromNothing(t *testing.T) {
 			t.Errorf("%s answered %d, want 404", name, res.StatusCode)
 		}
 	}
+}
+
+func TestRestrictedSourceIsHiddenFromReadMembersAndSearch(t *testing.T) {
+	s := tracedSystem(t)
+	org, workspace, _, _, ownerAuth, _ := firm(t, s, orgdomain.RoleMember)
+	source := addResearchSource(t, s, workspace, ownerAuth, "Restricted source passage that must not appear in a read-member search.")
+	base := "/v1/workspaces/" + workspace.String()
+	sourceBase := base + "/sources/" + source.ID.String()
+	researchStatus(t, s.put(t, sourceBase+"/privacy", researchJSON(t, map[string]any{
+		"sensitivity": sourcedomain.SensitivityRestricted,
+	}), ownerAuth), http.StatusOK)
+
+	member, memberAuth := s.signUp(t, "restricted-reader@example.com")
+	s.seat(t, org, member, orgdomain.RoleMember)
+	s.grant(t, org, member, workspace, orgdomain.LevelRead)
+
+	var sources struct {
+		Items []struct {
+			SourceID string `json:"source_id"`
+			Title    string `json:"title"`
+		} `json:"items"`
+	}
+	list := s.get(t, base+"/sources", memberAuth)
+	researchStatus(t, list, http.StatusOK)
+	decode(t, list, &sources)
+	for _, item := range sources.Items {
+		if item.SourceID == source.ID.String() || item.Title == source.Title {
+			t.Fatalf("restricted source leaked into a read-member source list: %+v", item)
+		}
+	}
+
+	search := s.get(t, base+"/search?q=Restricted+source+passage", memberAuth)
+	researchStatus(t, search, http.StatusOK)
+	var results struct {
+		Items []struct {
+			SourceID string `json:"source_id"`
+		} `json:"items"`
+	}
+	decode(t, search, &results)
+	if len(results.Items) != 0 {
+		t.Fatalf("restricted source leaked into read-member search: %+v", results.Items)
+	}
+
+	researchStatus(t, s.get(t, sourceBase, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, sourceBase+"/captures/"+source.LatestCapture.ID.String(), memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, sourceBase, ownerAuth), http.StatusOK)
+	ownerSearch := s.get(t, base+"/search?q=Restricted+source+passage", ownerAuth)
+	researchStatus(t, ownerSearch, http.StatusOK)
+	decode(t, ownerSearch, &results)
+	if len(results.Items) != 1 || results.Items[0].SourceID != source.ID.String() {
+		t.Fatalf("owner could not search restricted source: %+v", results.Items)
+	}
+
+	manual := recordResearchObservation(t, s, sourceBase, ownerAuth, source.LatestCapture.ID, "Restricted source passage")
+	recordResponse := s.post(t, base+"/records", researchJSON(t, map[string]any{
+		"kind": "account", "name": "Restricted source account", "description": "Must follow source visibility.",
+		"observation_ids": []string{manual.ID.String()},
+	}), ownerAuth)
+	researchStatus(t, recordResponse, http.StatusCreated)
+	var record researchRecordResponse
+	decode(t, recordResponse, &record)
+	publicSource := addResearchSource(t, s, workspace, ownerAuth, "A public companion notice for review boundaries.")
+	publicManual := recordResearchObservation(t, s, base+"/sources/"+publicSource.ID.String(), ownerAuth, publicSource.LatestCapture.ID, "public companion notice")
+	researchStatus(t, s.put(t, base+"/evidence/relations", researchJSON(t, map[string]any{
+		"left_observation_id": manual.ID, "right_observation_id": publicManual.ID,
+		"kind": "supports", "rationale": "Restricted evidence relation must remain private.",
+	}), ownerAuth), http.StatusOK)
+	researchStatus(t, s.put(t, base+"/evidence/source-links", researchJSON(t, map[string]any{
+		"downstream_observation_id": manual.ID, "upstream_observation_id": publicManual.ID,
+		"rationale": "Restricted source link must remain private.",
+	}), ownerAuth), http.StatusOK)
+
+	synthesisResponse := s.post(t, base+"/evidence/syntheses", researchJSON(t, map[string]any{
+		"observation_ids": []string{manual.ID.String(), publicManual.ID.String()},
+	}), ownerAuth)
+	researchStatus(t, synthesisResponse, http.StatusCreated)
+	var synthesis struct {
+		ID string `json:"synthesis_id"`
+	}
+	decode(t, synthesisResponse, &synthesis)
+	if synthesis.ID == "" {
+		t.Fatal("owner synthesis response did not include an id")
+	}
+
+	comparisonResponse := s.post(t, base+"/evidence/comparisons", researchJSON(t, map[string]any{
+		"observation_ids": []string{manual.ID.String(), publicManual.ID.String()},
+	}), ownerAuth)
+	researchStatus(t, comparisonResponse, http.StatusCreated)
+	var comparison struct {
+		ID string `json:"comparison_id"`
+	}
+	decode(t, comparisonResponse, &comparison)
+	if comparison.ID == "" {
+		t.Fatal("owner comparison response did not include an id")
+	}
+
+	questionResponse := s.post(t, base+"/evidence/question-suggestions", researchJSON(t, map[string]any{
+		"gaps": []map[string]any{{
+			"kind": "contradiction", "label": "Restricted source account", "detail": "The selected material needs a separate review.",
+			"observation_ids": []string{manual.ID.String(), publicManual.ID.String()},
+		}},
+	}), ownerAuth)
+	researchStatus(t, questionResponse, http.StatusCreated)
+	var questions struct {
+		ID string `json:"question_suggestions_id"`
+	}
+	decode(t, questionResponse, &questions)
+	if questions.ID == "" {
+		t.Fatal("owner question suggestion response did not include an id")
+	}
+
+	var memberEvidence struct {
+		Items []struct {
+			ObservationID string `json:"observation_id"`
+		} `json:"items"`
+	}
+	memberEvidenceResponse := s.get(t, base+"/evidence", memberAuth)
+	researchStatus(t, memberEvidenceResponse, http.StatusOK)
+	decode(t, memberEvidenceResponse, &memberEvidence)
+	for _, item := range memberEvidence.Items {
+		if item.ObservationID == manual.ID.String() {
+			t.Fatalf("restricted evidence leaked into read-member evidence list: %+v", item)
+		}
+	}
+	var memberBoard struct {
+		Items []struct {
+			ObservationID string `json:"observation_id"`
+		} `json:"items"`
+	}
+	memberBoardResponse := s.get(t, base+"/evidence/board", memberAuth)
+	researchStatus(t, memberBoardResponse, http.StatusOK)
+	decode(t, memberBoardResponse, &memberBoard)
+	for _, item := range memberBoard.Items {
+		if item.ObservationID == manual.ID.String() {
+			t.Fatalf("restricted evidence leaked into read-member board: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/evidence/"+manual.ID.String(), memberAuth), http.StatusNotFound)
+	var memberRelations struct {
+		Items []struct {
+			LeftObservationID  string `json:"left_observation_id"`
+			RightObservationID string `json:"right_observation_id"`
+		} `json:"items"`
+	}
+	memberRelationsResponse := s.get(t, base+"/evidence/relations", memberAuth)
+	researchStatus(t, memberRelationsResponse, http.StatusOK)
+	decode(t, memberRelationsResponse, &memberRelations)
+	for _, item := range memberRelations.Items {
+		if item.LeftObservationID == manual.ID.String() || item.RightObservationID == manual.ID.String() {
+			t.Fatalf("restricted evidence relation leaked into read-member list: %+v", item)
+		}
+	}
+	var memberSourceLinks struct {
+		Items []struct {
+			DownstreamObservationID string `json:"downstream_observation_id"`
+			UpstreamObservationID   string `json:"upstream_observation_id"`
+		} `json:"items"`
+	}
+	memberSourceLinksResponse := s.get(t, base+"/evidence/source-links", memberAuth)
+	researchStatus(t, memberSourceLinksResponse, http.StatusOK)
+	decode(t, memberSourceLinksResponse, &memberSourceLinks)
+	for _, item := range memberSourceLinks.Items {
+		if item.DownstreamObservationID == manual.ID.String() || item.UpstreamObservationID == manual.ID.String() {
+			t.Fatalf("restricted evidence source link leaked into read-member list: %+v", item)
+		}
+	}
+	var memberSyntheses struct {
+		Items []struct {
+			ID string `json:"synthesis_id"`
+		} `json:"items"`
+	}
+	synthesisList := s.get(t, base+"/evidence/syntheses", memberAuth)
+	researchStatus(t, synthesisList, http.StatusOK)
+	decode(t, synthesisList, &memberSyntheses)
+	for _, item := range memberSyntheses.Items {
+		if item.ID == synthesis.ID {
+			t.Fatalf("restricted evidence synthesis leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/evidence/syntheses/"+synthesis.ID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/evidence/syntheses/"+synthesis.ID, ownerAuth), http.StatusOK)
+
+	var memberComparisons struct {
+		Items []struct {
+			ID string `json:"comparison_id"`
+		} `json:"items"`
+	}
+	comparisonList := s.get(t, base+"/evidence/comparisons", memberAuth)
+	researchStatus(t, comparisonList, http.StatusOK)
+	decode(t, comparisonList, &memberComparisons)
+	for _, item := range memberComparisons.Items {
+		if item.ID == comparison.ID {
+			t.Fatalf("restricted evidence comparison leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/evidence/comparisons/"+comparison.ID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/evidence/comparisons/"+comparison.ID, ownerAuth), http.StatusOK)
+
+	var memberQuestions struct {
+		Items []struct {
+			ID string `json:"question_suggestions_id"`
+		} `json:"items"`
+	}
+	questionList := s.get(t, base+"/evidence/question-suggestions", memberAuth)
+	researchStatus(t, questionList, http.StatusOK)
+	decode(t, questionList, &memberQuestions)
+	for _, item := range memberQuestions.Items {
+		if item.ID == questions.ID {
+			t.Fatalf("restricted evidence question suggestions leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/evidence/question-suggestions/"+questions.ID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/evidence/question-suggestions/"+questions.ID, ownerAuth), http.StatusOK)
+
+	researchStatus(t, s.put(t, base+"/brief", researchJSON(t, map[string]any{
+		"title": "Restricted handoff", "question": "What does the restricted notice support?", "current_account": "Owner-only handoff content.",
+		"observation_ids": []string{manual.ID.String()},
+	}), ownerAuth), http.StatusOK)
+	draftResponse := s.post(t, base+"/brief/drafts", researchJSON(t, map[string]any{
+		"observation_ids": []string{manual.ID.String()},
+	}), ownerAuth)
+	researchStatus(t, draftResponse, http.StatusCreated)
+	var draft struct {
+		ID string `json:"brief_draft_id"`
+	}
+	decode(t, draftResponse, &draft)
+	if draft.ID == "" {
+		t.Fatal("owner brief draft response did not include an id")
+	}
+	snapshotResponse := s.post(t, base+"/brief/snapshots", `{}`, ownerAuth)
+	researchStatus(t, snapshotResponse, http.StatusCreated)
+	var snapshot struct {
+		ID string `json:"snapshot_id"`
+	}
+	decode(t, snapshotResponse, &snapshot)
+	if snapshot.ID == "" {
+		t.Fatal("owner snapshot response did not include an id")
+	}
+	shareResponse := s.post(t, base+"/brief/snapshots/"+snapshot.ID+"/shares", `{}`, ownerAuth)
+	researchStatus(t, shareResponse, http.StatusCreated)
+	var snapshotShare struct {
+		ID    string `json:"share_id"`
+		Token string `json:"token"`
+	}
+	decode(t, shareResponse, &snapshotShare)
+	if snapshotShare.ID == "" || snapshotShare.Token == "" {
+		t.Fatal("owner snapshot share response did not include an id and token")
+	}
+	citationShareResponse := s.post(t, base+"/sources/"+source.ID.String()+"/observations/"+manual.ID.String()+"/shares", `{}`, ownerAuth)
+	researchStatus(t, citationShareResponse, http.StatusCreated)
+	var citationShare struct {
+		Token string `json:"token"`
+	}
+	decode(t, citationShareResponse, &citationShare)
+	if citationShare.Token == "" {
+		t.Fatal("owner citation share response did not include a token")
+	}
+
+	var memberBrief map[string]any
+	briefReadResponse := s.get(t, base+"/brief", memberAuth)
+	researchStatus(t, briefReadResponse, http.StatusOK)
+	decode(t, briefReadResponse, &memberBrief)
+	if len(memberBrief) != 0 {
+		t.Fatalf("restricted working brief leaked into read-member view: %+v", memberBrief)
+	}
+	var memberDrafts struct {
+		Items []struct {
+			ID string `json:"brief_draft_id"`
+		} `json:"items"`
+	}
+	draftListResponse := s.get(t, base+"/brief/drafts", memberAuth)
+	researchStatus(t, draftListResponse, http.StatusOK)
+	decode(t, draftListResponse, &memberDrafts)
+	for _, item := range memberDrafts.Items {
+		if item.ID == draft.ID {
+			t.Fatalf("restricted brief draft leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/brief/drafts/"+draft.ID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/brief/drafts/"+draft.ID, ownerAuth), http.StatusOK)
+
+	var memberSnapshots struct {
+		Items []struct {
+			ID string `json:"snapshot_id"`
+		} `json:"items"`
+	}
+	snapshotListResponse := s.get(t, base+"/brief/snapshots", memberAuth)
+	researchStatus(t, snapshotListResponse, http.StatusOK)
+	decode(t, snapshotListResponse, &memberSnapshots)
+	for _, item := range memberSnapshots.Items {
+		if item.ID == snapshot.ID {
+			t.Fatalf("restricted snapshot leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/brief/snapshots/"+snapshot.ID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/brief/snapshots/"+snapshot.ID, ownerAuth), http.StatusOK)
+	for _, suffix := range []string{"activity", "comments", "review", "shares"} {
+		researchStatus(t, s.get(t, base+"/brief/snapshots/"+snapshot.ID+"/"+suffix, memberAuth), http.StatusNotFound)
+	}
+	var memberHandoffs struct {
+		Items []struct {
+			ID string `json:"snapshot_id"`
+		} `json:"items"`
+	}
+	handoffListResponse := s.get(t, base+"/brief/handoffs", memberAuth)
+	researchStatus(t, handoffListResponse, http.StatusOK)
+	decode(t, handoffListResponse, &memberHandoffs)
+	for _, item := range memberHandoffs.Items {
+		if item.ID == snapshot.ID {
+			t.Fatalf("restricted handoff leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/brief/handoffs/"+snapshot.ID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/brief/handoffs/"+snapshot.ID+"/export", memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/brief/shared/"+snapshotShare.Token, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/brief/shared/"+snapshotShare.Token+"/export", memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/brief/shared/"+snapshotShare.Token, ownerAuth), http.StatusOK)
+	researchStatus(t, s.get(t, base+"/brief/shared/"+snapshotShare.Token+"/export", ownerAuth), http.StatusOK)
+	researchStatus(t, s.get(t, "/v1/workspaces/"+workspace.String()+"/observations/shared/"+citationShare.Token, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, "/v1/workspaces/"+workspace.String()+"/observations/shared/"+citationShare.Token, ownerAuth), http.StatusOK)
+	clusterResponse := s.post(t, base+"/evidence/clusters", researchJSON(t, map[string]any{
+		"kind": "claim", "title": "Restricted evidence cluster", "description": "Must follow source visibility.",
+		"observation_ids": []string{manual.ID.String()},
+	}), ownerAuth)
+	researchStatus(t, clusterResponse, http.StatusCreated)
+	var cluster struct {
+		ClusterID string `json:"cluster_id"`
+	}
+	decode(t, clusterResponse, &cluster)
+	var memberClusters struct {
+		Items []struct {
+			ClusterID string `json:"cluster_id"`
+		} `json:"items"`
+	}
+	memberClusterList := s.get(t, base+"/evidence/clusters", memberAuth)
+	researchStatus(t, memberClusterList, http.StatusOK)
+	decode(t, memberClusterList, &memberClusters)
+	for _, item := range memberClusters.Items {
+		if item.ClusterID == cluster.ClusterID {
+			t.Fatalf("restricted evidence cluster leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/evidence/clusters/"+cluster.ClusterID, memberAuth), http.StatusNotFound)
+	var memberCoverage struct {
+		Items []struct {
+			ClusterID string `json:"cluster_id"`
+		} `json:"items"`
+	}
+	memberCoverageResponse := s.get(t, base+"/evidence/clusters/coverage", memberAuth)
+	researchStatus(t, memberCoverageResponse, http.StatusOK)
+	decode(t, memberCoverageResponse, &memberCoverage)
+	for _, item := range memberCoverage.Items {
+		if item.ClusterID == cluster.ClusterID {
+			t.Fatalf("restricted evidence cluster leaked into read-member coverage: %+v", item)
+		}
+	}
+
+	var memberRecords struct {
+		Items []researchRecordResponse `json:"items"`
+	}
+	memberRecordList := s.get(t, base+"/records", memberAuth)
+	researchStatus(t, memberRecordList, http.StatusOK)
+	decode(t, memberRecordList, &memberRecords)
+	if len(memberRecords.Items) != 0 {
+		t.Fatalf("restricted source record leaked into read-member list: %+v", memberRecords.Items)
+	}
+	researchStatus(t, s.get(t, base+"/records/"+record.RecordID, memberAuth), http.StatusNotFound)
+
+	var memberSummary researchRecordSummaryResponse
+	memberSummaryResponse := s.get(t, base+"/records/summary", memberAuth)
+	researchStatus(t, memberSummaryResponse, http.StatusOK)
+	decode(t, memberSummaryResponse, &memberSummary)
+	if memberSummary.RecordCount != 0 || memberSummary.CitationCount != 0 {
+		t.Fatalf("restricted source record leaked into read-member summary: %+v", memberSummary)
+	}
+	var ownerRecords struct {
+		Items []researchRecordResponse `json:"items"`
+	}
+	ownerRecordList := s.get(t, base+"/records?q=Restricted+source+account", ownerAuth)
+	researchStatus(t, ownerRecordList, http.StatusOK)
+	decode(t, ownerRecordList, &ownerRecords)
+	if len(ownerRecords.Items) != 1 || ownerRecords.Items[0].RecordID != record.RecordID {
+		t.Fatalf("owner could not read restricted-source record: %+v", ownerRecords.Items)
+	}
+
+	visibleResponse := s.post(t, base+"/records", researchJSON(t, map[string]any{
+		"kind": "person", "name": "Visible connection endpoint", "description": "An uncited endpoint remains visible.",
+	}), ownerAuth)
+	researchStatus(t, visibleResponse, http.StatusCreated)
+	var visibleRecord researchRecordResponse
+	decode(t, visibleResponse, &visibleRecord)
+	connectionResponse := s.post(t, base+"/connections", researchJSON(t, map[string]any{
+		"from_record_id": record.RecordID, "to_record_id": visibleRecord.RecordID,
+		"kind": "associated_with", "state": "proposed", "rationale": "Restricted endpoint must remain private.",
+	}), ownerAuth)
+	researchStatus(t, connectionResponse, http.StatusCreated)
+	var connection researchConnectionResponse
+	decode(t, connectionResponse, &connection)
+	historyResponse := s.get(t, base+"/connections/"+connection.ConnectionID+"/revisions", ownerAuth)
+	researchStatus(t, historyResponse, http.StatusOK)
+	var history struct {
+		Items []researchConnectionRevisionResponse `json:"items"`
+	}
+	decode(t, historyResponse, &history)
+	if len(history.Items) != 1 {
+		t.Fatalf("owner connection history: %+v", history.Items)
+	}
+	reviewResponse := s.post(t, base+"/connections/"+connection.ConnectionID+"/reviews", "{}", ownerAuth)
+	researchStatus(t, reviewResponse, http.StatusCreated)
+	var connectionReview researchConnectionReviewResponse
+	decode(t, reviewResponse, &connectionReview)
+
+	var memberConnections struct {
+		Items []researchConnectionResponse `json:"items"`
+	}
+	memberConnectionList := s.get(t, base+"/connections", memberAuth)
+	researchStatus(t, memberConnectionList, http.StatusOK)
+	decode(t, memberConnectionList, &memberConnections)
+	for _, item := range memberConnections.Items {
+		if item.ConnectionID == connection.ConnectionID {
+			t.Fatalf("restricted-source connection leaked into read-member list: %+v", item)
+		}
+	}
+	researchStatus(t, s.get(t, base+"/connections/"+connection.ConnectionID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/connections/"+connection.ConnectionID+"/revisions", memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/connections/"+connection.ConnectionID+"/revisions/"+history.Items[0].RevisionID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/connections/"+connection.ConnectionID+"/reviews", memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/connections/"+connection.ConnectionID+"/reviews/"+connectionReview.ConnectionReviewID, memberAuth), http.StatusNotFound)
+	researchStatus(t, s.get(t, base+"/connections/"+connection.ConnectionID, ownerAuth), http.StatusOK)
 }
 
 // The members screen is the join /v1/me already is: org owns the seat, identity

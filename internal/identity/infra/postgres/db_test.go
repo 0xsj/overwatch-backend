@@ -219,11 +219,11 @@ func TestTheDatabaseRefusesToDeleteAnAccountThatSomethingStillNames(t *testing.T
 	if err == nil {
 		t.Fatal("the account was deleted out from under its credential")
 	}
-	// PostgreSQL reports this foreign-key RESTRICT as 23503, also used for
-	// missing parents on insert. The shared translator deliberately maps that
-	// ambiguous SQLSTATE to Invalid; it cannot infer the attempted operation.
-	if !errors.IsKind(postgres.Translate(ctx, err, "delete"), errors.Invalid) {
-		t.Errorf("refusal came back as %v, want Invalid for foreign_key_violation", err)
+	// PostgreSQL reports this foreign-key RESTRICT as 23001. Unlike 23503,
+	// which is ambiguous between a missing parent and a restricted delete,
+	// 23001 is an actionable conflict with an existing child row.
+	if !errors.IsKind(postgres.Translate(ctx, err, "delete"), errors.Conflict) {
+		t.Errorf("refusal came back as %v, want Conflict for restrict_violation", err)
 	}
 }
 

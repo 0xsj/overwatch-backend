@@ -10,6 +10,8 @@ import (
 	"net/http/httptrace"
 	"net/netip"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/0xsj/overwatch-backend/pkg/errors"
@@ -19,6 +21,7 @@ const (
 	DefaultMaxBody      = 16 << 20
 	DefaultMaxRedirects = 5
 	DefaultUserAgent    = "overwatch/1 (+https://github.com/0xsj/overwatch-backend)"
+	MaxRetryAfter       = time.Minute
 )
 
 type Config struct {
@@ -73,9 +76,10 @@ type Response struct {
 	// Addr is what was actually connected to, taken from the connection rather
 	// than from a second resolution that may answer differently. It is an
 	// observation, not diagnostics.
-	Addr      netip.Addr
-	Redirects []Hop
-	Duration  time.Duration
+	Addr       netip.Addr
+	Redirects  []Hop
+	Duration   time.Duration
+	RetryAfter time.Duration
 }
 
 type Client struct {
@@ -167,14 +171,37 @@ func (c *Client) Do(req *http.Request) (*Response, error) {
 	}
 
 	return &Response{
-		Status:    res.StatusCode,
-		Header:    res.Header,
-		Body:      body,
-		Truncated: truncated,
-		Addr:      addr,
-		Redirects: hops,
-		Duration:  time.Since(started),
+		Status:     res.StatusCode,
+		Header:     res.Header,
+		Body:       body,
+		Truncated:  truncated,
+		Addr:       addr,
+		Redirects:  hops,
+		Duration:   time.Since(started),
+		RetryAfter: retryAfter(res.Header.Get("Retry-After"), time.Now()),
 	}, nil
+}
+
+func retryAfter(raw string, now time.Time) time.Duration {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+		if seconds > int64(MaxRetryAfter/time.Second) {
+			return MaxRetryAfter
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(raw)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	delay := time.Until(when)
+	if delay > MaxRetryAfter {
+		return MaxRetryAfter
+	}
+	return delay
 }
 
 func dialable(u *url.URL) error {

@@ -14,13 +14,28 @@ import (
 // healthy instance at once — turning a degradation into an outage, and doing it
 // hardest at the moment the database can least afford the reconnect storm.
 func (a *app) live(w http.ResponseWriter, r *http.Request) {
+	a.allowHealthOrigin(w, r)
 	httpx.WriteJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// The browser health card calls /healthz directly because it is deliberately
+// outside the authenticated /v1 surface. Allow only the configured client
+// origin so that the probe works in the split local deployment without making
+// the health endpoint a wildcard cross-origin resource.
+func (a *app) allowHealthOrigin(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin == "" || origin != a.cfg.BaseURL {
+		return
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Add("Vary", "Origin")
 }
 
 // ready answers whether this instance can serve a request, which means its
 // dependencies are reachable. Failing it removes the instance from rotation and
 // nothing more, which is the recoverable half of the pair.
 func (a *app) ready(w http.ResponseWriter, r *http.Request) {
+	a.allowHealthOrigin(w, r)
 	ctx := r.Context()
 
 	// The ping is a unit of work CAUSED by this request, so it derives rather

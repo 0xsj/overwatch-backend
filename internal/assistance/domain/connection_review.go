@@ -15,6 +15,7 @@ const (
 	MaxConnectionReviewFindings     = 24
 	MaxConnectionReviewOutput       = 24000
 	MaxConnectionReviewSummary      = 4000
+	MaxConnectionReviewError        = 2000
 )
 
 const EventConnectionReviewGenerated = "assistance.connection_review.generated"
@@ -22,18 +23,21 @@ const EventConnectionReviewGenerated = "assistance.connection_review.generated"
 type ConnectionReviewStatus string
 
 const (
-	ConnectionReviewCompleted ConnectionReviewStatus = "completed"
-	ConnectionReviewEmpty     ConnectionReviewStatus = "empty"
+	ConnectionReviewCompleted   ConnectionReviewStatus = "completed"
+	ConnectionReviewEmpty       ConnectionReviewStatus = "empty"
+	ConnectionReviewFailed      ConnectionReviewStatus = "failed"
+	ConnectionReviewUnsupported ConnectionReviewStatus = "unsupported"
+	ConnectionReviewTimedOut    ConnectionReviewStatus = "timed_out"
 )
 
 func (s ConnectionReviewStatus) String() string { return string(s) }
 
 func ParseConnectionReviewStatus(raw string) (ConnectionReviewStatus, error) {
 	switch ConnectionReviewStatus(strings.TrimSpace(raw)) {
-	case ConnectionReviewCompleted, ConnectionReviewEmpty:
+	case ConnectionReviewCompleted, ConnectionReviewEmpty, ConnectionReviewFailed, ConnectionReviewUnsupported, ConnectionReviewTimedOut:
 		return ConnectionReviewStatus(strings.TrimSpace(raw)), nil
 	default:
-		return "", errors.New(errors.Invalid, "connection review status must be completed or empty")
+		return "", errors.New(errors.Invalid, "connection review status is unknown")
 	}
 }
 
@@ -85,9 +89,14 @@ type ConnectionReview struct {
 	Findings                 []ConnectionReviewFinding `json:"findings"`
 	CreatedBy                id.ID                     `json:"created_by"`
 	CreatedAt                time.Time                 `json:"created_at"`
+	Error                    string                    `json:"error,omitempty"`
 }
 
 func NewConnectionReview(want, workspace, actor, connectionID, fromRecordID, toRecordID id.ID, kind, state, rationale string, supporting, opposing []id.ID, provider, method, templateVersion string, status ConnectionReviewStatus, output string, findings []ConnectionReviewFinding, at time.Time) (ConnectionReview, error) {
+	return NewConnectionReviewResult(want, workspace, actor, connectionID, fromRecordID, toRecordID, kind, state, rationale, supporting, opposing, provider, method, templateVersion, status, output, findings, "", at)
+}
+
+func NewConnectionReviewResult(want, workspace, actor, connectionID, fromRecordID, toRecordID id.ID, kind, state, rationale string, supporting, opposing []id.ID, provider, method, templateVersion string, status ConnectionReviewStatus, output string, findings []ConnectionReviewFinding, failure string, at time.Time) (ConnectionReview, error) {
 	if want.IsZero() || workspace.IsZero() || actor.IsZero() || connectionID.IsZero() || fromRecordID.IsZero() || toRecordID.IsZero() {
 		return ConnectionReview{}, ErrIDRequired
 	}
@@ -136,8 +145,20 @@ func NewConnectionReview(want, workspace, actor, connectionID, fromRecordID, toR
 	if err != nil {
 		return ConnectionReview{}, err
 	}
-	if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxConnectionReviewOutput {
-		return ConnectionReview{}, ErrConnectionReviewOutput
+	if parsedStatus == ConnectionReviewCompleted || parsedStatus == ConnectionReviewEmpty {
+		if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxConnectionReviewOutput {
+			return ConnectionReview{}, ErrConnectionReviewOutput
+		}
+		if strings.TrimSpace(failure) != "" {
+			return ConnectionReview{}, ErrSynthesisFailure
+		}
+	} else {
+		if strings.TrimSpace(output) != "" || len(findings) != 0 {
+			return ConnectionReview{}, ErrSynthesisFailure
+		}
+		if strings.TrimSpace(failure) == "" || !utf8.ValidString(failure) || strings.ContainsRune(failure, 0) || len(failure) > MaxConnectionReviewError {
+			return ConnectionReview{}, ErrSynthesisFailure
+		}
 	}
 	if len(findings) > MaxConnectionReviewFindings {
 		return ConnectionReview{}, ErrConnectionReviewOutput
@@ -181,7 +202,7 @@ func NewConnectionReview(want, workspace, actor, connectionID, fromRecordID, toR
 		ConnectionKind: parsedKind, ConnectionState: parsedState, ConnectionRationale: rationale,
 		SupportingObservationIDs: supporting, OpposingObservationIDs: opposing,
 		Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), TemplateVersion: strings.TrimSpace(templateVersion),
-		Status: parsedStatus, Output: output, Findings: cleanFindings, CreatedBy: actor, CreatedAt: at,
+		Status: parsedStatus, Output: output, Findings: cleanFindings, CreatedBy: actor, CreatedAt: at, Error: strings.TrimSpace(failure),
 	}, nil
 }
 

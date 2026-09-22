@@ -9,8 +9,11 @@ import (
 
 type Reader interface {
 	PageEvidence(context.Context, id.ID, id.ID, int) ([]domain.Evidence, error)
+	PageEvidenceVisible(context.Context, id.ID, id.ID, int, string) ([]domain.Evidence, error)
 	EvidenceByID(context.Context, id.ID, id.ID) (domain.Evidence, error)
+	EvidenceByIDVisible(context.Context, id.ID, id.ID, string) (domain.Evidence, error)
 	PageRelations(context.Context, id.ID, id.ID, int) ([]domain.Relation, error)
+	PageRelationsVisible(context.Context, id.ID, id.ID, int, string) ([]domain.Relation, error)
 }
 
 type Relations struct{ reader Reader }
@@ -33,7 +36,15 @@ type RelationPage struct {
 }
 
 func (r *Relations) Evidence(ctx context.Context, workspace, before id.ID, limit int) (EvidencePage, error) {
-	if workspace.IsZero() {
+	return r.evidence(ctx, workspace, before, limit, "restricted", false)
+}
+
+func (r *Relations) EvidenceVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (EvidencePage, error) {
+	return r.evidence(ctx, workspace, before, limit, maxSensitivity, true)
+}
+
+func (r *Relations) evidence(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string, visible bool) (EvidencePage, error) {
+	if workspace.IsZero() || (visible && !validMaxSensitivity(maxSensitivity)) {
 		return EvidencePage{}, domain.ErrInvalid
 	}
 	if limit <= 0 {
@@ -42,7 +53,13 @@ func (r *Relations) Evidence(ctx context.Context, workspace, before id.ID, limit
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := r.reader.PageEvidence(ctx, workspace, before, limit+1)
+	var rows []domain.Evidence
+	var err error
+	if visible {
+		rows, err = r.reader.PageEvidenceVisible(ctx, workspace, before, limit+1, maxSensitivity)
+	} else {
+		rows, err = r.reader.PageEvidence(ctx, workspace, before, limit+1)
+	}
 	if err != nil {
 		return EvidencePage{}, err
 	}
@@ -68,8 +85,23 @@ func (r *Relations) EvidenceByID(ctx context.Context, workspace, want id.ID) (do
 	return r.reader.EvidenceByID(ctx, workspace, want)
 }
 
+func (r *Relations) EvidenceByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Evidence, error) {
+	if workspace.IsZero() || want.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return domain.Evidence{}, domain.ErrInvalid
+	}
+	return r.reader.EvidenceByIDVisible(ctx, workspace, want, maxSensitivity)
+}
+
 func (r *Relations) Relations(ctx context.Context, workspace, before id.ID, limit int) (RelationPage, error) {
-	if workspace.IsZero() {
+	return r.relations(ctx, workspace, before, limit, "restricted", false)
+}
+
+func (r *Relations) RelationsVisible(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (RelationPage, error) {
+	return r.relations(ctx, workspace, before, limit, maxSensitivity, true)
+}
+
+func (r *Relations) relations(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string, visible bool) (RelationPage, error) {
+	if workspace.IsZero() || (visible && !validMaxSensitivity(maxSensitivity)) {
 		return RelationPage{}, domain.ErrInvalid
 	}
 	if limit <= 0 {
@@ -78,7 +110,13 @@ func (r *Relations) Relations(ctx context.Context, workspace, before id.ID, limi
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := r.reader.PageRelations(ctx, workspace, before, limit+1)
+	var rows []domain.Relation
+	var err error
+	if visible {
+		rows, err = r.reader.PageRelationsVisible(ctx, workspace, before, limit+1, maxSensitivity)
+	} else {
+		rows, err = r.reader.PageRelations(ctx, workspace, before, limit+1)
+	}
 	if err != nil {
 		return RelationPage{}, err
 	}

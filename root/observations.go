@@ -3,6 +3,7 @@ package root
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	obsquery "github.com/0xsj/overwatch-backend/internal/observation/app/query"
@@ -238,6 +239,32 @@ type lineageRule struct {
 //
 // The observation is read first and that is the tenancy check; every other step
 // is reached through ids the observation itself carries.
+// readObservationSubpath keeps the two public observation subroutes stable
+// while avoiding an overlap rejected by the current net/http ServeMux:
+//
+//	/observations/{observation}/lineage
+//	/observations/shared/{token}
+//
+// The shared-citation token is deliberately not interpreted as an observation
+// id; the literal segment is the dispatch boundary, not a resource alias.
+func (m *me) readObservationSubpath(w http.ResponseWriter, r *http.Request) {
+	if r.PathValue("observation") == "shared" {
+		token := r.PathValue("suffix")
+		if token == "" || strings.Contains(token, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		r.SetPathValue("token", token)
+		m.readSharedCitation(w, r)
+		return
+	}
+	if r.PathValue("suffix") != "lineage" {
+		http.NotFound(w, r)
+		return
+	}
+	m.readLineage(w, r)
+}
+
 func (m *me) readLineage(w http.ResponseWriter, r *http.Request) {
 	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
 	if !ok {

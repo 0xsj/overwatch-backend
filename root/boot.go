@@ -246,10 +246,11 @@ func Boot(ctx context.Context) (*app, error) {
 		"addr", cfg.MailAddr, "from", cfg.MailFrom, "links_point_at", cfg.BaseURL)
 
 	accounts := identitypg.NewStore(db)
+	alertPreferences := sourcepg.NewStore(db)
 	hasher := crypto.NewHasher(crypto.Default, rand.Reader)
 	registrar := identitycmd.NewRegistrar(accounts, db, publisher, hasher, ids, clk)
 	authenticator := identitycmd.NewAuthenticator(
-		accounts, publisher, hasher, crypto.NewMinter(rand.Reader), ids, clk, 0)
+		accounts, publisher, hasher, crypto.NewMinter(rand.Reader), ids, clk, cfg.SessionTTL)
 	sessions := identityquery.NewSessions(accounts, clk)
 	verifier := identitycmd.NewVerifier(
 		accounts, mailer, publisher, hasher, crypto.NewMinter(rand.Reader), ids, clk)
@@ -465,6 +466,7 @@ func Boot(ctx context.Context) (*app, error) {
 			targetcmd.NewRootSubscriber(targetStore).Handle,
 			auditapp.NewSubscriber(auditpg.NewStore(db), ids, clk).Handle,
 			journalapp.NewSubscriber(journalpg.NewStore(db), ids, clk).Handle,
+			newAlertDeliverySubscriber(alertPreferences, accounts, mailer),
 		},
 	})
 
@@ -513,7 +515,7 @@ func Boot(ctx context.Context) (*app, error) {
 			}, clk),
 			noteReads,
 			notesCmd,
-			newResearchWithOCRAndAssistanceAndSynthesis(db, artifacts, publisher, ids, clk, configuredImageOCR(cfg), configuredAssistanceProvider(cfg), configuredSynthesisProvider(cfg)),
+			newResearchWithOCRAndAssistanceAndSynthesisAndComparison(db, artifacts, publisher, ids, clk, configuredImageOCR(cfg), configuredAssistanceProvider(cfg), configuredComparisonProvider(cfg), configuredQuestionSuggestionProvider(cfg), configuredBriefDraftProvider(cfg), configuredConnectionReviewProvider(cfg), configuredSynthesisProvider(cfg)),
 			auditquery.NewLedger(auditpg.NewStore(db)),
 			journalquery.NewTrail(journalpg.NewStore(db)),
 			journalquery.NewLog(journalpg.NewStore(db)),

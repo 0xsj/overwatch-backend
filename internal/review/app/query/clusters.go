@@ -8,8 +8,9 @@ import (
 )
 
 type ClusterReader interface {
-	PageClusters(context.Context, id.ID, id.ID, int) ([]domain.Cluster, error)
+	PageClusters(context.Context, id.ID, id.ID, int, string) ([]domain.Cluster, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Cluster, error)
+	ByIDVisible(context.Context, id.ID, id.ID, string) (domain.Cluster, error)
 }
 
 type Clusters struct{ reader ClusterReader }
@@ -26,8 +27,8 @@ type ClusterPage struct {
 	NextCursor *id.ID           `json:"next_cursor"`
 }
 
-func (c *Clusters) List(ctx context.Context, workspace, before id.ID, limit int) (ClusterPage, error) {
-	if workspace.IsZero() {
+func (c *Clusters) List(ctx context.Context, workspace, before id.ID, limit int, maxSensitivity string) (ClusterPage, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return ClusterPage{}, domain.ErrInvalid
 	}
 	if limit <= 0 {
@@ -36,7 +37,7 @@ func (c *Clusters) List(ctx context.Context, workspace, before id.ID, limit int)
 	if limit > 100 {
 		limit = 100
 	}
-	rows, err := c.reader.PageClusters(ctx, workspace, before, limit+1)
+	rows, err := c.reader.PageClusters(ctx, workspace, before, limit+1, maxSensitivity)
 	if err != nil {
 		return ClusterPage{}, err
 	}
@@ -57,4 +58,11 @@ func (c *Clusters) ByID(ctx context.Context, workspace, want id.ID) (domain.Clus
 		return domain.Cluster{}, domain.ErrInvalid
 	}
 	return c.reader.ByID(ctx, workspace, want)
+}
+
+func (c *Clusters) ByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Cluster, error) {
+	if workspace.IsZero() || want.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return domain.Cluster{}, domain.ErrInvalid
+	}
+	return c.reader.ByIDVisible(ctx, workspace, want, maxSensitivity)
 }

@@ -86,6 +86,7 @@ type researchConnectionReviewResponse struct {
 	Findings                 []assistdomain.ConnectionReviewFinding `json:"findings"`
 	CreatedBy                string                                 `json:"created_by"`
 	CreatedAt                string                                 `json:"created_at"`
+	Error                    string                                 `json:"error,omitempty"`
 }
 
 func asResearchConnection(connection connectiondomain.Connection) researchConnectionResponse {
@@ -148,7 +149,7 @@ func asResearchConnectionReview(review assistdomain.ConnectionReview) researchCo
 		ConnectionReviewID: review.ID.String(), WorkspaceID: review.WorkspaceID.String(), ConnectionID: review.ConnectionID.String(),
 		FromRecordID: review.FromRecordID.String(), ToRecordID: review.ToRecordID.String(), ConnectionKind: review.ConnectionKind.String(), ConnectionState: review.ConnectionState.String(), ConnectionRationale: review.ConnectionRationale,
 		SupportingObservationIDs: ids(review.SupportingObservationIDs), OpposingObservationIDs: ids(review.OpposingObservationIDs), Provider: review.Provider, Method: review.Method, TemplateVersion: review.TemplateVersion,
-		Status: review.Status.String(), Output: review.Output, Findings: review.Findings, CreatedBy: review.CreatedBy.String(), CreatedAt: review.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Status: review.Status.String(), Output: review.Output, Findings: review.Findings, CreatedBy: review.CreatedBy.String(), CreatedAt: review.CreatedAt.UTC().Format(time.RFC3339Nano), Error: review.Error,
 	}
 }
 
@@ -163,8 +164,13 @@ type researchConnectionRequest struct {
 }
 
 func (m *me) listResearchConnections(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	state := connectiondomain.State(strings.TrimSpace(r.URL.Query().Get("state")))
@@ -185,7 +191,7 @@ func (m *me) listResearchConnections(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := m.research.connections.List(r.Context(), workspace, before, state, review, size)
+	found, err := m.research.connections.List(r.Context(), workspace, before, state, review, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -201,11 +207,16 @@ func (m *me) listResearchConnections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) summarizeResearchConnections(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
 		return
 	}
-	found, err := m.research.connections.Summary(r.Context(), workspace)
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.connections.Summary(r.Context(), workspace, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -214,8 +225,13 @@ func (m *me) summarizeResearchConnections(w http.ResponseWriter, r *http.Request
 }
 
 func (m *me) readResearchConnection(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	want, err := id.Parse(r.PathValue("connection"))
@@ -223,7 +239,7 @@ func (m *me) readResearchConnection(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.connections.ByID(r.Context(), workspace, want)
+	found, err := m.research.connections.ByIDVisible(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -232,8 +248,13 @@ func (m *me) readResearchConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listResearchConnectionRevisions(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	want, err := id.Parse(r.PathValue("connection"))
@@ -241,11 +262,11 @@ func (m *me) listResearchConnectionRevisions(w http.ResponseWriter, r *http.Requ
 		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
 		return
 	}
-	if _, err := m.research.connections.ByID(r.Context(), workspace, want); err != nil {
+	if _, err := m.research.connections.ByIDVisible(r.Context(), workspace, want, maxSensitivity); err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
-	found, err := m.research.connections.Revisions(r.Context(), workspace, want)
+	found, err := m.research.connections.Revisions(r.Context(), workspace, want, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -260,8 +281,13 @@ func (m *me) listResearchConnectionRevisions(w http.ResponseWriter, r *http.Requ
 }
 
 func (m *me) readResearchConnectionRevision(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	connection, err := id.Parse(r.PathValue("connection"))
@@ -274,7 +300,7 @@ func (m *me) readResearchConnectionRevision(w http.ResponseWriter, r *http.Reque
 		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
 		return
 	}
-	found, err := m.research.connections.RevisionByID(r.Context(), workspace, connection, revision)
+	found, err := m.research.connections.RevisionByID(r.Context(), workspace, connection, revision, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -322,8 +348,13 @@ func (m *me) editResearchConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *me) listResearchConnectionReviews(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	connection, err := id.Parse(r.PathValue("connection"))
@@ -331,7 +362,7 @@ func (m *me) listResearchConnectionReviews(w http.ResponseWriter, r *http.Reques
 		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
 		return
 	}
-	if _, err := m.research.connections.ByID(r.Context(), workspace, connection); err != nil {
+	if _, err := m.research.connections.ByIDVisible(r.Context(), workspace, connection, maxSensitivity); err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
@@ -355,13 +386,22 @@ func (m *me) listResearchConnectionReviews(w http.ResponseWriter, r *http.Reques
 }
 
 func (m *me) readResearchConnectionReview(w http.ResponseWriter, r *http.Request) {
-	_, workspace, _, ok := m.onWorkspaceRecord(w, r)
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
 	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	connection, err := id.Parse(r.PathValue("connection"))
 	if err != nil || connection.IsZero() {
 		httpx.Fail(m.log, w, r, connectiondomain.ErrNotFound)
+		return
+	}
+	if _, err := m.research.connections.ByIDVisible(r.Context(), workspace, connection, maxSensitivity); err != nil {
+		httpx.Fail(m.log, w, r, err)
 		return
 	}
 	review, err := id.Parse(r.PathValue("review"))
@@ -389,6 +429,10 @@ func (m *me) createResearchConnectionReview(w http.ResponseWriter, r *http.Reque
 	}
 	fresh, err := m.research.connectionReviewCmd.Generate(r.Context(), workspace, connection, caller)
 	if err != nil {
+		if !fresh.ID.IsZero() {
+			httpx.WriteJSON(w, r, http.StatusCreated, asResearchConnectionReview(fresh))
+			return
+		}
 		httpx.Fail(m.log, w, r, err)
 		return
 	}

@@ -3,22 +3,22 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"time"
 	"unicode/utf8"
 
 	"github.com/0xsj/overwatch-backend/internal/assistance/domain"
+	pkgerrors "github.com/0xsj/overwatch-backend/pkg/errors"
 	"github.com/0xsj/overwatch-backend/pkg/execx"
 )
 
 const ProcessInputPlaceholder = "{input}"
 
 var (
-	ErrProcessProviderUnavailable = errors.New("external assistance provider is not configured")
-	ErrProcessProviderTimedOut    = errors.New("external assistance provider timed out")
-	ErrProcessProviderOutputLimit = errors.New("external assistance provider output limit exceeded")
+	ErrProcessProviderUnavailable = pkgerrors.New(pkgerrors.Unavailable, "external assistance provider is not configured")
+	ErrProcessProviderTimedOut    = pkgerrors.New(pkgerrors.Timeout, "external assistance provider timed out")
+	ErrProcessProviderOutputLimit = pkgerrors.New(pkgerrors.Unprocessable, "external assistance provider output limit exceeded")
 )
 
 type ProcessProviderConfig struct {

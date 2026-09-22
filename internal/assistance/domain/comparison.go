@@ -14,6 +14,7 @@ const (
 	MaxComparisonFindings     = 50
 	MaxComparisonOutput       = 24000
 	MaxComparisonSummary      = 4000
+	MaxComparisonError        = 2000
 )
 
 const EventComparisonGenerated = "assistance.comparison.generated"
@@ -21,18 +22,21 @@ const EventComparisonGenerated = "assistance.comparison.generated"
 type ComparisonStatus string
 
 const (
-	ComparisonCompleted ComparisonStatus = "completed"
-	ComparisonEmpty     ComparisonStatus = "empty"
+	ComparisonCompleted   ComparisonStatus = "completed"
+	ComparisonEmpty       ComparisonStatus = "empty"
+	ComparisonFailed      ComparisonStatus = "failed"
+	ComparisonUnsupported ComparisonStatus = "unsupported"
+	ComparisonTimedOut    ComparisonStatus = "timed_out"
 )
 
 func (s ComparisonStatus) String() string { return string(s) }
 
 func ParseComparisonStatus(raw string) (ComparisonStatus, error) {
 	switch ComparisonStatus(strings.TrimSpace(raw)) {
-	case ComparisonCompleted, ComparisonEmpty:
+	case ComparisonCompleted, ComparisonEmpty, ComparisonFailed, ComparisonUnsupported, ComparisonTimedOut:
 		return ComparisonStatus(strings.TrimSpace(raw)), nil
 	default:
-		return "", errors.New(errors.Invalid, "comparison status must be completed or empty")
+		return "", errors.New(errors.Invalid, "comparison status is unknown")
 	}
 }
 
@@ -77,9 +81,14 @@ type Comparison struct {
 	Findings        []ComparisonFinding `json:"findings"`
 	CreatedBy       id.ID               `json:"created_by"`
 	CreatedAt       time.Time           `json:"created_at"`
+	Error           string              `json:"error,omitempty"`
 }
 
 func NewComparison(want, workspace, actor id.ID, observations []id.ID, provider, method, templateVersion string, status ComparisonStatus, output string, findings []ComparisonFinding, at time.Time) (Comparison, error) {
+	return NewComparisonResult(want, workspace, actor, observations, provider, method, templateVersion, status, output, findings, "", at)
+}
+
+func NewComparisonResult(want, workspace, actor id.ID, observations []id.ID, provider, method, templateVersion string, status ComparisonStatus, output string, findings []ComparisonFinding, failure string, at time.Time) (Comparison, error) {
 	if want.IsZero() || workspace.IsZero() || actor.IsZero() {
 		return Comparison{}, ErrIDRequired
 	}
@@ -112,8 +121,20 @@ func NewComparison(want, workspace, actor id.ID, observations []id.ID, provider,
 	if err != nil {
 		return Comparison{}, err
 	}
-	if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxComparisonOutput {
-		return Comparison{}, ErrSynthesisOutput
+	if parsedStatus == ComparisonCompleted || parsedStatus == ComparisonEmpty {
+		if !utf8.ValidString(output) || strings.ContainsRune(output, 0) || len(output) > MaxComparisonOutput {
+			return Comparison{}, ErrSynthesisOutput
+		}
+		if strings.TrimSpace(failure) != "" {
+			return Comparison{}, ErrSynthesisFailure
+		}
+	} else {
+		if strings.TrimSpace(output) != "" || len(findings) != 0 {
+			return Comparison{}, ErrSynthesisFailure
+		}
+		if strings.TrimSpace(failure) == "" || !utf8.ValidString(failure) || strings.ContainsRune(failure, 0) || len(failure) > MaxComparisonError {
+			return Comparison{}, ErrSynthesisFailure
+		}
 	}
 	if len(findings) > MaxComparisonFindings {
 		return Comparison{}, ErrSynthesisOutput
@@ -148,5 +169,5 @@ func NewComparison(want, workspace, actor id.ID, observations []id.ID, provider,
 	if at.IsZero() {
 		return Comparison{}, ErrTimeRequired
 	}
-	return Comparison{ID: want, WorkspaceID: workspace, ObservationIDs: append([]id.ID(nil), observations...), Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), TemplateVersion: strings.TrimSpace(templateVersion), Status: parsedStatus, Output: output, Findings: cleanFindings, CreatedBy: actor, CreatedAt: at}, nil
+	return Comparison{ID: want, WorkspaceID: workspace, ObservationIDs: append([]id.ID(nil), observations...), Provider: strings.TrimSpace(provider), Method: strings.TrimSpace(method), TemplateVersion: strings.TrimSpace(templateVersion), Status: parsedStatus, Output: output, Findings: cleanFindings, CreatedBy: actor, CreatedAt: at, Error: strings.TrimSpace(failure)}, nil
 }

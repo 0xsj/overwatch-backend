@@ -8,11 +8,13 @@ import (
 )
 
 type Reader interface {
-	Page(context.Context, id.ID, id.ID, domain.State, domain.ReviewFilter, int) ([]domain.Connection, error)
+	Page(context.Context, id.ID, id.ID, domain.State, domain.ReviewFilter, int, string) ([]domain.Connection, error)
+	ForRecord(context.Context, id.ID, id.ID, int, string) ([]domain.Connection, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Connection, error)
-	Revisions(context.Context, id.ID, id.ID) ([]domain.Revision, error)
-	RevisionByID(context.Context, id.ID, id.ID, id.ID) (domain.Revision, error)
-	Summary(context.Context, id.ID) (domain.BrowseSummary, error)
+	ByIDVisible(context.Context, id.ID, id.ID, string) (domain.Connection, error)
+	Revisions(context.Context, id.ID, id.ID, string) ([]domain.Revision, error)
+	RevisionByID(context.Context, id.ID, id.ID, id.ID, string) (domain.Revision, error)
+	Summary(context.Context, id.ID, string) (domain.BrowseSummary, error)
 }
 
 type Connections struct{ reader Reader }
@@ -34,8 +36,8 @@ type Page struct {
 	NextCursor *id.ID
 }
 
-func (c *Connections) List(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int) (Page, error) {
-	if workspace.IsZero() {
+func (c *Connections) List(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int, maxSensitivity string) (Page, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return Page{}, domain.ErrInvalid
 	}
 	parsedState := state
@@ -56,7 +58,7 @@ func (c *Connections) List(ctx context.Context, workspace, before id.ID, state d
 	if limit > MaxPage {
 		limit = MaxPage
 	}
-	rows, err := c.reader.Page(ctx, workspace, before, parsedState, parsedReview, limit+1)
+	rows, err := c.reader.Page(ctx, workspace, before, parsedState, parsedReview, limit+1, maxSensitivity)
 	if err != nil {
 		return Page{}, err
 	}
@@ -72,11 +74,35 @@ func (c *Connections) List(ctx context.Context, workspace, before id.ID, state d
 	return out, nil
 }
 
-func (c *Connections) Summary(ctx context.Context, workspace id.ID) (domain.BrowseSummary, error) {
-	if workspace.IsZero() {
+// ForRecord returns the bounded relationship neighborhood around one authored
+// record. It is intentionally a separate read from List: a record detail
+// surface must not fetch an unbounded workspace-wide relationship page and
+// filter it in memory.
+func (c *Connections) ForRecord(ctx context.Context, workspace, record id.ID, limit int, maxSensitivity string) ([]domain.Connection, error) {
+	if workspace.IsZero() || record.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return nil, domain.ErrInvalid
+	}
+	if limit <= 0 {
+		limit = DefaultPage
+	}
+	if limit > MaxPage {
+		limit = MaxPage
+	}
+	rows, err := c.reader.ForRecord(ctx, workspace, record, limit, maxSensitivity)
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		return []domain.Connection{}, nil
+	}
+	return rows, nil
+}
+
+func (c *Connections) Summary(ctx context.Context, workspace id.ID, maxSensitivity string) (domain.BrowseSummary, error) {
+	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return domain.BrowseSummary{}, domain.ErrInvalid
 	}
-	return c.reader.Summary(ctx, workspace)
+	return c.reader.Summary(ctx, workspace, maxSensitivity)
 }
 
 func (c *Connections) ByID(ctx context.Context, workspace, want id.ID) (domain.Connection, error) {
@@ -86,11 +112,18 @@ func (c *Connections) ByID(ctx context.Context, workspace, want id.ID) (domain.C
 	return c.reader.ByID(ctx, workspace, want)
 }
 
-func (c *Connections) Revisions(ctx context.Context, workspace, want id.ID) ([]domain.Revision, error) {
-	if workspace.IsZero() || want.IsZero() {
+func (c *Connections) ByIDVisible(ctx context.Context, workspace, want id.ID, maxSensitivity string) (domain.Connection, error) {
+	if workspace.IsZero() || want.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return domain.Connection{}, domain.ErrInvalid
+	}
+	return c.reader.ByIDVisible(ctx, workspace, want, maxSensitivity)
+}
+
+func (c *Connections) Revisions(ctx context.Context, workspace, want id.ID, maxSensitivity string) ([]domain.Revision, error) {
+	if workspace.IsZero() || want.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return nil, domain.ErrInvalid
 	}
-	rows, err := c.reader.Revisions(ctx, workspace, want)
+	rows, err := c.reader.Revisions(ctx, workspace, want, maxSensitivity)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +133,13 @@ func (c *Connections) Revisions(ctx context.Context, workspace, want id.ID) ([]d
 	return rows, nil
 }
 
-func (c *Connections) RevisionByID(ctx context.Context, workspace, connection, revision id.ID) (domain.Revision, error) {
-	if workspace.IsZero() || connection.IsZero() || revision.IsZero() {
+func (c *Connections) RevisionByID(ctx context.Context, workspace, connection, revision id.ID, maxSensitivity string) (domain.Revision, error) {
+	if workspace.IsZero() || connection.IsZero() || revision.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return domain.Revision{}, domain.ErrInvalid
 	}
-	return c.reader.RevisionByID(ctx, workspace, connection, revision)
+	return c.reader.RevisionByID(ctx, workspace, connection, revision, maxSensitivity)
+}
+
+func validMaxSensitivity(value string) bool {
+	return value == "internal" || value == "restricted"
 }

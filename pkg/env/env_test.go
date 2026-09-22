@@ -87,6 +87,53 @@ func TestVarStringRendersTheManifestLine(t *testing.T) {
 	}
 }
 
+func TestJSONStrings_ThreeStates(t *testing.T) {
+	t.Run("absent key returns a copy of the fallback", func(t *testing.T) {
+		fallback := []string{"{input}", "stdout"}
+		r := newReader(t, map[string]string{})
+		got := r.JSONStrings("OCR_ARGS_JSON", fallback)
+		if len(got) != 2 || got[0] != fallback[0] || got[1] != fallback[1] {
+			t.Fatalf("got %v, want %v", got, fallback)
+		}
+		got[0] = "changed"
+		if fallback[0] == "changed" {
+			t.Fatal("fallback slice was returned by reference")
+		}
+		if err := r.Err(); err != nil {
+			t.Fatalf("absent optional JSON setting is not an error: %v", err)
+		}
+	})
+
+	t.Run("set JSON array returns its exact string values", func(t *testing.T) {
+		r := newReader(t, map[string]string{"OCR_ARGS_JSON": `["-c","printf 'ok'","{input}"]`})
+		got := r.JSONStrings("OCR_ARGS_JSON", nil)
+		want := []string{"-c", "printf 'ok'", "{input}"}
+		if len(got) != len(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("argument %d = %q, want %q", i, got[i], want[i])
+			}
+		}
+		if err := r.Err(); err != nil {
+			t.Fatalf("valid JSON array is not an error: %v", err)
+		}
+	})
+
+	for _, raw := range []string{"", `null`, `"not-an-array"`, `["ok", 3]`} {
+		t.Run("rejects "+raw, func(t *testing.T) {
+			r := newReader(t, map[string]string{"OCR_ARGS_JSON": raw})
+			if got := r.JSONStrings("OCR_ARGS_JSON", nil); got != nil {
+				t.Fatalf("got %v, want nil for invalid JSON strings", got)
+			}
+			if r.Err() == nil {
+				t.Fatal("invalid JSON strings must fail configuration")
+			}
+		})
+	}
+}
+
 // wantPanic asserts WHICH panic, not merely that one happened. `recover() != nil`
 // cannot distinguish a deliberate guard from a nil dereference two statements
 // later, so it passes when the guard is deleted — measured on custody 0010

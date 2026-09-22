@@ -8,6 +8,7 @@ package errors_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/0xsj/overwatch-backend/pkg/errors"
 )
@@ -27,5 +28,18 @@ func TestDetailsOfVisitsEveryLevelNotJustTheEnds(t *testing.T) {
 		if _, ok := got[k]; !ok {
 			t.Errorf("detail %q was dropped from %v — a walk that advances twice per iteration collects the ends and steps over the middle, and two levels cannot tell the difference", k, got)
 		}
+	}
+}
+
+func TestRetryAfterIsCallerSafeMetadataSeparateFromDetails(t *testing.T) {
+	err := errors.New(errors.RateLimited, "slow down").
+		WithRetryAfter(1500*time.Millisecond).
+		WithDetail("provider", "internal-provider-name")
+
+	if got := errors.RetryAfterOf(err); got != 1500*time.Millisecond {
+		t.Fatalf("RetryAfterOf=%s, want 1.5s", got)
+	}
+	if got := errors.DetailsOf(err)["provider"]; got != "internal-provider-name" {
+		t.Fatalf("details were lost: %v", errors.DetailsOf(err))
 	}
 }

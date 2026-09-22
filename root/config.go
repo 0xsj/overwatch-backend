@@ -50,6 +50,7 @@ type Config struct {
 	// executable through the bounded, shell-free OCR adapter; empty keeps OCR
 	// explicitly unsupported until an operator installs and selects an engine.
 	OCRBinary    string
+	OCRArgs      []string
 	OCRTimeout   time.Duration
 	OCRMaxOutput int64
 
@@ -57,6 +58,7 @@ type Config struct {
 	// exact executable with a JSON input file and expects exact passage drafts
 	// as JSON. Empty keeps the deterministic local provider active.
 	AssistanceBinary    string
+	AssistanceArgs      []string
 	AssistanceTimeout   time.Duration
 	AssistanceMaxOutput int64
 
@@ -65,6 +67,7 @@ type Config struct {
 	// grounded synthesis object as JSON. Empty keeps the deterministic local
 	// synthesis provider active.
 	SynthesisBinary    string
+	SynthesisArgs      []string
 	SynthesisTimeout   time.Duration
 	SynthesisMaxOutput int64
 
@@ -79,6 +82,11 @@ type Config struct {
 	// ZERO DISABLES THE SCHEDULER, which is the honest off switch: a lifecycle
 	// that is constructed and never started looks exactly like one with no work.
 	SchedulerBatch int
+
+	// SessionTTL is the lifetime of a bearer session. It defaults to fourteen
+	// days; keeping it configurable makes short-lived staging rehearsals
+	// possible without weakening the production default.
+	SessionTTL time.Duration
 }
 
 // LogValue is implemented on the struct, not only on the credential inside it.
@@ -98,16 +106,20 @@ func (c Config) LogValue() slog.Value {
 		slog.Duration("run_timeout", c.RunTimeout),
 		slog.Int64("run_max_output", c.RunMaxOutput),
 		slog.String("ocr_binary", c.OCRBinary),
+		slog.Int("ocr_args_count", len(c.OCRArgs)),
 		slog.Duration("ocr_timeout", c.OCRTimeout),
 		slog.Int64("ocr_max_output", c.OCRMaxOutput),
 		slog.String("assistance_binary", c.AssistanceBinary),
+		slog.Int("assistance_args_count", len(c.AssistanceArgs)),
 		slog.Duration("assistance_timeout", c.AssistanceTimeout),
 		slog.Int64("assistance_max_output", c.AssistanceMaxOutput),
 		slog.String("synthesis_binary", c.SynthesisBinary),
+		slog.Int("synthesis_args_count", len(c.SynthesisArgs)),
 		slog.Duration("synthesis_timeout", c.SynthesisTimeout),
 		slog.Int64("synthesis_max_output", c.SynthesisMaxOutput),
 		slog.Duration("scheduler_every", c.SchedulerEvery),
 		slog.Int("scheduler_batch", c.SchedulerBatch),
+		slog.Duration("session_ttl", c.SessionTTL),
 	)
 }
 
@@ -131,17 +143,21 @@ func loadConfig(lookup env.Lookup) (Config, []env.Var, error) {
 		RunTimeout:          time.Duration(r.Int("RUN_TIMEOUT_SECONDS", 600)) * time.Second,
 		RunMaxOutput:        int64(r.Int("RUN_MAX_OUTPUT_MB", 64)) << 20,
 		OCRBinary:           r.String("OCR_BINARY", ""),
+		OCRArgs:             r.JSONStrings("OCR_ARGS_JSON", []string{}),
 		OCRTimeout:          time.Duration(r.Int("OCR_TIMEOUT_SECONDS", 120)) * time.Second,
 		OCRMaxOutput:        int64(r.Int("OCR_MAX_OUTPUT_MB", 8)) << 20,
 		AssistanceBinary:    r.String("ASSISTANCE_BINARY", ""),
+		AssistanceArgs:      r.JSONStrings("ASSISTANCE_ARGS_JSON", []string{}),
 		AssistanceTimeout:   time.Duration(r.Int("ASSISTANCE_TIMEOUT_SECONDS", 120)) * time.Second,
 		AssistanceMaxOutput: int64(r.Int("ASSISTANCE_MAX_OUTPUT_MB", 8)) << 20,
 		SynthesisBinary:     r.String("SYNTHESIS_BINARY", ""),
+		SynthesisArgs:       r.JSONStrings("SYNTHESIS_ARGS_JSON", []string{}),
 		SynthesisTimeout:    time.Duration(r.Int("SYNTHESIS_TIMEOUT_SECONDS", 120)) * time.Second,
 		SynthesisMaxOutput:  int64(r.Int("SYNTHESIS_MAX_OUTPUT_MB", 8)) << 20,
 
 		SchedulerEvery: time.Duration(r.Int("SCHEDULER_EVERY_SECONDS", 60)) * time.Second,
 		SchedulerBatch: r.Int("SCHEDULER_BATCH", 8),
+		SessionTTL:     time.Duration(r.Int("SESSION_TTL_SECONDS", 14*24*60*60)) * time.Second,
 	}
 	if err := r.Err(); err != nil {
 		return Config{}, nil, err
