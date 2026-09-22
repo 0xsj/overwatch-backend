@@ -17,6 +17,27 @@ const (
 	MaxObservationLinks = 8
 )
 
+type ContextKind string
+
+const (
+	ContextQuestion          ContextKind = "question"
+	ContextRecord            ContextKind = "record"
+	ContextEvent             ContextKind = "event"
+	ContextConnection        ContextKind = "connection"
+	ContextEventRelationship ContextKind = "event_relationship"
+	ContextBrief             ContextKind = "brief"
+	ContextCluster           ContextKind = "cluster"
+)
+
+func ParseContextKind(raw string) (ContextKind, error) {
+	switch ContextKind(strings.TrimSpace(raw)) {
+	case ContextQuestion, ContextRecord, ContextEvent, ContextConnection, ContextEventRelationship, ContextBrief, ContextCluster:
+		return ContextKind(strings.TrimSpace(raw)), nil
+	default:
+		return "", ErrContextKindUnknown
+	}
+}
+
 type State string
 
 const (
@@ -45,6 +66,8 @@ type Question struct {
 	WorkspaceID    id.ID     `json:"workspace_id"`
 	Prompt         string    `json:"question"`
 	Context        string    `json:"context,omitempty"`
+	ContextKind    string    `json:"context_kind,omitempty"`
+	ContextID      id.ID     `json:"context_id,omitempty"`
 	State          State     `json:"state"`
 	Resolution     string    `json:"resolution,omitempty"`
 	Author         id.ID     `json:"author"`
@@ -56,6 +79,11 @@ type Question struct {
 
 func New(want, workspace, author id.ID, prompt, context, state, resolution string,
 	observations []id.ID, at time.Time) (Question, error) {
+	return NewWithContext(want, workspace, author, "", id.ID{}, prompt, context, state, resolution, observations, at)
+}
+
+func NewWithContext(want, workspace, author id.ID, contextKind string, contextID id.ID,
+	prompt, context, state, resolution string, observations []id.ID, at time.Time) (Question, error) {
 	if want.IsZero() || author.IsZero() {
 		return Question{}, ErrIDRequired
 	}
@@ -65,6 +93,10 @@ func New(want, workspace, author id.ID, prompt, context, state, resolution strin
 	if at.IsZero() {
 		return Question{}, ErrTimeRequired
 	}
+	parsedContext, normalizedContextID, err := questionContext(contextKind, contextID)
+	if err != nil {
+		return Question{}, err
+	}
 	stateValue, promptValue, contextValue, resolutionValue, links, err :=
 		clean(prompt, context, state, resolution, observations)
 	if err != nil {
@@ -73,6 +105,7 @@ func New(want, workspace, author id.ID, prompt, context, state, resolution strin
 	return Question{
 		ID: want, WorkspaceID: workspace, Prompt: promptValue,
 		Context: contextValue, State: stateValue, Resolution: resolutionValue,
+		ContextKind: string(parsedContext), ContextID: normalizedContextID,
 		Author: author, UpdatedBy: author, CreatedAt: at, UpdatedAt: at,
 		ObservationIDs: links,
 	}, nil
@@ -80,11 +113,20 @@ func New(want, workspace, author id.ID, prompt, context, state, resolution strin
 
 func (q Question) Edit(by id.ID, prompt, context, state, resolution string,
 	observations []id.ID, at time.Time) (Question, error) {
+	return q.EditWithContext(by, "", id.ID{}, prompt, context, state, resolution, observations, at)
+}
+
+func (q Question) EditWithContext(by id.ID, contextKind string, contextID id.ID,
+	prompt, context, state, resolution string, observations []id.ID, at time.Time) (Question, error) {
 	if by.IsZero() {
 		return q, ErrIDRequired
 	}
 	if at.IsZero() {
 		return q, ErrTimeRequired
+	}
+	parsedContext, normalizedContextID, err := questionContext(contextKind, contextID)
+	if err != nil {
+		return q, err
 	}
 	stateValue, promptValue, contextValue, resolutionValue, links, err :=
 		clean(prompt, context, state, resolution, observations)
@@ -93,9 +135,25 @@ func (q Question) Edit(by id.ID, prompt, context, state, resolution string,
 	}
 	next := q
 	next.Prompt, next.Context, next.State = promptValue, contextValue, stateValue
+	next.ContextKind, next.ContextID = string(parsedContext), normalizedContextID
 	next.Resolution, next.ObservationIDs = resolutionValue, links
 	next.UpdatedBy, next.UpdatedAt = by, at
 	return next, nil
+}
+
+func questionContext(kind string, value id.ID) (ContextKind, id.ID, error) {
+	kind = strings.TrimSpace(kind)
+	if kind == "" && value.IsZero() {
+		return "", id.ID{}, nil
+	}
+	if kind == "" || value.IsZero() {
+		return "", id.ID{}, ErrContextHalfSet
+	}
+	parsed, err := ParseContextKind(kind)
+	if err != nil {
+		return "", id.ID{}, err
+	}
+	return parsed, value, nil
 }
 
 func clean(prompt, context, state, resolution string, observations []id.ID) (

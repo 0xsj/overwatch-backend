@@ -2,6 +2,7 @@ package root
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	leadquery "github.com/0xsj/overwatch-backend/internal/lead/app/query"
@@ -16,6 +17,8 @@ type questionResponse struct {
 	WorkspaceID    string   `json:"workspace_id"`
 	Question       string   `json:"question"`
 	Context        string   `json:"context,omitempty"`
+	ContextKind    string   `json:"context_kind,omitempty"`
+	ContextID      string   `json:"context_id,omitempty"`
 	State          string   `json:"state"`
 	Resolution     string   `json:"resolution,omitempty"`
 	Author         string   `json:"author"`
@@ -33,6 +36,13 @@ func asQuestion(q leaddomain.Question) questionResponse {
 	return questionResponse{
 		QuestionID: q.ID.String(), WorkspaceID: q.WorkspaceID.String(),
 		Question: q.Prompt, Context: q.Context, State: q.State.String(),
+		ContextKind: q.ContextKind,
+		ContextID: func() string {
+			if q.ContextID.IsZero() {
+				return ""
+			}
+			return q.ContextID.String()
+		}(),
 		Resolution: q.Resolution, Author: q.Author.String(), UpdatedBy: q.UpdatedBy.String(),
 		CreatedAt:      q.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:      q.UpdatedAt.UTC().Format(time.RFC3339Nano),
@@ -43,9 +53,30 @@ func asQuestion(q leaddomain.Question) questionResponse {
 type questionRequest struct {
 	Question       string  `json:"question"`
 	Context        string  `json:"context"`
+	ContextKind    string  `json:"context_kind"`
+	ContextID      string  `json:"context_id"`
 	State          string  `json:"state"`
 	Resolution     string  `json:"resolution"`
 	ObservationIDs []id.ID `json:"observation_ids"`
+}
+
+func questionContext(in questionRequest) (string, id.ID, error) {
+	kind := strings.TrimSpace(in.ContextKind)
+	if kind == "" && strings.TrimSpace(in.ContextID) == "" {
+		return "", id.ID{}, nil
+	}
+	if kind == "" || strings.TrimSpace(in.ContextID) == "" {
+		return "", id.ID{}, leaddomain.ErrContextHalfSet
+	}
+	parsed, err := leaddomain.ParseContextKind(kind)
+	if err != nil {
+		return "", id.ID{}, err
+	}
+	contextID, err := id.Parse(strings.TrimSpace(in.ContextID))
+	if err != nil {
+		return "", id.ID{}, leaddomain.ErrContextIDInvalid
+	}
+	return string(parsed), contextID, nil
 }
 
 func (m *me) listQuestions(w http.ResponseWriter, r *http.Request) {
@@ -109,8 +140,19 @@ func (m *me) createQuestion(w http.ResponseWriter, r *http.Request) {
 	if in.State == "" {
 		in.State = leaddomain.Open.String()
 	}
-	created, err := m.research.questionCmd.Create(r.Context(), workspace, caller,
-		in.Question, in.Context, in.State, in.Resolution, in.ObservationIDs)
+	contextKind, contextID, err := questionContext(in)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	var created leaddomain.Question
+	if contextKind == "" {
+		created, err = m.research.questionCmd.Create(r.Context(), workspace, caller,
+			in.Question, in.Context, in.State, in.Resolution, in.ObservationIDs)
+	} else {
+		created, err = m.research.questionCmd.CreateWithContext(r.Context(), workspace, caller, contextKind, contextID,
+			in.Question, in.Context, in.State, in.Resolution, in.ObservationIDs)
+	}
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -132,7 +174,12 @@ func (m *me) editQuestion(w http.ResponseWriter, r *http.Request) {
 	if !decodeResearchBody(w, r, &in) {
 		return
 	}
-	updated, err := m.research.questionCmd.Edit(r.Context(), workspace, want, caller,
+	contextKind, contextID, err := questionContext(in)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	updated, err := m.research.questionCmd.EditWithContext(r.Context(), workspace, want, caller, contextKind, contextID,
 		in.Question, in.Context, in.State, in.Resolution, in.ObservationIDs)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)

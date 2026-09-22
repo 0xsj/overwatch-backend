@@ -49,7 +49,7 @@ func translate(ctx context.Context, err error) error {
 
 const questionSelect = `
 select q.id,q.workspace_id,q.question,q.question_context,q.state,q.resolution,
-       q.author,q.updated_by,q.created_at,q.updated_at,
+       q.context_kind,q.context_id,q.author,q.updated_by,q.created_at,q.updated_at,
        coalesce(json_agg(qo.observation_id order by qo.observation_id)
          filter (where qo.observation_id is not null), '[]'::json)::text
 from lead.question q
@@ -60,11 +60,11 @@ type scanner interface{ Scan(...any) error }
 
 func scanQuestion(row scanner) (domain.Question, error) {
 	var out domain.Question
-	var question, workspace, author, updatedBy pgtype.UUID
+	var question, workspace, contextID, author, updatedBy pgtype.UUID
 	var state string
 	var raw []byte
 	if err := row.Scan(&question, &workspace, &out.Prompt, &out.Context, &state,
-		&out.Resolution, &author, &updatedBy, &out.CreatedAt, &out.UpdatedAt, &raw); err != nil {
+		&out.Resolution, &out.ContextKind, &contextID, &author, &updatedBy, &out.CreatedAt, &out.UpdatedAt, &raw); err != nil {
 		return domain.Question{}, err
 	}
 	parsed, err := domain.ParseState(state)
@@ -76,6 +76,9 @@ func scanQuestion(row scanner) (domain.Question, error) {
 		return domain.Question{}, err
 	}
 	out.ID, out.WorkspaceID = id.ID(question.Bytes), id.ID(workspace.Bytes)
+	if contextID.Valid {
+		out.ContextID = id.ID(contextID.Bytes)
+	}
 	out.Author, out.UpdatedBy = id.ID(author.Bytes), id.ID(updatedBy.Bytes)
 	out.State, out.ObservationIDs = parsed, make([]id.ID, 0, len(observationIDs))
 	for _, rawID := range observationIDs {
@@ -91,10 +94,11 @@ func scanQuestion(row scanner) (domain.Question, error) {
 func (s *Store) Create(ctx context.Context, in domain.Question) error {
 	_, err := s.db.DB(ctx).Exec(ctx, `
 insert into lead.question
- (id,workspace_id,question,question_context,state,resolution,author,updated_by,created_at,updated_at)
-values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		uuid(in.ID), uuid(in.WorkspaceID), in.Prompt, in.Context, in.State.String(),
-		in.Resolution, uuid(in.Author), uuid(in.UpdatedBy), in.CreatedAt, in.UpdatedAt)
+
+ (id,workspace_id,question,question_context,context_kind,context_id,state,resolution,author,updated_by,created_at,updated_at)
+	values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		uuid(in.ID), uuid(in.WorkspaceID), in.Prompt, in.Context, in.ContextKind,
+		uuid(in.ContextID), in.State.String(), in.Resolution, uuid(in.Author), uuid(in.UpdatedBy), in.CreatedAt, in.UpdatedAt)
 	return translate(ctx, err)
 }
 
@@ -102,7 +106,7 @@ func (s *Store) ByID(ctx context.Context, workspace, want id.ID) (domain.Questio
 	row := s.db.DB(ctx).QueryRow(ctx, questionSelect+`
 where q.workspace_id=$1 and q.id=$2
 group by q.id,q.workspace_id,q.question,q.question_context,q.state,q.resolution,
-         q.author,q.updated_by,q.created_at,q.updated_at`,
+		 q.context_kind,q.context_id,q.author,q.updated_by,q.created_at,q.updated_at`,
 		uuid(workspace), uuid(want))
 	out, err := scanQuestion(row)
 	if err != nil {
@@ -114,10 +118,10 @@ group by q.id,q.workspace_id,q.question,q.question_context,q.state,q.resolution,
 func (s *Store) Save(ctx context.Context, in domain.Question) error {
 	tag, err := s.db.DB(ctx).Exec(ctx, `
 update lead.question
-set question=$3,question_context=$4,state=$5,resolution=$6,
-    updated_by=$7,updated_at=$8
+set question=$3,question_context=$4,context_kind=$5,context_id=$6,state=$7,resolution=$8,
+	updated_by=$9,updated_at=$10
 where workspace_id=$1 and id=$2`,
-		uuid(in.WorkspaceID), uuid(in.ID), in.Prompt, in.Context, in.State.String(),
+		uuid(in.WorkspaceID), uuid(in.ID), in.Prompt, in.Context, in.ContextKind, uuid(in.ContextID), in.State.String(),
 		in.Resolution, uuid(in.UpdatedBy), in.UpdatedAt)
 	if err != nil {
 		return translate(ctx, err)
@@ -155,7 +159,7 @@ func (s *Store) Page(ctx context.Context, workspace, before id.ID, limit int) ([
 	rows, err := s.db.DB(ctx).Query(ctx, questionSelect+`
 where q.workspace_id=$1 and ($2::uuid is null or q.id < $2)
 group by q.id,q.workspace_id,q.question,q.question_context,q.state,q.resolution,
-         q.author,q.updated_by,q.created_at,q.updated_at
+		 q.context_kind,q.context_id,q.author,q.updated_by,q.created_at,q.updated_at
 order by q.id desc limit $3`, uuid(workspace), uuid(before), limit)
 	if err != nil {
 		return nil, translate(ctx, err)
@@ -176,7 +180,7 @@ func (s *Store) PageByState(ctx context.Context, workspace, before id.ID, state 
 	rows, err := s.db.DB(ctx).Query(ctx, questionSelect+`
 where q.workspace_id=$1 and ($2::uuid is null or q.id < $2) and q.state=$3
 group by q.id,q.workspace_id,q.question,q.question_context,q.state,q.resolution,
-         q.author,q.updated_by,q.created_at,q.updated_at
+		 q.context_kind,q.context_id,q.author,q.updated_by,q.created_at,q.updated_at
 order by q.id desc limit $4`, uuid(workspace), uuid(before), state.String(), limit)
 	if err != nil {
 		return nil, translate(ctx, err)

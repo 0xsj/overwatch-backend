@@ -16,7 +16,7 @@ type recordPageReader struct {
 	workspaces []id.ID
 }
 
-func (r *recordPageReader) Page(_ context.Context, workspace, before id.ID, _ string, _ domain.Kind, _ domain.CitationFilter, _ domain.ResolutionFilter, limit int, _ string) ([]domain.Record, error) {
+func (r *recordPageReader) Page(_ context.Context, workspace, before id.ID, _ string, _ domain.Kind, _ domain.CitationFilter, _ domain.ResolutionFilter, _ domain.ArchiveFilter, limit int, _ string) ([]domain.Record, error) {
 	r.limits = append(r.limits, limit)
 	r.workspaces = append(r.workspaces, workspace)
 	visible := make([]domain.Record, 0, len(r.rows))
@@ -57,6 +57,10 @@ func (r *recordPageReader) ByIDVisible(_ context.Context, workspace, want id.ID,
 	return domain.Record{}, nil
 }
 
+func (*recordPageReader) Revisions(context.Context, id.ID, id.ID, string) ([]domain.Revision, error) {
+	return []domain.Revision{}, nil
+}
+
 func recordID(n int) id.ID {
 	var out id.ID
 	binary.BigEndian.PutUint64(out[8:], uint64(n))
@@ -81,7 +85,7 @@ func TestListPagesLargeRecordSetWithoutDuplicatesOrUnboundedReads(t *testing.T) 
 	var before id.ID
 	pages := 0
 	for {
-		page, err := service.List(context.Background(), workspace, before, "", "", domain.CitationAny, domain.ResolutionAny, 1_000, "internal")
+		page, err := service.List(context.Background(), workspace, before, "", "", domain.CitationAny, domain.ResolutionAny, domain.ArchiveActive, 1_000, "internal")
 		if err != nil {
 			t.Fatal(err)
 		}

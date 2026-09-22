@@ -42,23 +42,39 @@ type researchRecordNeighborhoodResponse struct {
 	Citations   []reviewdomain.Evidence        `json:"citations"`
 }
 
-func neighborhoodParams(r *http.Request) (int, int, error) {
+func neighborhoodParams(r *http.Request) (int, int, connectiondomain.Kind, recorddomain.Kind, error) {
 	depth, limit := 1, neighborhoodLimit
+	var kind connectiondomain.Kind
+	var recordKind recorddomain.Kind
 	if raw := strings.TrimSpace(r.URL.Query().Get("depth")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 || parsed > neighborhoodMaxDepth {
-			return 0, 0, owerrors.New(owerrors.Invalid, "neighborhood depth must be 1 or 2")
+			return 0, 0, "", "", owerrors.New(owerrors.Invalid, "neighborhood depth must be 1 or 2")
 		}
 		depth = parsed
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed < 1 || parsed > neighborhoodLimit {
-			return 0, 0, owerrors.New(owerrors.Invalid, "neighborhood limit must be between 1 and 50")
+			return 0, 0, "", "", owerrors.New(owerrors.Invalid, "neighborhood limit must be between 1 and 50")
 		}
 		limit = parsed
 	}
-	return depth, limit, nil
+	if raw := strings.TrimSpace(r.URL.Query().Get("kind")); raw != "" {
+		parsed, err := connectiondomain.ParseKind(raw)
+		if err != nil {
+			return 0, 0, "", "", owerrors.New(owerrors.Invalid, "neighborhood relationship kind is invalid")
+		}
+		kind = parsed
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("record_kind")); raw != "" {
+		parsed, err := recorddomain.ParseKind(raw)
+		if err != nil {
+			return 0, 0, "", "", owerrors.New(owerrors.Invalid, "neighborhood endpoint record kind is invalid")
+		}
+		recordKind = parsed
+	}
+	return depth, limit, kind, recordKind, nil
 }
 
 func (m *me) readResearchRecordNeighborhood(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +87,7 @@ func (m *me) readResearchRecordNeighborhood(w http.ResponseWriter, r *http.Reque
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
-	depth, limit, err := neighborhoodParams(r)
+	depth, limit, kind, recordKind, err := neighborhoodParams(r)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -91,6 +107,24 @@ func (m *me) readResearchRecordNeighborhood(w http.ResponseWriter, r *http.Reque
 	recordIDs := []id.ID{anchor.ID}
 	seenRecords := map[id.ID]struct{}{anchor.ID: {}}
 	truncated := false
+	recordKinds := map[id.ID]recorddomain.Kind{anchor.ID: anchor.Kind}
+	recordKindMatches := func(record id.ID) (bool, error) {
+		if recordKind == "" {
+			return true, nil
+		}
+		if found, ok := recordKinds[record]; ok {
+			return found == recordKind, nil
+		}
+		found, err := m.research.records.ByID(r.Context(), workspace, record, maxSensitivity)
+		if err != nil {
+			if stderrors.Is(err, recorddomain.ErrNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		recordKinds[record] = found.Kind
+		return found.Kind == recordKind, nil
+	}
 	addRecord := func(record id.ID) bool {
 		if record.IsZero() {
 			return false
@@ -133,6 +167,24 @@ func (m *me) readResearchRecordNeighborhood(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			for _, connection := range foundConnections {
+				if kind != "" && connection.Kind != kind {
+					continue
+				}
+				if recordKind != "" {
+					fromMatches, err := recordKindMatches(connection.FromRecordID)
+					if err != nil {
+						httpx.Fail(m.log, w, r, err)
+						return
+					}
+					toMatches, err := recordKindMatches(connection.ToRecordID)
+					if err != nil {
+						httpx.Fail(m.log, w, r, err)
+						return
+					}
+					if !fromMatches && !toMatches {
+						continue
+					}
+				}
 				fromVisible := addRecord(connection.FromRecordID)
 				toVisible := addRecord(connection.ToRecordID)
 				if !fromVisible || !toVisible {
@@ -154,6 +206,28 @@ func (m *me) readResearchRecordNeighborhood(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			for _, event := range foundEvents {
+				if recordKind != "" {
+					matches := false
+					for _, participant := range event.ParticipantRecordIDs {
+						matched, err := recordKindMatches(participant)
+						if err != nil {
+							httpx.Fail(m.log, w, r, err)
+							return
+						}
+						matches = matches || matched
+					}
+					if event.LocationRecordID != nil {
+						matched, err := recordKindMatches(*event.LocationRecordID)
+						if err != nil {
+							httpx.Fail(m.log, w, r, err)
+							return
+						}
+						matches = matches || matched
+					}
+					if !matches {
+						continue
+					}
+				}
 				allRecordsVisible := true
 				for _, participant := range event.ParticipantRecordIDs {
 					if !addRecord(participant) {

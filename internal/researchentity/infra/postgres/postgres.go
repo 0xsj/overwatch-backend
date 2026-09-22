@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -40,12 +41,35 @@ func NewStore(db *postgres.Pool) *Store {
 
 func uuid(i id.ID) pgtype.UUID { return pgtype.UUID{Bytes: i, Valid: !i.IsZero()} }
 
+func stamp(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: !t.IsZero()}
+}
+
+func instant(t pgtype.Timestamptz) time.Time {
+	if !t.Valid {
+		return time.Time{}
+	}
+	return t.Time
+}
+
 func stringIDs(values []id.ID) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		out = append(out, value.String())
 	}
 	return out
+}
+
+func parseIDs(values []string) ([]id.ID, error) {
+	out := make([]id.ID, 0, len(values))
+	for _, value := range values {
+		parsed, err := id.Parse(value)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, parsed)
+	}
+	return out, nil
 }
 
 func translate(ctx context.Context, err error) error {
@@ -58,6 +82,7 @@ func translate(ctx context.Context, err error) error {
 const recordSelect = `
 select r.id,r.workspace_id,r.kind,r.name,r.description,
        r.author,r.updated_by,r.created_at,r.updated_at,
+       r.archived_at,r.archived_by,
        coalesce(json_agg(ro.observation_id order by ro.observation_id)
          filter (where ro.observation_id is not null), '[]'::json)::text
        ,coalesce((select json_build_object('latitude',g.latitude,'longitude',g.longitude,'precision',g.precision,'observation_ids',g.observation_ids)::text
@@ -70,11 +95,12 @@ type scanner interface{ Scan(...any) error }
 
 func scanRecord(row scanner) (domain.Record, error) {
 	var out domain.Record
-	var recordID, workspace, author, updatedBy pgtype.UUID
+	var recordID, workspace, author, updatedBy, archivedBy pgtype.UUID
+	var archivedAt pgtype.Timestamptz
 	var kind string
 	var raw, geometryRaw []byte
 	if err := row.Scan(&recordID, &workspace, &kind, &out.Name, &out.Description,
-		&author, &updatedBy, &out.CreatedAt, &out.UpdatedAt, &raw, &geometryRaw); err != nil {
+		&author, &updatedBy, &out.CreatedAt, &out.UpdatedAt, &archivedAt, &archivedBy, &raw, &geometryRaw); err != nil {
 		return domain.Record{}, err
 	}
 	parsed, err := domain.ParseKind(kind)
@@ -87,6 +113,7 @@ func scanRecord(row scanner) (domain.Record, error) {
 	}
 	out.ID, out.WorkspaceID = id.ID(recordID.Bytes), id.ID(workspace.Bytes)
 	out.Kind, out.Author, out.UpdatedBy = parsed, id.ID(author.Bytes), id.ID(updatedBy.Bytes)
+	out.ArchivedAt, out.ArchivedBy = instant(archivedAt), id.ID(archivedBy.Bytes)
 	out.ObservationIDs = make([]id.ID, 0, len(observationIDs))
 	for _, rawID := range observationIDs {
 		one, err := id.Parse(rawID)
@@ -122,6 +149,52 @@ func scanRecord(row scanner) (domain.Record, error) {
 	return out, nil
 }
 
+func scanRevision(row scanner) (domain.Revision, error) {
+	var out domain.Revision
+	var revisionID, workspace, recordID, archivedBy, changedBy pgtype.UUID
+	var kind string
+	var observationsRaw, geometryRaw []byte
+	var archivedAt pgtype.Timestamptz
+	if err := row.Scan(&revisionID, &workspace, &recordID, &out.Revision, &kind, &out.Name, &out.Description, &observationsRaw, &geometryRaw, &archivedAt, &archivedBy, &changedBy, &out.ChangedAt); err != nil {
+		return domain.Revision{}, err
+	}
+	parsed, err := domain.ParseKind(kind)
+	if err != nil {
+		return domain.Revision{}, err
+	}
+	var observationIDs []string
+	if err := json.Unmarshal(observationsRaw, &observationIDs); err != nil {
+		return domain.Revision{}, err
+	}
+	out.ObservationIDs, err = parseIDs(observationIDs)
+	if err != nil {
+		return domain.Revision{}, err
+	}
+	out.ID, out.WorkspaceID, out.RecordID = id.ID(revisionID.Bytes), id.ID(workspace.Bytes), id.ID(recordID.Bytes)
+	out.Kind, out.ArchivedAt, out.ArchivedBy, out.ChangedBy = parsed, instant(archivedAt), id.ID(archivedBy.Bytes), id.ID(changedBy.Bytes)
+	if len(geometryRaw) > 0 && string(geometryRaw) != "null" {
+		var stored struct {
+			Latitude       float64  `json:"latitude"`
+			Longitude      float64  `json:"longitude"`
+			Precision      string   `json:"precision"`
+			ObservationIDs []string `json:"observation_ids"`
+		}
+		if err := json.Unmarshal(geometryRaw, &stored); err != nil {
+			return domain.Revision{}, err
+		}
+		precision, err := domain.ParsePlacePrecision(stored.Precision)
+		if err != nil {
+			return domain.Revision{}, err
+		}
+		geometryObservations, err := parseIDs(stored.ObservationIDs)
+		if err != nil {
+			return domain.Revision{}, err
+		}
+		out.PlaceGeometry = &domain.PlaceGeometry{Latitude: stored.Latitude, Longitude: stored.Longitude, Precision: precision, ObservationIDs: geometryObservations}
+	}
+	return out, nil
+}
+
 func (s *Store) Create(ctx context.Context, in domain.Record) error {
 	_, err := s.db.DB(ctx).Exec(ctx, `
 insert into research.record
@@ -150,7 +223,7 @@ where r.workspace_id=$1 and r.id=$2
        where hidden_ro.record_id=r.id
          and hidden_ro.workspace_id=r.workspace_id
          and hidden_s.sensitivity='restricted'))
-group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at`, uuid(workspace), uuid(want), maxSensitivity)
+group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at,r.archived_at,r.archived_by`, uuid(workspace), uuid(want), maxSensitivity)
 	out, err := scanRecord(row)
 	if err != nil {
 		return domain.Record{}, translate(ctx, err)
@@ -161,9 +234,9 @@ group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r
 func (s *Store) Save(ctx context.Context, in domain.Record) error {
 	tag, err := s.db.DB(ctx).Exec(ctx, `
 update research.record
-set kind=$3,name=$4,description=$5,updated_by=$6,updated_at=$7
+set kind=$3,name=$4,description=$5,updated_by=$6,updated_at=$7,archived_at=$8,archived_by=$9
 where workspace_id=$1 and id=$2`, uuid(in.WorkspaceID), uuid(in.ID), in.Kind.String(), in.Name, in.Description,
-		uuid(in.UpdatedBy), in.UpdatedAt)
+		uuid(in.UpdatedBy), in.UpdatedAt, stamp(in.ArchivedAt), uuid(in.ArchivedBy))
 	if err != nil {
 		return translate(ctx, err)
 	}
@@ -211,10 +284,70 @@ values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8)`, uuid(record.WorkspaceID), uuid(record.
 	return translate(ctx, err)
 }
 
-func (s *Store) Page(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int, maxSensitivity string) ([]domain.Record, error) {
+func (s *Store) CreateRevision(ctx context.Context, in domain.Revision) error {
+	observations, err := json.Marshal(stringIDs(in.ObservationIDs))
+	if err != nil {
+		return err
+	}
+	var geometry []byte
+	if in.PlaceGeometry != nil {
+		geometry, err = json.Marshal(struct {
+			Latitude       float64  `json:"latitude"`
+			Longitude      float64  `json:"longitude"`
+			Precision      string   `json:"precision"`
+			ObservationIDs []string `json:"observation_ids"`
+		}{
+			Latitude: in.PlaceGeometry.Latitude, Longitude: in.PlaceGeometry.Longitude,
+			Precision: in.PlaceGeometry.Precision.String(), ObservationIDs: stringIDs(in.PlaceGeometry.ObservationIDs),
+		})
+		if err != nil {
+			return err
+		}
+	}
+	_, err = s.db.DB(ctx).Exec(ctx, `
+insert into research.record_revision
+ (id,workspace_id,record_id,revision,kind,name,description,observation_ids,place_geometry,archived_at,archived_by,changed_by,changed_at)
+select $1,$2,$3,coalesce((select max(revision)+1 from research.record_revision where record_id=$3),1),$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11,$12
+where exists (select 1 from research.record where id=$3 and workspace_id=$2)`,
+		uuid(in.ID), uuid(in.WorkspaceID), uuid(in.RecordID), in.Kind.String(), in.Name, in.Description, string(observations), geometry,
+		stamp(in.ArchivedAt), uuid(in.ArchivedBy), uuid(in.ChangedBy), in.ChangedAt)
+	return translate(ctx, err)
+}
+
+func (s *Store) Revisions(ctx context.Context, workspace, record id.ID, maxSensitivity string) ([]domain.Revision, error) {
+	rows, err := s.db.DB(ctx).Query(ctx, `
+select rr.id,rr.workspace_id,rr.record_id,rr.revision,rr.kind,rr.name,rr.description,rr.observation_ids,coalesce(rr.place_geometry,'null'::jsonb),rr.archived_at,rr.archived_by,rr.changed_by,rr.changed_at
+from research.record_revision rr
+where rr.workspace_id=$1 and rr.record_id=$2
+  and ($3='restricted' or not exists (
+    select 1
+    from jsonb_array_elements_text(rr.observation_ids) linked(value)
+    join observation.manual o on o.id=linked.value::uuid and o.workspace_id=rr.workspace_id
+    join source.source src on src.id=o.source_id and src.workspace_id=o.workspace_id
+    where src.sensitivity='restricted'))
+order by rr.revision asc`, uuid(workspace), uuid(record), maxSensitivity)
+	if err != nil {
+		return nil, translate(ctx, err)
+	}
+	defer rows.Close()
+	out := make([]domain.Revision, 0)
+	for rows.Next() {
+		one, err := scanRevision(rows)
+		if err != nil {
+			return nil, translate(ctx, err)
+		}
+		out = append(out, one)
+	}
+	return out, translate(ctx, rows.Err())
+}
+
+func (s *Store) Page(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, archived domain.ArchiveFilter, limit int, maxSensitivity string) ([]domain.Record, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, recordSelect+`
 where r.workspace_id=$1 and ($2::uuid is null or r.id < $2)
-  and ($7 = 'restricted' or not exists (
+  and (($7 = 'active' and r.archived_at is null)
+    or ($7 = 'archived' and r.archived_at is not null)
+    or $7 = 'all')
+  and ($8 = 'restricted' or not exists (
        select 1
        from research.record_observation hidden_ro
        join observation.manual hidden_o
@@ -261,8 +394,8 @@ where r.workspace_id=$1 and ($2::uuid is null or r.id < $2)
        where active_rr.workspace_id=r.workspace_id
          and (active_rr.alias_record_id=r.id or active_rr.canonical_record_id=r.id)
          and active_rr.state in ('proposed','accepted'))))
-group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at
-order by r.id desc limit $8`, uuid(workspace), uuid(before), search, kind.String(), citation.String(), resolution.String(), maxSensitivity, limit)
+group by r.id,r.workspace_id,r.kind,r.name,r.description,r.author,r.updated_by,r.created_at,r.updated_at,r.archived_at,r.archived_by
+order by r.id desc limit $9`, uuid(workspace), uuid(before), search, kind.String(), citation.String(), resolution.String(), archived.String(), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}
@@ -304,6 +437,7 @@ from research.record r
 left join research.record_observation ro
   on ro.record_id=r.id and ro.workspace_id=r.workspace_id
 where r.workspace_id=$1
+  and r.archived_at is null
   and ($2 = 'restricted' or not exists (
        select 1
        from research.record_observation hidden_ro

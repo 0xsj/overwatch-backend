@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/0xsj/overwatch-backend/internal/researchconnection/domain"
+	recorddomain "github.com/0xsj/overwatch-backend/internal/researchentity/domain"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 	"github.com/0xsj/overwatch-backend/pkg/postgres"
 )
@@ -313,18 +314,24 @@ func (s *Store) RevisionByID(ctx context.Context, workspace, connection, revisio
 	return out, nil
 }
 
-func (s *Store) Page(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int, maxSensitivity string) ([]domain.Connection, error) {
+func (s *Store) Page(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, recordKind recorddomain.Kind, state domain.State, review domain.ReviewFilter, limit int, maxSensitivity string) ([]domain.Connection, error) {
 	rows, err := s.db.DB(ctx).Query(ctx, connectionSelect+
-		"where c.workspace_id=$1 and ($2::uuid is null or c.id < $2) and ($3='' or c.state=$3) "+
-		"and ($5='restricted' or ("+
+		"join research.record fr on fr.id=c.from_record_id and fr.workspace_id=c.workspace_id "+
+		"join research.record tr on tr.id=c.to_record_id and tr.workspace_id=c.workspace_id "+
+		"where c.workspace_id=$1 and ($2::uuid is null or c.id < $2) "+
+		"and ($3='' or position(lower($3) in lower(concat_ws(' ', c.id::text, c.kind, c.state, c.rationale, fr.id::text, fr.name, fr.description, tr.id::text, tr.name, tr.description))) > 0) "+
+		"and ($4='' or c.state=$4) "+
+		"and ($5='' or c.kind=$5) "+
+		"and ($6='' or fr.kind=$6 or tr.kind=$6) "+
+		"and ($8='restricted' or ("+
 		"not exists (select 1 from research.record_observation hidden_from_ro join observation.manual hidden_from_o on hidden_from_o.id=hidden_from_ro.observation_id and hidden_from_o.workspace_id=hidden_from_ro.workspace_id join source.source hidden_from_s on hidden_from_s.id=hidden_from_o.source_id and hidden_from_s.workspace_id=hidden_from_o.workspace_id where hidden_from_ro.record_id=c.from_record_id and hidden_from_ro.workspace_id=c.workspace_id and hidden_from_s.sensitivity='restricted') "+
 		"and not exists (select 1 from research.record_observation hidden_to_ro join observation.manual hidden_to_o on hidden_to_o.id=hidden_to_ro.observation_id and hidden_to_o.workspace_id=hidden_to_ro.workspace_id join source.source hidden_to_s on hidden_to_s.id=hidden_to_o.source_id and hidden_to_s.workspace_id=hidden_to_o.workspace_id where hidden_to_ro.record_id=c.to_record_id and hidden_to_ro.workspace_id=c.workspace_id and hidden_to_s.sensitivity='restricted') "+
 		"and not exists (select 1 from research.connection_evidence hidden_ce join observation.manual hidden_eo on hidden_eo.id=hidden_ce.observation_id and hidden_eo.workspace_id=hidden_ce.workspace_id join source.source hidden_es on hidden_es.id=hidden_eo.source_id and hidden_es.workspace_id=hidden_eo.workspace_id where hidden_ce.connection_id=c.id and hidden_ce.workspace_id=c.workspace_id and hidden_es.sensitivity='restricted')"+
 		")) "+
 		"group by c.id,c.workspace_id,c.from_record_id,c.to_record_id,c.kind,c.state,c.rationale,c.author,c.updated_by,c.created_at,c.updated_at "+
-		"having $4='' or ($4='open' and c.state in ('proposed','deferred')) or ($4='conflicted' and count(ce.observation_id) filter (where ce.polarity='supporting') > 0 and count(ce.observation_id) filter (where ce.polarity='opposing') > 0) or ($4='uncited' and count(ce.observation_id) filter (where ce.polarity='supporting') = 0 and count(ce.observation_id) filter (where ce.polarity='opposing') = 0) "+
-		"order by c.id desc limit $6",
-		uuid(workspace), uuid(before), state.String(), review.String(), maxSensitivity, limit)
+		"having $7='' or ($7='open' and c.state in ('proposed','deferred')) or ($7='conflicted' and count(ce.observation_id) filter (where ce.polarity='supporting') > 0 and count(ce.observation_id) filter (where ce.polarity='opposing') > 0) or ($7='uncited' and count(ce.observation_id) filter (where ce.polarity='supporting') = 0 and count(ce.observation_id) filter (where ce.polarity='opposing') = 0) "+
+		"order by c.id desc limit $9",
+		uuid(workspace), uuid(before), search, state.String(), kind.String(), recordKind.String(), review.String(), maxSensitivity, limit)
 	if err != nil {
 		return nil, translate(ctx, err)
 	}

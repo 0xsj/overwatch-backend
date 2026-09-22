@@ -22,14 +22,15 @@ func TestResearchQuestionsKeepUncertaintySeparateAndCanResolveIt(t *testing.T) {
 
 	questionsPath := "/v1/workspaces/" + workspace.String() + "/questions"
 	res := s.post(t, questionsPath, researchJSON(t, map[string]any{
-		"question": "Which notice is the original account?",
-		"context":  "The reports use similar wording and may not be independent.",
-		"state":    "open", "observation_ids": []id.ID{right.ID, left.ID},
+		"question":     "Which notice is the original account?",
+		"context":      "The reports use similar wording and may not be independent.",
+		"context_kind": "connection", "context_id": id.ID{7},
+		"state": "open", "observation_ids": []id.ID{right.ID, left.ID},
 	}), auth)
 	researchStatus(t, res, http.StatusCreated)
 	var created leaddomain.Question
 	decode(t, res, &created)
-	if created.State != leaddomain.Open || len(created.ObservationIDs) != 2 ||
+	if created.State != leaddomain.Open || created.ContextKind != string(leaddomain.ContextConnection) || created.ContextID != (id.ID{7}) || len(created.ObservationIDs) != 2 ||
 		created.ObservationIDs[0] != left.ID || created.ObservationIDs[1] != right.ID {
 		t.Fatalf("created question: %+v", created)
 	}
@@ -43,9 +44,10 @@ func TestResearchQuestionsKeepUncertaintySeparateAndCanResolveIt(t *testing.T) {
 	}
 
 	res = s.put(t, questionsPath+"/"+created.ID.String(), researchJSON(t, map[string]any{
-		"question": "Which notice is the original account?",
-		"context":  "The reports use similar wording and may not be independent.",
-		"state":    "answered", "resolution": "The second notice was published later.",
+		"question":     "Which notice is the original account?",
+		"context":      "The reports use similar wording and may not be independent.",
+		"context_kind": "connection", "context_id": id.ID{7},
+		"state": "answered", "resolution": "The second notice was published later.",
 		"observation_ids": []id.ID{left.ID},
 	}), auth)
 	researchStatus(t, res, http.StatusOK)

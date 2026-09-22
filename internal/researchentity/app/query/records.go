@@ -9,9 +9,10 @@ import (
 )
 
 type Reader interface {
-	Page(context.Context, id.ID, id.ID, string, domain.Kind, domain.CitationFilter, domain.ResolutionFilter, int, string) ([]domain.Record, error)
+	Page(context.Context, id.ID, id.ID, string, domain.Kind, domain.CitationFilter, domain.ResolutionFilter, domain.ArchiveFilter, int, string) ([]domain.Record, error)
 	Summary(context.Context, id.ID, string) (domain.BrowseSummary, error)
 	ByIDVisible(context.Context, id.ID, id.ID, string) (domain.Record, error)
+	Revisions(context.Context, id.ID, id.ID, string) ([]domain.Revision, error)
 }
 
 type Records struct{ reader Reader }
@@ -33,7 +34,7 @@ type Page struct {
 	NextCursor *id.ID          `json:"next_cursor"`
 }
 
-func (r *Records) List(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, limit int, maxSensitivity string) (Page, error) {
+func (r *Records) List(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, citation domain.CitationFilter, resolution domain.ResolutionFilter, archived domain.ArchiveFilter, limit int, maxSensitivity string) (Page, error) {
 	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return Page{}, domain.ErrWorkspaceRequired
 	}
@@ -56,13 +57,17 @@ func (r *Records) List(ctx context.Context, workspace, before id.ID, search stri
 	if err != nil {
 		return Page{}, err
 	}
+	parsedArchived, err := domain.ParseArchiveFilter(archived.String())
+	if err != nil {
+		return Page{}, err
+	}
 	if limit <= 0 {
 		limit = DefaultPage
 	}
 	if limit > MaxPage {
 		limit = MaxPage
 	}
-	rows, err := r.reader.Page(ctx, workspace, before, search, kind, parsedCitation, parsedResolution, limit+1, maxSensitivity)
+	rows, err := r.reader.Page(ctx, workspace, before, search, kind, parsedCitation, parsedResolution, parsedArchived, limit+1, maxSensitivity)
 	if err != nil {
 		return Page{}, err
 	}
@@ -90,6 +95,20 @@ func (r *Records) Summary(ctx context.Context, workspace id.ID, maxSensitivity s
 		return domain.BrowseSummary{}, domain.ErrWorkspaceRequired
 	}
 	return r.reader.Summary(ctx, workspace, maxSensitivity)
+}
+
+func (r *Records) Revisions(ctx context.Context, workspace, record id.ID, maxSensitivity string) ([]domain.Revision, error) {
+	if workspace.IsZero() || record.IsZero() || !validMaxSensitivity(maxSensitivity) {
+		return nil, domain.ErrIDRequired
+	}
+	rows, err := r.reader.Revisions(ctx, workspace, record, maxSensitivity)
+	if err != nil {
+		return nil, err
+	}
+	if rows == nil {
+		return []domain.Revision{}, nil
+	}
+	return rows, nil
 }
 
 func validMaxSensitivity(value string) bool {

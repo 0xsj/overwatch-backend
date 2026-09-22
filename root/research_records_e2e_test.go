@@ -34,6 +34,51 @@ func TestResearchRecordsKeepAuthoredKindsAndCitations(t *testing.T) {
 	if updated.Kind != "person" || updated.Name != "Harborline author" || updated.UpdatedBy == "" {
 		t.Fatalf("updated research record: %+v", updated)
 	}
+	var revisions struct {
+		Items []researchRecordRevisionResponse `json:"items"`
+	}
+	revisionsResponse := s.get(t, base+"/records/"+created.RecordID+"/revisions", auth)
+	researchStatus(t, revisionsResponse, http.StatusOK)
+	decode(t, revisionsResponse, &revisions)
+	if len(revisions.Items) != 2 || revisions.Items[0].Revision != 1 || revisions.Items[0].Name != "@harborline" || revisions.Items[1].Revision != 2 || revisions.Items[1].Name != "Harborline author" {
+		t.Fatalf("record revisions after edit: %+v", revisions)
+	}
+	archivedResponse := s.post(t, base+"/records/"+created.RecordID+"/archive", "", auth)
+	researchStatus(t, archivedResponse, http.StatusOK)
+	var archived researchRecordResponse
+	decode(t, archivedResponse, &archived)
+	if archived.ArchivedAt == "" || archived.ArchivedBy == "" {
+		t.Fatalf("archived research record: %+v", archived)
+	}
+	var activePage struct {
+		Items []researchRecordResponse `json:"items"`
+	}
+	activeResponse := s.get(t, base+"/records", auth)
+	researchStatus(t, activeResponse, http.StatusOK)
+	decode(t, activeResponse, &activePage)
+	if len(activePage.Items) != 0 {
+		t.Fatalf("archived record remained in active list: %+v", activePage)
+	}
+	var archivedPage struct {
+		Items []researchRecordResponse `json:"items"`
+	}
+	archivedListResponse := s.get(t, base+"/records?archived=archived", auth)
+	researchStatus(t, archivedListResponse, http.StatusOK)
+	decode(t, archivedListResponse, &archivedPage)
+	if len(archivedPage.Items) != 1 || archivedPage.Items[0].RecordID != created.RecordID {
+		t.Fatalf("archived record list: %+v", archivedPage)
+	}
+	researchStatus(t, s.put(t, base+"/records/"+created.RecordID, researchJSON(t, map[string]any{
+		"kind": "place", "name": "East Quay", "observation_ids": []string{observation.ID.String()},
+	}), auth), http.StatusConflict)
+	researchStatus(t, s.post(t, base+"/records/"+created.RecordID+"/restore", "", auth), http.StatusOK)
+	revisionsResponse = s.get(t, base+"/records/"+created.RecordID+"/revisions", auth)
+	researchStatus(t, revisionsResponse, http.StatusOK)
+	decode(t, revisionsResponse, &revisions)
+	if len(revisions.Items) != 4 || revisions.Items[2].ArchivedAt == "" || revisions.Items[3].ArchivedAt != "" {
+		t.Fatalf("record lifecycle revisions: %+v", revisions)
+	}
+	researchStatus(t, s.get(t, base+"/records?archived=unknown", auth), http.StatusBadRequest)
 
 	var page struct {
 		Items []researchRecordResponse `json:"items"`

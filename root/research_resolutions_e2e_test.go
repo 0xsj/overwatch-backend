@@ -98,6 +98,15 @@ func TestResearchResolutionRequiresConfirmationAndCanBeReversed(t *testing.T) {
 	if len(before.ObservationIDs) != 1 || before.ObservationIDs[0] != observation.ID.String() {
 		t.Fatalf("canonical citations after confirmation: %+v", before)
 	}
+	var canonicalRevisions struct {
+		Items []researchRecordRevisionResponse `json:"items"`
+	}
+	revisionsResponse := s.get(t, base+"/records/"+canonical.RecordID+"/revisions", auth)
+	researchStatus(t, revisionsResponse, http.StatusOK)
+	decode(t, revisionsResponse, &canonicalRevisions)
+	if len(canonicalRevisions.Items) != 2 || len(canonicalRevisions.Items[1].ObservationIDs) != 1 {
+		t.Fatalf("canonical history after resolution acceptance: %+v", canonicalRevisions)
+	}
 	aliasAfter := s.get(t, base+"/records/"+alias.RecordID, auth)
 	researchStatus(t, aliasAfter, http.StatusOK)
 	decode(t, aliasAfter, &before)
@@ -117,6 +126,12 @@ func TestResearchResolutionRequiresConfirmationAndCanBeReversed(t *testing.T) {
 	decode(t, canonicalAfterReverse, &before)
 	if len(before.ObservationIDs) != 0 {
 		t.Fatalf("reversal removed too little or retained merged citations: %+v", before)
+	}
+	revisionsResponse = s.get(t, base+"/records/"+canonical.RecordID+"/revisions", auth)
+	researchStatus(t, revisionsResponse, http.StatusOK)
+	decode(t, revisionsResponse, &canonicalRevisions)
+	if len(canonicalRevisions.Items) != 3 || len(canonicalRevisions.Items[2].ObservationIDs) != 0 {
+		t.Fatalf("canonical history after resolution reversal: %+v", canonicalRevisions)
 	}
 
 	researchStatus(t, s.put(t, base+"/resolutions/"+proposal.ResolutionID, researchJSON(t, map[string]any{"decision": "accept"}), auth), http.StatusConflict)

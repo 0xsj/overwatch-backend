@@ -7,6 +7,7 @@ var (
 	ErrKindUnknown         = errors.New(errors.Invalid, "research connection kind is unknown")
 	ErrStateUnknown        = errors.New(errors.Invalid, "research connection state must be proposed, accepted, rejected, or deferred")
 	ErrReviewFilterUnknown = errors.New(errors.Invalid, "research connection review filter must be open, conflicted, or uncited")
+	ErrSearchTooLong       = errors.New(errors.Invalid, "research connection search must be 200 characters or fewer")
 	ErrRationaleRequired   = errors.New(errors.Invalid, "a research connection needs a rationale")
 	ErrEvidenceTooMany     = errors.New(errors.Invalid, "a research connection can cite at most twelve observations per side")
 	ErrDuplicateEvidence   = errors.New(errors.Invalid, "a research connection cannot cite the same observation twice")

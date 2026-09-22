@@ -89,6 +89,24 @@ type Capture struct {
 	Bytes       int64     `json:"bytes"`
 	CapturedBy  id.ID     `json:"captured_by"`
 	CapturedAt  time.Time `json:"captured_at"`
+	Fetch       *Fetch    `json:"fetch,omitempty"`
+}
+
+type FetchHop struct {
+	URL    string `json:"url"`
+	Status int    `json:"status"`
+}
+
+// Fetch records the network response that produced a capture. Manual and
+// imported captures have no Fetch value; URL captures keep the request/final
+// URL and bounded egress observations without replacing the source identity.
+type Fetch struct {
+	RequestURL   string    `json:"request_url"`
+	FinalURL     string    `json:"final_url"`
+	Status       int       `json:"status"`
+	Redirects    []FetchHop `json:"redirects,omitempty"`
+	PeerAddress  string    `json:"peer_address,omitempty"`
+	DurationMS   int64     `json:"duration_ms"`
 }
 
 // SearchRow is the metadata needed to reopen one indexed text artifact. The
@@ -382,7 +400,7 @@ func binaryMediaType(mediaType string) bool {
 	}
 }
 
-func NewCapture(want, source, workspace, author id.ID, version int, mediaType string, info blob.Info, at time.Time) (Capture, error) {
+func NewCapture(want, source, workspace, author id.ID, version int, mediaType string, info blob.Info, at time.Time, fetch ...*Fetch) (Capture, error) {
 	if want.IsZero() || source.IsZero() || workspace.IsZero() || author.IsZero() || at.IsZero() || version < 1 {
 		return Capture{}, ErrInvalid
 	}
@@ -392,5 +410,22 @@ func NewCapture(want, source, workspace, author id.ID, version int, mediaType st
 	if _, err := blob.ParseRef(info.Ref.String()); err != nil || info.Size <= 0 || (!binaryMediaType(mediaType) && info.Size > MaxCaptureBytes) || info.Size > MaxBinaryCaptureBytes {
 		return Capture{}, ErrContent
 	}
-	return Capture{ID: want, SourceID: source, WorkspaceID: workspace, Version: version, MediaType: mediaType, SHA256: info.Ref.Hex, Bytes: info.Size, CapturedBy: author, CapturedAt: at}, nil
+	var provenance *Fetch
+	if len(fetch) > 1 {
+		return Capture{}, ErrInvalid
+	}
+	if len(fetch) == 1 && fetch[0] != nil {
+		value := *fetch[0]
+		if value.RequestURL == "" || value.FinalURL == "" || value.Status < 200 || value.Status >= 300 || value.DurationMS < 0 || len(value.Redirects) > 5 {
+			return Capture{}, ErrInvalid
+		}
+		for _, hop := range value.Redirects {
+			if hop.URL == "" || hop.Status < 300 || hop.Status >= 400 {
+				return Capture{}, ErrInvalid
+			}
+		}
+		value.Redirects = append([]FetchHop(nil), value.Redirects...)
+		provenance = &value
+	}
+	return Capture{ID: want, SourceID: source, WorkspaceID: workspace, Version: version, MediaType: mediaType, SHA256: info.Ref.Hex, Bytes: info.Size, CapturedBy: author, CapturedAt: at, Fetch: provenance}, nil
 }

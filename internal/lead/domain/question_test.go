@@ -78,3 +78,16 @@ func TestQuestionRejectsDuplicateAndExcessiveCitations(t *testing.T) {
 		t.Fatal("too many observations accepted")
 	}
 }
+
+func TestQuestionOriginRequiresACompleteKnownContext(t *testing.T) {
+	at := time.Now()
+	if _, err := domain.NewWithContext(leadID(1), leadID(2), leadID(3), "connection", leadID(4), "What is this?", "", "open", "", nil, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := domain.NewWithContext(leadID(1), leadID(2), leadID(3), "connection", id.ID{}, "What is this?", "", "open", "", nil, at); err == nil {
+		t.Fatal("half-set question origin accepted")
+	}
+	if _, err := domain.NewWithContext(leadID(1), leadID(2), leadID(3), "unknown", leadID(4), "What is this?", "", "open", "", nil, at); err == nil {
+		t.Fatal("unknown question origin accepted")
+	}
+}

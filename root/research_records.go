@@ -23,6 +23,8 @@ type researchRecordResponse struct {
 	UpdatedBy      string                         `json:"updated_by"`
 	CreatedAt      string                         `json:"created_at"`
 	UpdatedAt      string                         `json:"updated_at"`
+	ArchivedAt     string                         `json:"archived_at,omitempty"`
+	ArchivedBy     string                         `json:"archived_by,omitempty"`
 }
 
 type researchPlaceGeometryResponse struct {
@@ -42,6 +44,22 @@ type researchRecordSummaryResponse struct {
 	AcceptedResolutionRecordCount int            `json:"accepted_resolution_record_count"`
 }
 
+type researchRecordRevisionResponse struct {
+	RevisionID     string                         `json:"revision_id"`
+	WorkspaceID    string                         `json:"workspace_id"`
+	RecordID       string                         `json:"record_id"`
+	Revision       int                            `json:"revision"`
+	Kind           string                         `json:"kind"`
+	Name           string                         `json:"name"`
+	Description    string                         `json:"description,omitempty"`
+	ObservationIDs []string                       `json:"observation_ids"`
+	PlaceGeometry  *researchPlaceGeometryResponse `json:"place_geometry,omitempty"`
+	ArchivedAt     string                         `json:"archived_at,omitempty"`
+	ArchivedBy     string                         `json:"archived_by,omitempty"`
+	ChangedBy      string                         `json:"changed_by"`
+	ChangedAt      string                         `json:"changed_at"`
+}
+
 func asResearchRecord(record recorddomain.Record) researchRecordResponse {
 	observations := make([]string, 0, len(record.ObservationIDs))
 	for _, one := range record.ObservationIDs {
@@ -55,12 +73,17 @@ func asResearchRecord(record recorddomain.Record) researchRecordResponse {
 		}
 		geometry = &researchPlaceGeometryResponse{Latitude: record.PlaceGeometry.Latitude, Longitude: record.PlaceGeometry.Longitude, Precision: record.PlaceGeometry.Precision.String(), ObservationIDs: geometryObservationIDs}
 	}
-	return researchRecordResponse{
+	response := researchRecordResponse{
 		RecordID: record.ID.String(), WorkspaceID: record.WorkspaceID.String(), Kind: record.Kind.String(),
 		Name: record.Name, Description: record.Description, ObservationIDs: observations, PlaceGeometry: geometry,
 		Author: record.Author.String(), UpdatedBy: record.UpdatedBy.String(),
 		CreatedAt: record.CreatedAt.UTC().Format(time.RFC3339Nano), UpdatedAt: record.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if record.Archived() {
+		response.ArchivedAt = record.ArchivedAt.UTC().Format(time.RFC3339Nano)
+		response.ArchivedBy = record.ArchivedBy.String()
+	}
+	return response
 }
 
 func asResearchRecordSummary(summary recorddomain.BrowseSummary) researchRecordSummaryResponse {
@@ -74,6 +97,31 @@ func asResearchRecordSummary(summary recorddomain.BrowseSummary) researchRecordS
 		CitationCount: summary.CitationCount, OpenResolutionRecordCount: summary.OpenResolutionRecordCount,
 		AcceptedResolutionRecordCount: summary.AcceptedResolutionRecordCount,
 	}
+}
+
+func asResearchRecordRevision(revision recorddomain.Revision) researchRecordRevisionResponse {
+	observations := make([]string, 0, len(revision.ObservationIDs))
+	for _, one := range revision.ObservationIDs {
+		observations = append(observations, one.String())
+	}
+	var geometry *researchPlaceGeometryResponse
+	if revision.PlaceGeometry != nil {
+		geometryObservations := make([]string, 0, len(revision.PlaceGeometry.ObservationIDs))
+		for _, one := range revision.PlaceGeometry.ObservationIDs {
+			geometryObservations = append(geometryObservations, one.String())
+		}
+		geometry = &researchPlaceGeometryResponse{Latitude: revision.PlaceGeometry.Latitude, Longitude: revision.PlaceGeometry.Longitude, Precision: revision.PlaceGeometry.Precision.String(), ObservationIDs: geometryObservations}
+	}
+	response := researchRecordRevisionResponse{
+		RevisionID: revision.ID.String(), WorkspaceID: revision.WorkspaceID.String(), RecordID: revision.RecordID.String(), Revision: revision.Revision,
+		Kind: revision.Kind.String(), Name: revision.Name, Description: revision.Description, ObservationIDs: observations, PlaceGeometry: geometry,
+		ChangedBy: revision.ChangedBy.String(), ChangedAt: revision.ChangedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !revision.ArchivedAt.IsZero() {
+		response.ArchivedAt = revision.ArchivedAt.UTC().Format(time.RFC3339Nano)
+		response.ArchivedBy = revision.ArchivedBy.String()
+	}
+	return response
 }
 
 type researchRecordRequest struct {
@@ -116,7 +164,11 @@ func (m *me) listResearchRecords(w http.ResponseWriter, r *http.Request) {
 	kind := recorddomain.Kind(strings.TrimSpace(r.URL.Query().Get("kind")))
 	citation := recorddomain.CitationFilter(strings.TrimSpace(r.URL.Query().Get("citation")))
 	resolution := recorddomain.ResolutionFilter(strings.TrimSpace(r.URL.Query().Get("resolution")))
-	found, err := m.research.records.List(r.Context(), workspace, before, search, kind, citation, resolution, size, maxSensitivity)
+	archived := recorddomain.ArchiveActive
+	if raw := strings.TrimSpace(r.URL.Query().Get("archived")); raw != "" {
+		archived = recorddomain.ArchiveFilter(raw)
+	}
+	found, err := m.research.records.List(r.Context(), workspace, before, search, kind, citation, resolution, archived, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return
@@ -172,6 +224,39 @@ func (m *me) readResearchRecord(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, r, http.StatusOK, asResearchRecord(found))
 }
 
+func (m *me) listResearchRecordRevisions(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, org, ok := m.onWorkspaceRecord(w, r)
+	if !ok {
+		return
+	}
+	maxSensitivity, err := m.sourceSensitivityScope(r.Context(), caller, workspace, org)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	want, err := id.Parse(r.PathValue("record"))
+	if err != nil {
+		httpx.Fail(m.log, w, r, recorddomain.ErrNotFound)
+		return
+	}
+	if _, err := m.research.records.ByID(r.Context(), workspace, want, maxSensitivity); err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	found, err := m.research.records.Revisions(r.Context(), workspace, want, maxSensitivity)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	items := make([]researchRecordRevisionResponse, 0, len(found))
+	for _, one := range found {
+		items = append(items, asResearchRecordRevision(one))
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, struct {
+		Items []researchRecordRevisionResponse `json:"items"`
+	}{Items: items})
+}
+
 func (m *me) createResearchRecord(w http.ResponseWriter, r *http.Request) {
 	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
 	if !ok {
@@ -204,6 +289,42 @@ func (m *me) editResearchRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, err := m.research.recordCmd.EditWithPlaceGeometry(r.Context(), workspace, want, caller, in.Kind, in.Name, in.Description, in.ObservationIDs, placeGeometryRequest(in.PlaceGeometry))
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, asResearchRecord(updated))
+}
+
+func (m *me) archiveResearchRecord(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	want, err := id.Parse(r.PathValue("record"))
+	if err != nil {
+		httpx.Fail(m.log, w, r, recorddomain.ErrNotFound)
+		return
+	}
+	updated, err := m.research.recordCmd.Archive(r.Context(), workspace, want, caller)
+	if err != nil {
+		httpx.Fail(m.log, w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, asResearchRecord(updated))
+}
+
+func (m *me) restoreResearchRecord(w http.ResponseWriter, r *http.Request) {
+	caller, workspace, _, ok := m.onWorkspace(w, r, orgdomain.LevelWrite)
+	if !ok {
+		return
+	}
+	want, err := id.Parse(r.PathValue("record"))
+	if err != nil {
+		httpx.Fail(m.log, w, r, recorddomain.ErrNotFound)
+		return
+	}
+	updated, err := m.research.recordCmd.Restore(r.Context(), workspace, want, caller)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return

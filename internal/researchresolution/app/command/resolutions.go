@@ -30,6 +30,7 @@ type Records interface {
 	ByID(context.Context, id.ID, id.ID) (recorddomain.Record, error)
 	Save(context.Context, recorddomain.Record) error
 	ReplaceObservations(context.Context, id.ID, id.ID, []id.ID) error
+	CreateRevision(context.Context, recorddomain.Revision) error
 }
 
 type Transactor interface {
@@ -131,6 +132,9 @@ func (r *Resolutions) Review(ctx context.Context, workspace, resolutionID, revie
 			if err := r.records.ReplaceObservations(ctx, workspace, updated.ID, updated.ObservationIDs); err != nil {
 				return err
 			}
+			if err := r.records.CreateRevision(ctx, recorddomain.NewRevision(r.ids.NewID(), updated)); err != nil {
+				return err
+			}
 			if err := r.repo.Save(ctx, next); err != nil {
 				return err
 			}
@@ -181,6 +185,9 @@ func (r *Resolutions) Reverse(ctx context.Context, workspace, resolutionID, revi
 			return err
 		}
 		if err := r.records.ReplaceObservations(ctx, workspace, updated.ID, updated.ObservationIDs); err != nil {
+			return err
+		}
+		if err := r.records.CreateRevision(ctx, recorddomain.NewRevision(r.ids.NewID(), updated)); err != nil {
 			return err
 		}
 		if err := r.repo.Save(ctx, next); err != nil {
@@ -274,6 +281,9 @@ func (r *Resolutions) ReviewSet(ctx context.Context, workspace, resolutionID, re
 			if err := r.records.ReplaceObservations(ctx, workspace, updated.ID, updated.ObservationIDs); err != nil {
 				return err
 			}
+			if err := r.records.CreateRevision(ctx, recorddomain.NewRevision(r.ids.NewID(), updated)); err != nil {
+				return err
+			}
 			if err := r.sets.SaveSet(ctx, next); err != nil {
 				return err
 			}
@@ -327,6 +337,9 @@ func (r *Resolutions) ReverseSet(ctx context.Context, workspace, resolutionID, r
 			return err
 		}
 		if err := r.records.ReplaceObservations(ctx, workspace, updated.ID, updated.ObservationIDs); err != nil {
+			return err
+		}
+		if err := r.records.CreateRevision(ctx, recorddomain.NewRevision(r.ids.NewID(), updated)); err != nil {
 			return err
 		}
 		if err := r.sets.SaveSet(ctx, next); err != nil {

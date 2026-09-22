@@ -2,13 +2,15 @@ package query
 
 import (
 	"context"
+	"strings"
 
 	"github.com/0xsj/overwatch-backend/internal/researchconnection/domain"
+	recorddomain "github.com/0xsj/overwatch-backend/internal/researchentity/domain"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
 
 type Reader interface {
-	Page(context.Context, id.ID, id.ID, domain.State, domain.ReviewFilter, int, string) ([]domain.Connection, error)
+	Page(context.Context, id.ID, id.ID, string, domain.Kind, recorddomain.Kind, domain.State, domain.ReviewFilter, int, string) ([]domain.Connection, error)
 	ForRecord(context.Context, id.ID, id.ID, int, string) ([]domain.Connection, error)
 	ByID(context.Context, id.ID, id.ID) (domain.Connection, error)
 	ByIDVisible(context.Context, id.ID, id.ID, string) (domain.Connection, error)
@@ -36,9 +38,29 @@ type Page struct {
 	NextCursor *id.ID
 }
 
-func (c *Connections) List(ctx context.Context, workspace, before id.ID, state domain.State, review domain.ReviewFilter, limit int, maxSensitivity string) (Page, error) {
+func (c *Connections) List(ctx context.Context, workspace, before id.ID, search string, kind domain.Kind, recordKind recorddomain.Kind, state domain.State, review domain.ReviewFilter, limit int, maxSensitivity string) (Page, error) {
 	if workspace.IsZero() || !validMaxSensitivity(maxSensitivity) {
 		return Page{}, domain.ErrInvalid
+	}
+	search = strings.TrimSpace(search)
+	if len(search) > 200 {
+		return Page{}, domain.ErrSearchTooLong
+	}
+	parsedKind := kind
+	if kind != "" {
+		var err error
+		parsedKind, err = domain.ParseKind(kind.String())
+		if err != nil {
+			return Page{}, err
+		}
+	}
+	parsedRecordKind := recordKind
+	if recordKind != "" {
+		var err error
+		parsedRecordKind, err = recorddomain.ParseKind(recordKind.String())
+		if err != nil {
+			return Page{}, err
+		}
 	}
 	parsedState := state
 	if state != "" {
@@ -58,7 +80,7 @@ func (c *Connections) List(ctx context.Context, workspace, before id.ID, state d
 	if limit > MaxPage {
 		limit = MaxPage
 	}
-	rows, err := c.reader.Page(ctx, workspace, before, parsedState, parsedReview, limit+1, maxSensitivity)
+	rows, err := c.reader.Page(ctx, workspace, before, search, parsedKind, parsedRecordKind, parsedState, parsedReview, limit+1, maxSensitivity)
 	if err != nil {
 		return Page{}, err
 	}

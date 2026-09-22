@@ -10,6 +10,8 @@ var (
 	ErrSearchTooLong            = errors.New(errors.Invalid, "research record search must be 200 characters or fewer")
 	ErrCitationFilterUnknown    = errors.New(errors.Invalid, "research record citation filter must be cited or uncited")
 	ErrResolutionFilterUnknown  = errors.New(errors.Invalid, "research record resolution filter must be open, accepted, or none")
+	ErrArchiveFilterUnknown     = errors.New(errors.Invalid, "research record archive filter must be active, archived, or all")
+	ErrArchived                 = errors.New(errors.Conflict, "archived research records must be restored before editing")
 	ErrNameRequired             = errors.New(errors.Invalid, "a research record needs a name")
 	ErrNameTooLong              = errors.New(errors.Invalid, "that research record name is too long")
 	ErrDescriptionTooLong       = errors.New(errors.Invalid, "that research record description is too long")

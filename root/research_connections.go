@@ -8,6 +8,7 @@ import (
 	assistdomain "github.com/0xsj/overwatch-backend/internal/assistance/domain"
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
 	connectiondomain "github.com/0xsj/overwatch-backend/internal/researchconnection/domain"
+	recorddomain "github.com/0xsj/overwatch-backend/internal/researchentity/domain"
 	"github.com/0xsj/overwatch-backend/pkg/httpx"
 	"github.com/0xsj/overwatch-backend/pkg/id"
 )
@@ -187,11 +188,30 @@ func (m *me) listResearchConnections(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(m.log, w, r, err)
 		return
 	}
+	kind := connectiondomain.Kind(strings.TrimSpace(r.URL.Query().Get("kind")))
+	if kind != "" {
+		parsed, err := connectiondomain.ParseKind(kind.String())
+		if err != nil {
+			httpx.Fail(m.log, w, r, err)
+			return
+		}
+		kind = parsed
+	}
+	recordKind := recorddomain.Kind(strings.TrimSpace(r.URL.Query().Get("record_kind")))
+	if recordKind != "" {
+		parsed, err := recorddomain.ParseKind(recordKind.String())
+		if err != nil {
+			httpx.Fail(m.log, w, r, err)
+			return
+		}
+		recordKind = parsed
+	}
+	search := strings.TrimSpace(r.URL.Query().Get("q"))
 	before, size, ok := researchPage(w, r)
 	if !ok {
 		return
 	}
-	found, err := m.research.connections.List(r.Context(), workspace, before, state, review, size, maxSensitivity)
+	found, err := m.research.connections.List(r.Context(), workspace, before, search, kind, recordKind, state, review, size, maxSensitivity)
 	if err != nil {
 		httpx.Fail(m.log, w, r, err)
 		return

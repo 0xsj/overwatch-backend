@@ -80,7 +80,7 @@ func (m *me) currentDerivedGapAlerts(r *http.Request, workspace id.ID, maxSensit
 	records := make([]recorddomain.Record, 0)
 	var recordBefore id.ID
 	for {
-		page, err := m.research.records.List(r.Context(), workspace, recordBefore, "", recorddomain.Kind(""), recorddomain.CitationAny, recorddomain.ResolutionAny, 100, maxSensitivity)
+		page, err := m.research.records.List(r.Context(), workspace, recordBefore, "", recorddomain.Kind(""), recorddomain.CitationAny, recorddomain.ResolutionAny, recorddomain.ArchiveActive, 100, maxSensitivity)
 		if err != nil {
 			return nil, err
 		}

@@ -2,6 +2,7 @@ package root
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	orgdomain "github.com/0xsj/overwatch-backend/internal/org/domain"
@@ -62,6 +63,18 @@ func TestResearchConnectionsKeepAssessmentAndEvidenceExplicit(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].ConnectionID != created.ConnectionID {
 		t.Fatalf("research connection list: %+v", page)
 	}
+	var searched struct {
+		Items []researchConnectionResponse `json:"items"`
+	}
+	decode(t, s.get(t, base+"/connections?q=Harborline+author", auth), &searched)
+	if len(searched.Items) != 1 || searched.Items[0].ConnectionID != created.ConnectionID {
+		t.Fatalf("endpoint-name connection search: %+v", searched)
+	}
+	searched.Items = nil
+	decode(t, s.get(t, base+"/connections?q=control", auth), &searched)
+	if len(searched.Items) != 1 || searched.Items[0].ConnectionID != created.ConnectionID {
+		t.Fatalf("rationale connection search: %+v", searched)
+	}
 
 	updatedResponse := s.put(t, base+"/connections/"+created.ConnectionID, researchJSON(t, map[string]any{
 		"kind":                       "may_belong_to",
@@ -88,8 +101,21 @@ func TestResearchConnectionsKeepAssessmentAndEvidenceExplicit(t *testing.T) {
 	if len(filtered.Items) != 1 || filtered.Items[0].State != "deferred" {
 		t.Fatalf("open research connections: %+v", filtered)
 	}
+	filtered.Items = nil
+	decode(t, s.get(t, base+"/connections?kind=may_belong_to", auth), &filtered)
+	if len(filtered.Items) != 1 || filtered.Items[0].Kind != "may_belong_to" {
+		t.Fatalf("kind-filtered research connections: %+v", filtered)
+	}
+	filtered.Items = nil
+	decode(t, s.get(t, base+"/connections?record_kind=person", auth), &filtered)
+	if len(filtered.Items) != 1 || filtered.Items[0].ConnectionID != created.ConnectionID {
+		t.Fatalf("record-kind-filtered research connections: %+v", filtered)
+	}
 	researchStatus(t, s.get(t, base+"/connections?state=unknown", auth), http.StatusBadRequest)
+	researchStatus(t, s.get(t, base+"/connections?kind=unknown", auth), http.StatusBadRequest)
+	researchStatus(t, s.get(t, base+"/connections?record_kind=unknown", auth), http.StatusBadRequest)
 	researchStatus(t, s.get(t, base+"/connections?review=unknown", auth), http.StatusBadRequest)
+	researchStatus(t, s.get(t, base+"/connections?q="+strings.Repeat("x", 201), auth), http.StatusBadRequest)
 	var summary researchConnectionSummaryResponse
 	decode(t, s.get(t, base+"/connections/summary", auth), &summary)
 	if summary.ConnectionCount != 1 || summary.StateCounts["deferred"] != 1 || summary.OpenCount != 1 || summary.ConflictedCount != 0 || summary.UncitedCount != 0 {

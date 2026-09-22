@@ -132,6 +132,13 @@ make check     # go vet and race-enabled tests
 make tidy      # go mod tidy
 ```
 
+From the workspace root, `make ocr-check` verifies the public OCR extraction
+path. With `OCR_BINARY` configured it runs that executable against the retained
+real screenshot fixture; without one it runs the deterministic shell-free
+contract adapter and verifies that the unsupported/provider boundary remains
+explicit. Set `OVERWATCH_OCR_EXPECTED_TEXT` to assert a known phrase in real
+engine output.
+
 Useful operational commands:
 
 ```bash

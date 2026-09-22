@@ -68,6 +68,25 @@ const (
 
 func (f ResolutionFilter) String() string { return string(f) }
 
+type ArchiveFilter string
+
+const (
+	ArchiveActive   ArchiveFilter = "active"
+	ArchiveArchived ArchiveFilter = "archived"
+	ArchiveAll      ArchiveFilter = "all"
+)
+
+func (f ArchiveFilter) String() string { return string(f) }
+
+func ParseArchiveFilter(raw string) (ArchiveFilter, error) {
+	switch ArchiveFilter(strings.TrimSpace(raw)) {
+	case ArchiveActive, ArchiveArchived, ArchiveAll:
+		return ArchiveFilter(strings.TrimSpace(raw)), nil
+	default:
+		return "", ErrArchiveFilterUnknown
+	}
+}
+
 // PlacePrecision qualifies how much the cited material supports a point. A
 // region point is a representative point, not a boundary or an exact address.
 type PlacePrecision string
@@ -122,6 +141,48 @@ type Record struct {
 	UpdatedBy      id.ID          `json:"updated_by"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
+	ArchivedAt     time.Time      `json:"archived_at,omitempty"`
+	ArchivedBy     id.ID          `json:"archived_by,omitempty"`
+}
+
+func (r Record) Archived() bool { return !r.ArchivedAt.IsZero() }
+
+// Revision is an append-only snapshot of an authored record. It preserves the
+// record fields and cited observations as they were when the change occurred,
+// so later readers do not have to reconstruct history from the live row.
+type Revision struct {
+	ID             id.ID
+	WorkspaceID    id.ID
+	RecordID       id.ID
+	Revision       int
+	Kind           Kind
+	Name           string
+	Description    string
+	ObservationIDs []id.ID
+	PlaceGeometry  *PlaceGeometry
+	ArchivedAt     time.Time
+	ArchivedBy     id.ID
+	ChangedBy      id.ID
+	ChangedAt      time.Time
+}
+
+// NewRevision snapshots a record for an append-only history store.
+func NewRevision(want id.ID, record Record) Revision {
+	var geometry *PlaceGeometry
+	if record.PlaceGeometry != nil {
+		geometry = &PlaceGeometry{
+			Latitude: record.PlaceGeometry.Latitude, Longitude: record.PlaceGeometry.Longitude,
+			Precision:      record.PlaceGeometry.Precision,
+			ObservationIDs: append([]id.ID(nil), record.PlaceGeometry.ObservationIDs...),
+		}
+	}
+	return Revision{
+		ID: want, WorkspaceID: record.WorkspaceID, RecordID: record.ID,
+		Kind: record.Kind, Name: record.Name, Description: record.Description,
+		ObservationIDs: append([]id.ID(nil), record.ObservationIDs...), PlaceGeometry: geometry,
+		ArchivedAt: record.ArchivedAt, ArchivedBy: record.ArchivedBy,
+		ChangedBy: record.UpdatedBy, ChangedAt: record.UpdatedAt,
+	}
 }
 
 // BrowseSummary is a workspace-scoped read model for the authored record
@@ -165,6 +226,9 @@ func (r Record) Edit(by id.ID, kind, name, description string, observations []id
 }
 
 func (r Record) EditWithPlaceGeometry(by id.ID, kind, name, description string, observations []id.ID, geometry *PlaceGeometry, at time.Time) (Record, error) {
+	if r.Archived() {
+		return r, ErrArchived
+	}
 	if by.IsZero() {
 		return r, ErrIDRequired
 	}
@@ -178,6 +242,32 @@ func (r Record) EditWithPlaceGeometry(by id.ID, kind, name, description string, 
 	next := r
 	next.Kind, next.Name, next.Description = cleaned.kind, cleaned.name, cleaned.description
 	next.ObservationIDs, next.PlaceGeometry = cleaned.observations, cleaned.geometry
+	next.UpdatedBy, next.UpdatedAt = by, at
+	return next, nil
+}
+
+func (r Record) Archive(by id.ID, at time.Time) (Record, error) {
+	if by.IsZero() {
+		return r, ErrIDRequired
+	}
+	if at.IsZero() {
+		return r, ErrTimeRequired
+	}
+	next := r
+	next.ArchivedAt, next.ArchivedBy = at, by
+	next.UpdatedBy, next.UpdatedAt = by, at
+	return next, nil
+}
+
+func (r Record) Restore(by id.ID, at time.Time) (Record, error) {
+	if by.IsZero() {
+		return r, ErrIDRequired
+	}
+	if at.IsZero() {
+		return r, ErrTimeRequired
+	}
+	next := r
+	next.ArchivedAt, next.ArchivedBy = time.Time{}, id.ID{}
 	next.UpdatedBy, next.UpdatedAt = by, at
 	return next, nil
 }
@@ -277,4 +367,6 @@ type Changed struct {
 	RecordID    string `json:"record_id"`
 	UpdatedBy   string `json:"updated_by"`
 	Edit        bool   `json:"edit"`
+	Archive     bool   `json:"archive"`
+	Restore     bool   `json:"restore"`
 }

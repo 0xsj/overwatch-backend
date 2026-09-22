@@ -39,7 +39,12 @@ func NewQuestions(repo Repository, tx Transactor, publisher events.Publisher, id
 
 func (q *Questions) Create(ctx context.Context, workspace, author id.ID,
 	prompt, contextText, state, resolution string, observations []id.ID) (domain.Question, error) {
-	fresh, err := domain.New(q.ids.NewID(), workspace, author, prompt, contextText, state, resolution, observations, q.clock.Now())
+	return q.CreateWithContext(ctx, workspace, author, "", id.ID{}, prompt, contextText, state, resolution, observations)
+}
+
+func (q *Questions) CreateWithContext(ctx context.Context, workspace, author id.ID, contextKind string, contextID id.ID,
+	prompt, contextText, state, resolution string, observations []id.ID) (domain.Question, error) {
+	fresh, err := domain.NewWithContext(q.ids.NewID(), workspace, author, contextKind, contextID, prompt, contextText, state, resolution, observations, q.clock.Now())
 	if err != nil {
 		return domain.Question{}, err
 	}
@@ -59,11 +64,16 @@ func (q *Questions) Create(ctx context.Context, workspace, author id.ID,
 
 func (q *Questions) Edit(ctx context.Context, workspace, want, editor id.ID,
 	prompt, contextText, state, resolution string, observations []id.ID) (domain.Question, error) {
+	return q.EditWithContext(ctx, workspace, want, editor, "", id.ID{}, prompt, contextText, state, resolution, observations)
+}
+
+func (q *Questions) EditWithContext(ctx context.Context, workspace, want, editor id.ID, contextKind string, contextID id.ID,
+	prompt, contextText, state, resolution string, observations []id.ID) (domain.Question, error) {
 	held, err := q.repo.ByID(ctx, workspace, want)
 	if err != nil {
 		return domain.Question{}, err
 	}
-	next, err := held.Edit(editor, prompt, contextText, state, resolution, observations, q.clock.Now())
+	next, err := held.EditWithContext(editor, contextKind, contextID, prompt, contextText, state, resolution, observations, q.clock.Now())
 	if err != nil {
 		return domain.Question{}, err
 	}
